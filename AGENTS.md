@@ -22,4 +22,4 @@ Measure send-to-completed-work and accept-to-committed-visible-update. Do not ad
 
 Prepaid OpenRouter credits with automatic recharge disabled are the spending ceiling. Keep requests, outputs, tool rounds, concurrency, and retries bounded. Preserve audit costs through reset. Keep credentials and authentication headers out of client bundles, logs, model context, and audit bodies.
 
-Use direct, concrete language. The global instructions prohibit several abstract software metaphors; follow them in new names and prose.
+Use direct, concrete language. Do not use `seam`, `spine`, `shape`, `load-bearing`, or `blast radius` in original software prose or new code names, including plurals, inflections, and compounds. Exact existing source names and quotes are allowed when the work requires them. Name the actual component, API, behavior, or failure case instead.
