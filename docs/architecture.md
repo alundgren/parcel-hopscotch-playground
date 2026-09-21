@@ -1,0 +1,73 @@
+# Parcel Hopscotch architecture
+
+A person supervises a synthetic fulfilment queue using ordinary controls or a small embedded agent. Server commands protect ownership and review requirements. Model outputs select permitted actions but never establish authorization.
+
+## System context
+
+```mermaid
+C4Context
+  Person(user, "Demo operator", "Learns and resolves fulfilment exceptions")
+  System(app, "Parcel Hopscotch", "Personal fulfilment playground with agent assistance and audit")
+  System_Ext(access, "Cloudflare Access and Tunnel", "Authenticates approved emails and forwards requests")
+  System_Ext(router, "OpenRouter", "Runs Ministral chat and Jev decisions")
+  Rel(user, access, "Signs in and uses the app", "HTTPS / WebSocket")
+  Rel(access, app, "Forwards authenticated email and app traffic", "Local HTTP / WebSocket")
+  Rel(app, router, "Sends bounded inference requests using a server secret", "HTTPS")
+```
+
+## Containers
+
+```mermaid
+C4Container
+  Person(user, "Demo operator", "Resolves personal seeded work")
+  System_Ext(access, "Cloudflare Access and Tunnel", "Authenticates the operator")
+  System_Ext(router, "OpenRouter", "Inference provider")
+  Container_Boundary(app, "Parcel Hopscotch") {
+    Container(web, "React application", "React, Vite, shadcn", "Presents Work, Explore, Audit and registered tutorial targets")
+    Container(server, "Node server", "TypeScript, Effect 4", "Validates identity and commands, coordinates agent turns, and publishes realtime results")
+    ContainerDb(db, "SQLite", "SQLite on a persistent volume", "Stores user work, proposals, chat, scenario generations, and retained audit")
+  }
+  Rel(user, web, "Works and accepts reviewed changes")
+  Rel(web, access, "Loads the app and exchanges realtime messages", "HTTPS / WebSocket")
+  Rel(access, server, "Forwards authenticated traffic", "Local HTTP / WebSocket")
+  Rel(server, web, "Serves assets and sends correlated events through the tunnel")
+  Rel(server, db, "Checks versions and commits isolated transactions")
+  Rel(server, router, "Executes bounded chat or decision requests", "HTTPS")
+```
+
+## Server responsibilities
+
+- Identity and realtime transport derive the user, validate messages, correlate requests, manage reconnects, and reject expired reset generations.
+- Fulfilment commands own rules, proposals, atomic acceptance, Undo, seed data, and reset. They are independent of models.
+- The tool registry supplies typed input/output contracts, permitted effects, and Explore examples.
+- The agent runtime coordinates bounded turns and validates every requested tool. UI guidance addresses registered target IDs and advances tutorials from verified app events.
+- OpenRouter adapters normalize chat and decision responses, cancellation, failures, usage, and actual billing data.
+- Audit records provider attempts and app outcomes using allowlisted payloads and complete-duration measurements.
+
+Keep these responsibilities as plain modules in one application. Separate packages only when a concrete reuse need justifies them.
+
+## Review and reset ordering
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant W as React UI
+  participant N as Node commands
+  participant D as SQLite
+  participant M as Agent
+  M->>N: Prepare typed change for current user
+  N->>D: Read current versions and generation
+  N-->>W: Exact proposal and consequences
+  U->>W: Accept proposal
+  W->>N: Accept opaque proposal ID and idempotency key
+  N->>D: Verify owner, generation, versions; commit atomically
+  D-->>N: Receipt or stale rejection
+  N-->>W: Publish committed state or refreshed-review requirement
+  U->>W: Confirm prepared reset
+  W->>N: Accept reset
+  N->>D: Increment generation, restore seed, retain audit
+  N-->>M: Cancel old-generation work
+  N-->>W: Reset snapshot and completion receipt
+```
+
+There are no unresolved product decisions. OpenRouter credentials are supplied locally, and production tunnel settings belong to deployment after the owner's audit.
