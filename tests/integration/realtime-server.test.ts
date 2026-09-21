@@ -175,4 +175,39 @@ describe("realtime server", () => {
     await expect(closed).resolves.toBe(4001);
     second.socket.close();
   });
+
+  it("delivers reset success to the accepting socket, retires another tab, and rejects old accepted work", async () => {
+    const first = await connect("reset-tabs@example.test");
+    const second = await connect("reset-tabs@example.test");
+
+    const preparedAddress = nextMessage(first.socket, (message) => message.type === "command_result" && message.requestId === "prepare-address");
+    first.socket.send(JSON.stringify({ type: "prepare_resolution", requestId: "prepare-address", generation: 1, orderId: "BB-1042" }));
+    const addressResult = await preparedAddress;
+    expect(addressResult.type).toBe("command_result");
+    if (addressResult.type !== "command_result" || addressResult.result.kind !== "proposal") return;
+
+    const acceptedAddress = nextMessage(first.socket, (message) => message.type === "command_result" && message.requestId === "accept-address");
+    first.socket.send(JSON.stringify({ type: "accept_proposal", requestId: "accept-address", generation: 1, proposalId: addressResult.result.proposal.id, idempotencyKey: "realtime-address-key" }));
+    await expect(acceptedAddress).resolves.toMatchObject({ type: "command_result", result: { kind: "receipt" }, state: { generation: 1 } });
+
+    const preparedReset = nextMessage(first.socket, (message) => message.type === "command_result" && message.requestId === "prepare-reset");
+    first.socket.send(JSON.stringify({ type: "prepare_reset", requestId: "prepare-reset", generation: 1 }));
+    const resetProposal = await preparedReset;
+    if (resetProposal.type !== "command_result" || resetProposal.result.kind !== "proposal") return;
+
+    const retired = new Promise<number>((resolve) => second.socket.once("close", (code) => resolve(code)));
+    const acceptedReset = nextMessage(first.socket, (message) => message.type === "command_result" && message.requestId === "accept-reset");
+    first.socket.send(JSON.stringify({ type: "accept_proposal", requestId: "accept-reset", generation: 1, proposalId: resetProposal.result.proposal.id, idempotencyKey: "realtime-reset-key" }));
+    await expect(acceptedReset).resolves.toMatchObject({ type: "command_result", result: { kind: "receipt", receipt: { kind: "reset", generation: 2 } }, state: { generation: 2, sequence: 1 } });
+    await expect(retired).resolves.toBe(4002);
+
+    const oldReplay = nextMessage(first.socket, (message) => message.type === "error" && message.requestId === "old-replay");
+    first.socket.send(JSON.stringify({ type: "accept_proposal", requestId: "old-replay", generation: 1, proposalId: addressResult.result.proposal.id, idempotencyKey: "realtime-address-key" }));
+    await expect(oldReplay).resolves.toMatchObject({ type: "error", code: "generation_changed" });
+
+    const current = nextMessage(first.socket, (message) => message.type === "snapshot" && message.requestId === "after-reset");
+    first.socket.send(JSON.stringify({ type: "request_snapshot", requestId: "after-reset" }));
+    await expect(current).resolves.toMatchObject({ type: "snapshot", state: { generation: 2, orders: expect.arrayContaining([expect.objectContaining({ id: "BB-1042", version: 1 })]) } });
+    first.socket.close();
+  });
 });
