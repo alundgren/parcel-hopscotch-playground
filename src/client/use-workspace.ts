@@ -31,6 +31,12 @@ export const decideWorkspaceEvent = (
   return { kind: "refresh", optimistic: current };
 };
 
+export const isCurrentSocket = <SocketValue,>(
+  disposed: boolean,
+  current: SocketValue | null,
+  candidate: SocketValue,
+): boolean => !disposed && current === candidate;
+
 const requestId = () => crypto.randomUUID();
 
 const getClientId = (): string => {
@@ -72,7 +78,7 @@ export function useWorkspace() {
     socketRef.current = socket;
 
     socket.addEventListener("open", () => {
-      if (disposedRef.current || socketRef.current !== socket) {
+      if (!isCurrentSocket(disposedRef.current, socketRef.current, socket)) {
         socket.close(1000, "Obsolete connection");
         return;
       }
@@ -91,6 +97,7 @@ export function useWorkspace() {
     });
 
     socket.addEventListener("message", (event) => {
+      if (!isCurrentSocket(disposedRef.current, socketRef.current, socket)) return;
       let message: ServerMessage;
       try {
         message = JSON.parse(String(event.data)) as ServerMessage;
@@ -117,7 +124,7 @@ export function useWorkspace() {
     });
 
     socket.addEventListener("close", (event) => {
-      if (disposedRef.current || socketRef.current !== socket) return;
+      if (!isCurrentSocket(disposedRef.current, socketRef.current, socket)) return;
       socketRef.current = null;
       if (event.code === 4001) {
         retiredRef.current = true;

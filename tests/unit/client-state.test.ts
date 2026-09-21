@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { OrderSummary, WorkspaceSnapshot } from "../../src/shared/contracts";
 import { resolveSelectedOrder } from "../../src/client/App";
-import { decideWorkspaceEvent } from "../../src/client/use-workspace";
+import {
+  decideWorkspaceEvent,
+  isCurrentSocket,
+} from "../../src/client/use-workspace";
 import { rejectsOutgoingWrite } from "../../src/server/realtime";
 
 const order = (issue: string): OrderSummary => ({
@@ -55,6 +58,15 @@ describe("client realtime state", () => {
     const refreshed = order("The current snapshot changed this evidence.");
     expect(resolveSelectedOrder([refreshed], "BB-1042")).toBe(refreshed);
     expect(resolveSelectedOrder([], "BB-1042")).toBeNull();
+  });
+
+  it("ignores every callback from disposed or replaced sockets", () => {
+    const current = { id: "current" };
+    const replaced = { id: "replaced" };
+    expect(isCurrentSocket(false, current, current)).toBe(true);
+    expect(isCurrentSocket(false, current, replaced)).toBe(false);
+    expect(isCurrentSocket(true, current, current)).toBe(false);
+    expect(isCurrentSocket(false, null, current)).toBe(false);
   });
 });
 
