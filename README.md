@@ -32,6 +32,16 @@ pnpm build
 pnpm test:e2e
 ```
 
+Run the bounded live provider check explicitly with:
+
+```bash
+pnpm smoke:providers
+```
+
+It makes one Ministral request and one Jev request through the application adapters. It requires `OPENROUTER_API_KEY` in the environment or ignored `.env.local`, records sanitized attempts in `.tmp/provider-smoke.sqlite`, and prints only the result plus model, token, complete-duration, and cost metadata. Ordinary tests and CI never call paid providers.
+
+Live validation passed on 2026-09-21. Ministral completed a forced `getOrder` call through Mistral in 447 ms for 114 tokens at USD 0.0000114. Jev answered the conditional replacement question through TypeSafe as `typesafe/jev-1.13-20260917` in 317 ms for 349 tokens at USD 0.000013776. These are two bounded compatibility checks, not performance benchmarks.
+
 Playwright builds the app, starts the real server with an `example.test` identity, uses its WebSocket transport, and records video in `test-results/`.
 
 Licensed under [MIT](LICENSE).

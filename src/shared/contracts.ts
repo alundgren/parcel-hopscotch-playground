@@ -65,5 +65,6 @@ export type ServerMessage =
   | { readonly type: "snapshot"; readonly requestId: string | null; readonly generation: number; readonly sequence: number; readonly state: WorkspaceSnapshot }
   | { readonly type: "command_result"; readonly requestId: string; readonly result: CommandResult; readonly state: WorkspaceSnapshot }
   | { readonly type: "event"; readonly generation: number; readonly sequence: number; readonly event: string; readonly payload: unknown }
+  | { readonly type: "audit_event"; readonly event: "audit.attempt.completed"; readonly payload: unknown }
   | { readonly type: "pong"; readonly requestId: string }
   | { readonly type: "error"; readonly requestId: string | null; readonly code: string; readonly message: string };
