@@ -4,10 +4,17 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { serverLayer } from "./app.js";
 import { loadConfig } from "./config.js";
+import { runWithWorkspaceRepository, WorkspaceRepository } from "./persistence.js";
 
 const program = Effect.gen(function* () {
   const config = yield* loadConfig();
   yield* Effect.tryPromise(() => mkdir(dirname(config.databasePath), { recursive: true }));
+  yield* Effect.tryPromise(() =>
+    runWithWorkspaceRepository(
+      config.databasePath,
+      Effect.flatMap(WorkspaceRepository, (repository) => repository.recoverProviderAttempts()),
+    ),
+  );
   yield* Effect.sync(() => {
     console.log(`Bracken & Beam listening on http://${config.host}:${config.port}`);
   });

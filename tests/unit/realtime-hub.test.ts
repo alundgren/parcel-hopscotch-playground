@@ -47,4 +47,35 @@ describe("realtime event isolation", () => {
     expect(received.has("b-current")).toBe(false);
     expect(closed).toEqual(["a-old"]);
   });
+
+  it("publishes old-generation audit completion only to the owner without retiring current sockets", async () => {
+    const received = new Map<string, Array<ServerMessage>>();
+    const closed: Array<string> = [];
+    const connection = (id: string, generation: number) => ({
+      id,
+      generation,
+      clientId: null,
+      send: (message: ServerMessage) => Effect.sync(() => {
+        const messages = received.get(id) ?? [];
+        messages.push(message);
+        received.set(id, messages);
+      }),
+      close: () => Effect.sync(() => { closed.push(id); }),
+    });
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const hub = yield* RealtimeHub;
+      yield* hub.register("user-a", connection("a-current", 2));
+      yield* hub.register("user-b", connection("b-current", 1));
+      yield* hub.publishAudit("user-a", { id: "attempt-1", generation: 1, outcome: "success" });
+    }).pipe(Effect.provide(realtimeHubLayer))));
+
+    expect(received.get("a-current")).toEqual([{
+      type: "audit_event",
+      event: "audit.attempt.completed",
+      payload: { id: "attempt-1", generation: 1, outcome: "success" },
+    }]);
+    expect(received.has("b-current")).toBe(false);
+    expect(closed).toEqual([]);
+  });
 });

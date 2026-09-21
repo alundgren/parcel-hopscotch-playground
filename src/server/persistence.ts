@@ -6,6 +6,8 @@ import { targets } from "../shared/targets.js";
 import { evaluateResolution, initialStateFor, materializeResolution, resolutionBlockReason, resolutionFacts, type InventoryCondition, type OrderBusinessState, type ResolutionPolicy } from "./fulfilment.js";
 import type { RequestIdentity } from "./identity.js";
 import { seedOrders } from "./seeds.js";
+import type { ProviderAttemptFinish, ProviderAttemptRecord, ProviderAttemptRepository, ProviderAttemptStart, ProviderAttemptSummary } from "./providers/audit.js";
+import { redactProviderAudit, redactProviderString } from "./providers/redaction.js";
 
 export class WorkspaceStoreError extends Schema.TaggedError<WorkspaceStoreError>()("WorkspaceStoreError", { message: Schema.String }) {}
 export class WorkspaceCommandError extends Schema.TaggedError<WorkspaceCommandError>()("WorkspaceCommandError", { code: Schema.String, message: Schema.String }) {}
@@ -17,7 +19,7 @@ interface StoredReceipt { readonly public: CommandReceipt; readonly applied: Rea
 
 export interface CommandCommit { readonly receipt: CommandReceipt; readonly snapshot: WorkspaceSnapshot; readonly generationChanged: boolean }
 export interface ScenarioCommit { readonly message: string; readonly snapshot: WorkspaceSnapshot }
-export interface WorkspaceRepositoryService {
+export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly snapshot: (identity: RequestIdentity, now?: number) => Effect.Effect<WorkspaceSnapshot, WorkspaceStoreError>;
   readonly orderIds: (identity: RequestIdentity) => Effect.Effect<ReadonlyArray<string>, WorkspaceStoreError>;
   readonly prepareResolution: (identity: RequestIdentity, generation: number, orderId: string) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
@@ -60,6 +62,37 @@ const migrate = (database: DatabaseSync) => {
     CREATE TABLE IF NOT EXISTS chat_messages (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, role TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS tutorial_state (user_id TEXT NOT NULL, generation INTEGER NOT NULL, tutorial_id TEXT NOT NULL, step INTEGER NOT NULL, PRIMARY KEY (user_id, generation, tutorial_id), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS audit_records (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, body_json TEXT NOT NULL, completed_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS provider_attempts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      request_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      requested_model TEXT NOT NULL,
+      actual_model TEXT,
+      provider_request_id TEXT,
+      generation_id TEXT,
+      request_json TEXT NOT NULL,
+      response_json TEXT,
+      request_bytes INTEGER NOT NULL,
+      response_bytes INTEGER,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      duration_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      total_tokens INTEGER,
+      cost_usd REAL,
+      outcome TEXT NOT NULL,
+      error_code TEXT,
+      error_message TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (user_id, generation, request_id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS provider_attempts_user_completed ON provider_attempts (user_id, completed_at DESC, started_at DESC);
   `);
   const columns = database.prepare("PRAGMA table_info(orders)").all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === "version")) database.exec("ALTER TABLE orders ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
@@ -98,6 +131,73 @@ const appendEvent = (database: DatabaseSync, userId: string, generation: number,
   database.prepare("INSERT INTO scenario_events (user_id, generation, sequence, kind, payload_json, occurred_at) VALUES (?, ?, ?, ?, ?, ?)").run(userId, generation, sequence, kind, JSON.stringify(payload), new Date().toISOString());
   return sequence;
 };
+
+type AttemptRow = {
+  id: string; user_id: string; generation: number; request_id: string; turn_id: string;
+  kind: ProviderAttemptRecord["kind"]; provider: string; requested_model: string;
+  actual_model: string | null; provider_request_id: string | null; generation_id: string | null;
+  request_json: string; response_json: string | null; request_bytes: number; response_bytes: number | null;
+  started_at: string; completed_at: string | null; duration_ms: number | null;
+  input_tokens: number | null; output_tokens: number | null; total_tokens: number | null;
+  cost_usd: number | null; outcome: ProviderAttemptRecord["outcome"];
+  error_code: string | null; error_message: string | null; retry_count: number;
+};
+
+const attemptRecord = (row: AttemptRow): ProviderAttemptRecord => ({
+  id: row.id,
+  userId: row.user_id,
+  generation: Number(row.generation),
+  requestId: row.request_id,
+  turnId: row.turn_id,
+  kind: row.kind,
+  provider: row.provider,
+  requestedModel: row.requested_model,
+  actualModel: row.actual_model,
+  providerRequestId: row.provider_request_id,
+  generationId: row.generation_id,
+  request: JSON.parse(row.request_json),
+  response: row.response_json === null ? null : JSON.parse(row.response_json),
+  requestBytes: Number(row.request_bytes),
+  responseBytes: row.response_bytes === null ? null : Number(row.response_bytes),
+  startedAt: row.started_at,
+  completedAt: row.completed_at,
+  durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
+  inputTokens: row.input_tokens === null ? null : Number(row.input_tokens),
+  outputTokens: row.output_tokens === null ? null : Number(row.output_tokens),
+  totalTokens: row.total_tokens === null ? null : Number(row.total_tokens),
+  costUsd: row.cost_usd === null ? null : Number(row.cost_usd),
+  outcome: row.outcome,
+  errorCode: row.error_code,
+  errorMessage: row.error_message,
+  retryCount: Number(row.retry_count),
+});
+
+const attemptSummary = (row: Omit<AttemptRow, "request_json" | "response_json">): ProviderAttemptSummary => ({
+  id: row.id,
+  userId: row.user_id,
+  generation: Number(row.generation),
+  requestId: row.request_id,
+  turnId: row.turn_id,
+  kind: row.kind,
+  provider: row.provider,
+  requestedModel: row.requested_model,
+  actualModel: row.actual_model,
+  providerRequestId: row.provider_request_id,
+  generationId: row.generation_id,
+  requestBytes: Number(row.request_bytes),
+  responseBytes: row.response_bytes === null ? null : Number(row.response_bytes),
+  startedAt: row.started_at,
+  completedAt: row.completed_at,
+  durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
+  inputTokens: row.input_tokens === null ? null : Number(row.input_tokens),
+  outputTokens: row.output_tokens === null ? null : Number(row.output_tokens),
+  totalTokens: row.total_tokens === null ? null : Number(row.total_tokens),
+  costUsd: row.cost_usd === null ? null : Number(row.cost_usd),
+  outcome: row.outcome,
+  errorCode: row.error_code,
+  errorMessage: row.error_message,
+  retryCount: Number(row.retry_count),
+});
 
 const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, now = Date.now()): WorkspaceSnapshot => {
   const user = ensureUser(database, identity);
@@ -280,7 +380,113 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
     appendEvent(database, user.id, generation, "scenario.stock_changed", { sku: "MUG-SAGE", quantity: Number(stock.quantity) - 1 });
     return { message: "Scenario advanced: sage mug stock changed.", snapshot: readSnapshot(database, identity) };
   }));
-  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, accept, advanceScenario });
+  const startProviderAttempt: WorkspaceRepositoryService["startProviderAttempt"] = (input: ProviderAttemptStart) => Effect.sync(() => transact(database, () => {
+    if (input.requestId.length < 1 || input.requestId.length > 128 || input.turnId.length < 1 || input.turnId.length > 128) throw new Error("Provider request and turn identifiers must be between 1 and 128 characters.");
+    if (input.requestBytes < 0 || input.requestBytes > 32 * 1024) throw new Error("The provider request exceeded the audit byte limit.");
+    const user = ensureUser(database, input.identity);
+    expectGeneration(user.generation, input.generation);
+    const id = `attempt_${randomUUID()}`;
+    const startedAt = new Date().toISOString();
+    database.prepare(`INSERT INTO provider_attempts (
+      id, user_id, generation, request_id, turn_id, kind, provider, requested_model,
+      request_json, request_bytes, started_at, outcome, retry_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0)`).run(
+      id,
+      user.id,
+      input.generation,
+      redactProviderString(input.requestId, 128),
+      redactProviderString(input.turnId, 128),
+      input.kind,
+      redactProviderString(input.provider, 128),
+      redactProviderString(input.model, 256),
+      JSON.stringify(redactProviderAudit(input.request)),
+      input.requestBytes,
+      startedAt,
+    );
+    return attemptRecord(database.prepare("SELECT * FROM provider_attempts WHERE id = ?").get(id) as AttemptRow);
+  }));
+  const finishProviderAttempt: WorkspaceRepositoryService["finishProviderAttempt"] = (identity: RequestIdentity, attemptId: string, finish: ProviderAttemptFinish) => Effect.sync(() => transact(database, () => {
+    const owner = database.prepare("SELECT id FROM users WHERE id = ? AND identity_digest = ?").get(identity.id, identity.digest) as { id: string } | undefined;
+    if (owner === undefined) throw new Error("The provider attempt owner is unavailable.");
+    const row = database.prepare("SELECT * FROM provider_attempts WHERE id = ? AND user_id = ?").get(attemptId, owner.id) as AttemptRow | undefined;
+    if (row === undefined) throw new Error("The provider attempt is unavailable.");
+    if (row.outcome !== "running" && !(row.outcome === "interrupted" && row.error_code === "server_restart")) return attemptRecord(row);
+    const completedAt = new Date().toISOString();
+    const durationMs = finish.durationMs === null || !Number.isFinite(finish.durationMs)
+      ? null
+      : Math.max(0, Math.round(finish.durationMs));
+    const responseJson = finish.response === null ? null : JSON.stringify(redactProviderAudit(finish.response));
+    if (responseJson !== null && new TextEncoder().encode(responseJson).byteLength > 256 * 1024) throw new Error("The provider response exceeded the audit byte limit.");
+    database.prepare(`UPDATE provider_attempts SET
+      provider = COALESCE(?, provider), actual_model = ?, provider_request_id = ?, generation_id = ?,
+      response_json = ?, response_bytes = ?, completed_at = ?, duration_ms = ?,
+      input_tokens = ?, output_tokens = ?, total_tokens = ?, cost_usd = ?, outcome = ?,
+      error_code = ?, error_message = ?, retry_count = ?
+      WHERE id = ? AND user_id = ? AND (outcome = 'running' OR (outcome = 'interrupted' AND error_code = 'server_restart'))`).run(
+      finish.provider === null ? null : redactProviderString(finish.provider, 128),
+      finish.actualModel === null ? null : redactProviderString(finish.actualModel, 256),
+      finish.providerRequestId === null ? null : redactProviderString(finish.providerRequestId, 256),
+      finish.generationId === null ? null : redactProviderString(finish.generationId, 256),
+      responseJson,
+      finish.responseBytes,
+      completedAt,
+      durationMs,
+      finish.inputTokens,
+      finish.outputTokens,
+      finish.totalTokens,
+      finish.costUsd,
+      finish.outcome,
+      finish.errorCode === null ? null : redactProviderString(finish.errorCode, 128),
+      finish.errorMessage === null ? null : redactProviderString(finish.errorMessage, 512),
+      finish.retryCount,
+      attemptId,
+      owner.id,
+    );
+    const completed = database.prepare("SELECT * FROM provider_attempts WHERE id = ? AND user_id = ?").get(attemptId, owner.id) as AttemptRow;
+    const summary = attemptRecord(completed);
+    database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, ?, 'provider', ?, ?)").run(
+      `audit_${randomUUID()}`,
+      owner.id,
+      row.generation,
+      JSON.stringify({
+        attemptId: summary.id,
+        requestId: summary.requestId,
+        turnId: summary.turnId,
+        kind: summary.kind,
+        provider: summary.provider,
+        requestedModel: summary.requestedModel,
+        actualModel: summary.actualModel,
+        outcome: summary.outcome,
+        durationMs: summary.durationMs,
+        inputTokens: summary.inputTokens,
+        outputTokens: summary.outputTokens,
+        costUsd: summary.costUsd,
+      }),
+      completedAt,
+    );
+    return summary;
+  }));
+  const providerAttempts: WorkspaceRepositoryService["providerAttempts"] = (identity, requestedLimit = 50) => Effect.sync(() => {
+    const limit = Math.max(1, Math.min(100, Math.floor(requestedLimit)));
+    const owner = database.prepare("SELECT id FROM users WHERE id = ? AND identity_digest = ?").get(identity.id, identity.digest) as { id: string } | undefined;
+    if (owner === undefined) return [];
+    return (database.prepare(`SELECT
+      id, user_id, generation, request_id, turn_id, kind, provider, requested_model,
+      actual_model, provider_request_id, generation_id, request_bytes, response_bytes,
+      started_at, completed_at, duration_ms, input_tokens, output_tokens, total_tokens,
+      cost_usd, outcome, error_code, error_message, retry_count
+      FROM provider_attempts WHERE user_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?`).all(owner.id, limit) as Array<Omit<AttemptRow, "request_json" | "response_json">>).map(attemptSummary);
+  });
+  const providerAttempt: WorkspaceRepositoryService["providerAttempt"] = (identity, attemptId) => Effect.sync(() => {
+    const row = database.prepare("SELECT pa.* FROM provider_attempts pa JOIN users u ON u.id = pa.user_id WHERE pa.id = ? AND u.id = ? AND u.identity_digest = ?").get(attemptId, identity.id, identity.digest) as AttemptRow | undefined;
+    return row === undefined ? null : attemptRecord(row);
+  });
+  const recoverProviderAttempts: WorkspaceRepositoryService["recoverProviderAttempts"] = () => Effect.sync(() => {
+    const recoveredAt = new Date().toISOString();
+    const result = database.prepare("UPDATE provider_attempts SET outcome = 'interrupted', completed_at = ?, duration_ms = NULL, error_code = 'server_restart', error_message = 'The server restarted before this provider attempt completed.' WHERE outcome = 'running'").run(recoveredAt);
+    return Number(result.changes);
+  });
+  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, accept, advanceScenario, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
 })));
 
 export const workspacePersistenceLayer = (filename: string) => repositoryLayer(filename);
