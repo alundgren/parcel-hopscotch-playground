@@ -14,6 +14,7 @@ const order = (issue: string): OrderSummary => ({
   status: "review",
   statusLabel: "Review",
   family: "address",
+  version: 1,
   targetId: "target-order-BB-1042",
   evidence: [],
 });
@@ -22,6 +23,7 @@ const snapshot = (sequence: number, generation = 1): WorkspaceSnapshot => ({
   generation,
   sequence,
   orders: [order("Street number needs checking.")],
+  latestReceipt: null,
 });
 
 const event = (sequence: number, generation = 1) => ({
