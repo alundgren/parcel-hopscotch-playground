@@ -10,4 +10,28 @@ Implementation is in progress. The approved [interactive prototype](docs/design/
 
 Each user has their own seeded work and can reset it. Reset preserves audit history. Cloudflare Access controls access at the tunnel, and the app trusts its authenticated email header.
 
+## Local workspace
+
+Use Node 22.18 or newer and pnpm 12.5. The development identity must be enabled explicitly:
+
+```bash
+cp .env.example .env.local
+set -a; source .env.local; set +a
+pnpm install
+pnpm dev
+```
+
+Open `http://127.0.0.1:5173`. The Vite client proxies the Effect Node server on port 3000. Production ignores the development identity and requires exactly one valid `Cf-Access-Authenticated-User-Email` header.
+
+Run the local checks with:
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm test:e2e
+```
+
+Playwright builds the app, starts the real server with an `example.test` identity, uses its WebSocket transport, and records video in `test-results/`.
+
 Licensed under [MIT](LICENSE).

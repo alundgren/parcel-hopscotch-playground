@@ -1,0 +1,48 @@
+{
+  "name": "parcel-hopscotch-playground",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.5.0",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c blue,green \"pnpm dev:server\" \"pnpm dev:web\"",
+    "dev:server": "tsx watch src/server/main.ts",
+    "dev:web": "vite",
+    "build": "pnpm typecheck && vite build && tsc -p tsconfig.server.json",
+    "start": "node dist/server/server/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "playwright test",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-rc.117",
+    "@effect/sql-sqlite-node": "4.0.0-rc.117",
+    "@radix-ui/react-slot": "1.2.3",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "effect": "4.0.0-rc.117",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "tailwind-merge": "3.3.1",
+    "ws": "8.18.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.5.2",
+    "@types/react": "19.1.16",
+    "@types/react-dom": "19.1.9",
+    "@types/ws": "8.18.1",
+    "@vitejs/plugin-react": "5.0.4",
+    "concurrently": "9.2.1",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vite": "7.1.7",
+    "vitest": "3.2.4"
+  }
+}
