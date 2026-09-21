@@ -7,6 +7,9 @@ import { invalidRequest, jsonBytes } from "./http.js";
 
 const toolName = /^[A-Za-z0-9_-]{1,64}$/;
 
+export const isValidToolCallId = (value: string): boolean =>
+  value.length >= 1 && value.length <= 128;
+
 const serializeMessage = (message: ChatMessage): Record<string, unknown> => {
   if (message.role === "tool") {
     return {
@@ -47,7 +50,7 @@ const validateHistory = (messages: ReadonlyArray<ChatMessage>) => {
         throw invalidRequest("Assistant tool-call history must contain between 1 and 16 calls.");
       }
       for (const call of message.toolCalls) {
-        if (call.id.length === 0 || call.id.length > 128 || !toolName.test(call.name)) {
+        if (!isValidToolCallId(call.id) || !toolName.test(call.name)) {
           throw invalidRequest("Assistant tool-call history contains invalid metadata.");
         }
         if (pending.has(call.id)) {
@@ -58,7 +61,7 @@ const validateHistory = (messages: ReadonlyArray<ChatMessage>) => {
       }
     }
     if (message.role === "tool") {
-      if (message.toolCallId.length === 0 || message.toolCallId.length > 128) {
+      if (!isValidToolCallId(message.toolCallId)) {
         throw invalidRequest("A tool result contains invalid call metadata.");
       }
       if (!pending.delete(message.toolCallId)) {

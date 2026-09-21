@@ -125,6 +125,59 @@ describe("Ministral OpenRouter adapter", () => {
     expect(result.metadata.usage.costUsd).toBeNull();
   });
 
+  it("preserves distinct bounded opaque call IDs even when audit redaction would collide", () => {
+    const tools: ReadonlyArray<ChatTool> = [{
+      name: "getOrder",
+      description: "Get an order.",
+      parameters: { type: "object" },
+      validateArguments: () => true,
+    }];
+    const bytes = sse(
+      { id: "x", model: "m", choices: [{ index: 0, delta: { tool_calls: [
+        { index: 0, id: "first@example.test", type: "function", function: { name: "getOrder", arguments: "{}" } },
+        { index: 1, id: "second@example.test", type: "function", function: { name: "getOrder", arguments: "{}" } },
+      ] }, finish_reason: "tool_calls" }] },
+      "[DONE]",
+    );
+    const result = parseMinistralStream(bytes, { ...request, tools }, 1, null);
+    expect(result.toolCalls.map((call) => call.id)).toEqual(["first@example.test", "second@example.test"]);
+    expect(JSON.stringify(result.safeResponse)).not.toContain("first@example.test");
+    expect(JSON.stringify(result.safeResponse)).not.toContain("second@example.test");
+  });
+
+  it("uses the same 128-character call ID bound for parsing and subsequent history", () => {
+    const tools: ReadonlyArray<ChatTool> = [{
+      name: "getOrder",
+      description: "Get an order.",
+      parameters: { type: "object" },
+      validateArguments: () => true,
+    }];
+    const callId = "x".repeat(128);
+    const valid = sse(
+      { id: "x", model: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: callId, type: "function", function: { name: "getOrder", arguments: "{}" } }] }, finish_reason: "tool_calls" }] },
+      "[DONE]",
+    );
+    const parsed = parseMinistralStream(valid, { ...request, tools }, 1, null);
+    expect(parsed.toolCalls[0]?.id).toBe(callId);
+    expect(() => buildMinistralWireRequest({ messages: [
+      ...request.messages,
+      { role: "assistant", content: null, toolCalls: parsed.toolCalls },
+      { role: "tool", toolCallId: callId, content: "{}" },
+    ] })).not.toThrow();
+
+    const oversizedId = "x".repeat(129);
+    const invalid = sse(
+      { id: "x", model: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: oversizedId, type: "function", function: { name: "getOrder", arguments: "{}" } }] }, finish_reason: "tool_calls" }] },
+      "[DONE]",
+    );
+    expect(() => parseMinistralStream(invalid, { ...request, tools }, 1, null)).toThrow(/invalid tool call identifier/i);
+    expect(() => buildMinistralWireRequest({ messages: [
+      ...request.messages,
+      { role: "assistant", content: null, toolCalls: [{ id: oversizedId, name: "getOrder", arguments: {} }] },
+      { role: "tool", toolCallId: oversizedId, content: "{}" },
+    ] })).toThrow(/invalid metadata/i);
+  });
+
   it.each([
     ["malformed arguments", sse(
       { id: "x", model: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "c", type: "function", function: { name: "getOrder", arguments: "{" } }] }, finish_reason: null }] },

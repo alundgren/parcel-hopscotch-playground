@@ -1,5 +1,5 @@
 import { Effect, Semaphore } from "effect";
-import { buildMinistralWireRequest } from "./chat-request.js";
+import { buildMinistralWireRequest, isValidToolCallId } from "./chat-request.js";
 import {
   MINISTRAL_MODEL,
   ProviderError,
@@ -242,6 +242,7 @@ export const parseMinistralStream = (
     const callIds = new Set<string>();
     for (const [index, assembled] of [...toolFragments.entries()].sort((a, b) => a[0] - b[0])) {
       if (assembled.id.length === 0 || assembled.name.length === 0 || assembled.arguments.length === 0) throw malformedResponse(`Tool call ${index} was incomplete.`);
+      if (!isValidToolCallId(assembled.id)) throw malformedResponse("The provider returned an invalid tool call identifier.");
       if (callIds.has(assembled.id)) throw malformedResponse("The provider returned duplicate tool call identifiers.");
       callIds.add(assembled.id);
       const declared = toolsByName.get(assembled.name);
@@ -253,7 +254,7 @@ export const parseMinistralStream = (
         throw malformedResponse(`Tool call ${redactProviderString(assembled.name, 64)} had malformed JSON arguments.`);
       }
       if (!declared.validateArguments(args)) throw malformedResponse(`Tool call ${redactProviderString(assembled.name, 64)} did not match its declared input.`);
-      toolCalls.push({ id: redactProviderString(assembled.id, 256), name: redactProviderString(assembled.name, 64), arguments: args });
+      toolCalls.push({ id: assembled.id, name: assembled.name, arguments: args });
     }
     if (toolCalls.length > 0 && finishReason !== "tool_calls") throw malformedResponse("The provider returned tool calls without the tool_calls finish reason.");
     if (finishReason === "tool_calls" && toolCalls.length === 0) throw malformedResponse("The provider reported tool calls without a complete call.");

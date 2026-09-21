@@ -145,7 +145,7 @@ const safe = {
     requestedModel: result.chat.metadata.requestedModel,
     actualModel: result.chat.metadata.actualModel,
     finishReason: result.chat.finishReason,
-    toolCalls: result.chat.toolCalls.map((call) => ({ id: call.id, name: call.name })),
+    toolCalls: result.chat.toolCalls.map((call) => ({ name: call.name })),
     inputTokens: result.chat.metadata.usage.inputTokens,
     outputTokens: result.chat.metadata.usage.outputTokens,
     costUsd: result.chat.metadata.usage.costUsd,
