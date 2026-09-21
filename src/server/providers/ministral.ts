@@ -18,6 +18,7 @@ import {
   jsonBytes,
   malformedResponse,
   parseJson,
+  ProviderBodyReadError,
   providerFailure,
   safeProviderError,
 } from "./http.js";
@@ -51,18 +52,32 @@ const normalizeUsage = (value: unknown): ProviderUsage => {
   };
 };
 
-export const parseSseData = (bytes: Uint8Array): ReadonlyArray<string> => {
-  let decoded: string;
-  try {
-    decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    throw malformedResponse("The provider stream was not valid UTF-8.");
+const splitSseData = (bytes: Uint8Array): {
+  readonly events: ReadonlyArray<string>;
+  readonly terminalError: string | null;
+} => {
+  const normalized: Array<number> = [];
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    const byte = bytes[index]!;
+    if (byte === 13) {
+      if (bytes[index + 1] === 10) index += 1;
+      normalized.push(10);
+    } else {
+      normalized.push(byte);
+    }
   }
-  const blocks = decoded.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n\n");
-  const trailing = blocks.pop() ?? "";
-  if (trailing.trim().length > 0) throw malformedResponse("The provider stream ended in a partial SSE event.");
+  const source = Uint8Array.from(normalized);
   const events: Array<string> = [];
-  for (const block of blocks) {
+  let blockStart = 0;
+  let terminalError: string | null = null;
+  const readBlock = (blockBytes: Uint8Array): boolean => {
+    let block: string;
+    try {
+      block = new TextDecoder("utf-8", { fatal: true }).decode(blockBytes);
+    } catch {
+      terminalError = "The provider stream was not valid UTF-8.";
+      return false;
+    }
     const data: Array<string> = [];
     for (const line of block.split("\n")) {
       if (line === "" || line.startsWith(":")) continue;
@@ -73,8 +88,36 @@ export const parseSseData = (bytes: Uint8Array): ReadonlyArray<string> => {
       if (field === "data") data.push(value);
     }
     if (data.length > 0) events.push(data.join("\n"));
+    return true;
+  };
+  for (let index = 0; index < source.byteLength - 1; index += 1) {
+    if (source[index] !== 10 || source[index + 1] !== 10) continue;
+    if (!readBlock(source.slice(blockStart, index))) break;
+    blockStart = index + 2;
+    index += 1;
   }
-  return events;
+  if (terminalError === null) {
+    const trailing = source.slice(blockStart);
+    if (trailing.byteLength > 0) {
+      let decodedTrailing: string;
+      try {
+        decodedTrailing = new TextDecoder("utf-8", { fatal: true }).decode(trailing);
+      } catch {
+        decodedTrailing = "";
+        terminalError = "The provider stream was not valid UTF-8.";
+      }
+      if (terminalError === null && decodedTrailing.trim().length > 0) {
+        terminalError = "The provider stream ended in a partial SSE event.";
+      }
+    }
+  }
+  return { events, terminalError };
+};
+
+export const parseSseData = (bytes: Uint8Array): ReadonlyArray<string> => {
+  const parsed = splitSseData(bytes);
+  if (parsed.terminalError !== null) throw malformedResponse(parsed.terminalError);
+  return parsed.events;
 };
 
 const validateRequest = (request: MinistralRequest, maximumContextBytes: number): void => {
@@ -148,7 +191,8 @@ export const parseMinistralStream = (
   let sawAccountingFrame = false;
 
   try {
-    const events = parseSseData(bytes);
+    const parsed = splitSseData(bytes);
+    const events = parsed.events;
     for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
       const event = events[eventIndex]!;
       if (event === "[DONE]") {
@@ -229,6 +273,8 @@ export const parseMinistralStream = (
       }
       if (typeof finish === "string") finishReason = finish;
     }
+
+    if (parsed.terminalError !== null) throw malformedResponse(parsed.terminalError);
 
     if (!sawDone) throw malformedResponse("The provider stream did not include [DONE].");
     if (finishReason === null) throw malformedResponse("The provider stream did not include a finish reason.");
@@ -326,8 +372,45 @@ export const makeMinistralAdapter = (config: OpenRouterAdapterConfig, fetcher: F
           validateRequest(request, maximumContextBytes);
           const payload = buildMinistralWireRequest(request);
           const body = JSON.stringify(payload);
-          const result = await fetchOpenRouter(fetcher, `${baseUrl}/api/v1/chat/completions`, config.apiKey, body, maximumResponseBytes, signal);
-          return parseMinistralStream(result.bytes, request, new TextEncoder().encode(body).byteLength, result.response.headers.get("x-generation-id"));
+          const requestBytes = new TextEncoder().encode(body).byteLength;
+          let result: Awaited<ReturnType<typeof fetchOpenRouter>>;
+          try {
+            result = await fetchOpenRouter(fetcher, `${baseUrl}/api/v1/chat/completions`, config.apiKey, body, maximumResponseBytes, signal);
+          } catch (cause) {
+            if (!(cause instanceof ProviderBodyReadError)) throw cause;
+            try {
+              return parseMinistralStream(
+                cause.bytes,
+                request,
+                requestBytes,
+                cause.generationId,
+              );
+            } catch (partialCause) {
+              if (!(partialCause instanceof ProviderError)) throw cause;
+              throw providerFailure(
+                "transport_error",
+                "The provider response body ended before it could be read completely.",
+                {
+                  status: cause.status,
+                  billableUnknown:
+                    partialCause.costUsd === null
+                      ? cause.billableUnknown
+                      : false,
+                  safeResponse: partialCause.safeResponse,
+                  responseBytes: cause.bytes.byteLength,
+                  provider: partialCause.provider,
+                  actualModel: partialCause.actualModel,
+                  providerRequestId: partialCause.providerRequestId,
+                  generationId: partialCause.generationId ?? cause.generationId,
+                  inputTokens: partialCause.inputTokens,
+                  outputTokens: partialCause.outputTokens,
+                  totalTokens: partialCause.totalTokens,
+                  costUsd: partialCause.costUsd,
+                },
+              );
+            }
+          }
+          return parseMinistralStream(result.bytes, request, requestBytes, result.response.headers.get("x-generation-id"));
         },
         catch: (cause) => cause instanceof ProviderError ? cause : providerFailure("transport_error", "The provider request did not complete.", { billableUnknown: true }),
       });

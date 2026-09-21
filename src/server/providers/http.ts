@@ -4,6 +4,29 @@ import { redactProviderString } from "./redaction.js";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
+export class ProviderBodyReadError extends Error {
+  readonly name = "ProviderBodyReadError";
+
+  constructor(
+    readonly bytes: Uint8Array,
+    readonly status: number,
+    readonly billableUnknown: boolean,
+    readonly generationId: string | null,
+  ) {
+    super("The provider response body ended before it could be read completely.");
+  }
+}
+
+const joinChunks = (chunks: ReadonlyArray<Uint8Array>, size: number): Uint8Array => {
+  const joined = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return joined;
+};
+
 export const jsonBytes = (value: unknown): number => {
   try {
     const encoded = JSON.stringify(value);
@@ -156,17 +179,17 @@ export const readBoundedBody = async (
     } catch {
       // Preserve the original read or validation failure.
     }
-    throw cause;
+    if (cause instanceof ProviderError) throw cause;
+    throw new ProviderBodyReadError(
+      joinChunks(chunks, size),
+      response.status,
+      response.ok,
+      text(response.headers.get("x-generation-id"), 256),
+    );
   } finally {
     reader.releaseLock();
   }
-  const joined = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return joined;
+  return joinChunks(chunks, size);
 };
 
 const statusCode = (status: number): ProviderErrorCode => {

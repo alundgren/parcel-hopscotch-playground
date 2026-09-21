@@ -254,6 +254,87 @@ describe("Ministral OpenRouter adapter", () => {
     );
   });
 
+  it("retains complete-frame usage when the following SSE event is truncated", () => {
+    const complete = sse({
+      id: "charged-before-truncation",
+      model: "m",
+      provider: "Mistral",
+      choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13, cost: 0.0042 },
+    });
+    const partial = encoder.encode("data: [DO");
+    const bytes = new Uint8Array(complete.byteLength + partial.byteLength);
+    bytes.set(complete);
+    bytes.set(partial, complete.byteLength);
+    expect(() => parseMinistralStream(bytes, request, 1, "header-generation")).toThrowError(
+      expect.objectContaining({
+        code: "malformed_response",
+        provider: "Mistral",
+        actualModel: "m",
+        providerRequestId: "charged-before-truncation",
+        generationId: "header-generation",
+        inputTokens: 9,
+        outputTokens: 4,
+        totalTokens: 13,
+        costUsd: 0.0042,
+        billableUnknown: false,
+      }),
+    );
+  });
+
+  it("retains complete-frame usage before an invalid UTF-8 tail", () => {
+    const complete = sse({
+      id: "charged-before-invalid-utf8",
+      model: "m",
+      provider: "Mistral",
+      choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13, cost: 0.0042 },
+    });
+    const bytes = new Uint8Array(complete.byteLength + 1);
+    bytes.set(complete);
+    bytes[complete.byteLength] = 0xff;
+    expect(() => parseMinistralStream(bytes, request, 1, "header-generation")).toThrowError(
+      expect.objectContaining({
+        code: "malformed_response",
+        providerRequestId: "charged-before-invalid-utf8",
+        inputTokens: 9,
+        outputTokens: 4,
+        totalTokens: 13,
+        costUsd: 0.0042,
+        billableUnknown: false,
+      }),
+    );
+  });
+
+  it("retains complete-frame usage when a later body read fails", async () => {
+    const complete = sse({
+      id: "charged-before-read-error",
+      model: "m",
+      provider: "Mistral",
+      choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13, cost: 0.0042 },
+    });
+    const adapter = makeMinistralAdapter({ apiKey: "synthetic-key" }, async () =>
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(complete);
+          setTimeout(() => controller.error(new Error("connection lost")), 0);
+        },
+      }), { headers: { "x-generation-id": "header-generation" } }));
+    await expect(Effect.runPromise(adapter.complete(request))).rejects.toMatchObject({
+      code: "transport_error",
+      billableUnknown: false,
+      provider: "Mistral",
+      actualModel: "m",
+      providerRequestId: "charged-before-read-error",
+      generationId: "header-generation",
+      inputTokens: 9,
+      outputTokens: 4,
+      totalTokens: 13,
+      costUsd: 0.0042,
+    });
+  });
+
   it("serializes an assistant tool-call turn and correlated tool result in the live request", async () => {
     let sent: Record<string, unknown> | null = null;
     const adapter = makeMinistralAdapter({ apiKey: "synthetic-key" }, async (_url, init) => {
@@ -441,6 +522,33 @@ describe("provider audit redaction", () => {
     expect(serialized).not.toContain("synthetic-key");
     expect(serialized).not.toContain("synthetic-cookie");
     expect(serialized).not.toContain("login-person@example.test");
+  });
+
+  it("redacts sensitive fields inside serialized JSON without changing the live wire", () => {
+    const history = {
+      messages: [
+        {
+          role: "assistant" as const,
+          content: null,
+          toolCalls: [{ id: "call-1", name: "getOrder", arguments: { password: "synthetic-password-canary" } }],
+        },
+        {
+          role: "tool" as const,
+          toolCallId: "call-1",
+          content: JSON.stringify({ cookie: "synthetic-cookie-canary", status: "ready" }),
+        },
+      ],
+    };
+    const wire = buildMinistralWireRequest(history);
+    expect(JSON.stringify(wire)).toContain("synthetic-password-canary");
+    expect(JSON.stringify(wire)).toContain("synthetic-cookie-canary");
+    const sanitized = redactProviderAudit(wire);
+    expect(JSON.stringify(sanitized)).not.toContain("synthetic-password-canary");
+    expect(JSON.stringify(sanitized)).not.toContain("synthetic-cookie-canary");
+    const messages = (sanitized as { messages: Array<Record<string, unknown>> }).messages;
+    const toolCalls = messages[0]?.tool_calls as Array<{ function: { arguments: string } }>;
+    expect(JSON.parse(toolCalls[0]!.function.arguments)).toEqual({ password: "[redacted]" });
+    expect(JSON.parse(messages[1]!.content as string)).toEqual({ cookie: "[redacted]", status: "ready" });
   });
 });
 

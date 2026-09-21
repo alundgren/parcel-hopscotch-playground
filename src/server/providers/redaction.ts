@@ -16,7 +16,20 @@ export const redactProviderString = (value: string, maximum = 256): string =>
 
 export const redactProviderAudit = (value: unknown, depth = 0): unknown => {
   if (depth > 12) return "[depth-limit]";
-  if (typeof value === "string") return redactProviderString(value, 16 * 1024);
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (typeof parsed === "object" && parsed !== null) {
+        return redactProviderString(
+          JSON.stringify(redactProviderAudit(parsed, depth + 1)),
+          16 * 1024,
+        );
+      }
+    } catch {
+      // Ordinary text still receives value-pattern redaction below.
+    }
+    return redactProviderString(value, 16 * 1024);
+  }
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) {
     return value.map((item) => redactProviderAudit(item, depth + 1));

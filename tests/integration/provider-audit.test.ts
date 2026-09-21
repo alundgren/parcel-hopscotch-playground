@@ -194,6 +194,74 @@ describe("provider attempt audit", () => {
     }
   });
 
+  it("redacts sensitive fields nested in serialized chat history before persistence", async () => {
+    const filename = await workspace();
+    const owner = identity("serialized-history@example.test");
+    const passwordCanary = "synthetic-password-canary";
+    const cookieCanary = "synthetic-cookie-canary";
+    const requestWithHistory = {
+      messages: [
+        { role: "user" as const, content: "Check the order." },
+        { role: "assistant" as const, content: null, toolCalls: [{ id: "call-1", name: "getOrder", arguments: { password: passwordCanary } }] },
+        { role: "tool" as const, toolCallId: "call-1", content: JSON.stringify({ cookie: cookieCanary, status: "ready" }) },
+      ],
+    };
+    const adapter: MinistralAdapter = { complete: () => Effect.succeed(result()) };
+    const detail = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const state = yield* repository.snapshot(owner);
+      yield* runAuditedMinistral(
+        { repository, identity: owner, generation: state.generation, requestId: "serialized", turnId: "turn-serialized" },
+        adapter,
+        requestWithHistory,
+      );
+      const attempts = yield* repository.providerAttempts(owner);
+      return yield* repository.providerAttempt(owner, attempts[0]!.id);
+    }));
+    const serialized = JSON.stringify(detail?.request);
+    expect(serialized).not.toContain(passwordCanary);
+    expect(serialized).not.toContain(cookieCanary);
+    expect(serialized).toContain("[redacted]");
+  });
+
+  it("persists known usage from complete frames before a truncated terminal event", async () => {
+    const filename = await workspace();
+    const owner = identity("truncated-stream@example.test");
+    const frame = JSON.stringify({
+      id: "charged-before-truncation",
+      model: "mistralai/ministral-3b-2512",
+      provider: "Mistral",
+      choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13, cost: 0.0042 },
+    });
+    const adapter = makeMinistralAdapter({ apiKey: "synthetic-key" }, async () =>
+      new Response(`data: ${frame}\n\ndata: [DO`, { headers: { "x-generation-id": "header-generation" } }));
+    const detail = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const state = yield* repository.snapshot(owner);
+      yield* Effect.result(runAuditedMinistral(
+        { repository, identity: owner, generation: state.generation, requestId: "truncated", turnId: "turn-truncated" },
+        adapter,
+        chatRequest,
+      ));
+      const attempts = yield* repository.providerAttempts(owner);
+      return yield* repository.providerAttempt(owner, attempts[0]!.id);
+    }));
+    expect(detail).toMatchObject({
+      outcome: "error",
+      errorCode: "malformed_response",
+      provider: "Mistral",
+      actualModel: "mistralai/ministral-3b-2512",
+      providerRequestId: "charged-before-truncation",
+      generationId: "header-generation",
+      inputTokens: 9,
+      outputTokens: 4,
+      totalTokens: 13,
+      costUsd: 0.0042,
+    });
+    expect(detail?.response).not.toBeNull();
+  });
+
   it("uses monotonic duration and sends only a bounded summary notification", async () => {
     const filename = await workspace();
     const owner = identity("notification@example.test");
