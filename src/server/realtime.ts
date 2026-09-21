@@ -39,7 +39,7 @@ export class RealtimeLimitError extends Schema.TaggedError<RealtimeLimitError>()
 
 interface HubConnection {
   readonly id: string;
-  readonly generation: number;
+  generation: number;
   readonly send: (message: ServerMessage) => Effect.Effect<void>;
   readonly close: (code: number, reason: string) => Effect.Effect<void>;
   clientId: string | null;
@@ -54,6 +54,11 @@ export interface RealtimeHubService {
     userId: string,
     connectionId: string,
     clientId: string,
+  ) => Effect.Effect<void>;
+  readonly promoteGeneration: (
+    userId: string,
+    connectionId: string,
+    generation: number,
   ) => Effect.Effect<void>;
   readonly publish: (
     userId: string,
@@ -126,7 +131,16 @@ export const realtimeHubLayer = Layer.sync(RealtimeHub)(() => {
       { concurrency: 4, discard: true },
     );
 
-  return RealtimeHub.of({ register, bindClient, publish });
+  const promoteGeneration: RealtimeHubService["promoteGeneration"] = (
+    userId,
+    connectionId,
+    generation,
+  ) => Effect.sync(() => {
+    const connection = connections.get(userId)?.get(connectionId);
+    if (connection !== undefined) connection.generation = generation;
+  });
+
+  return RealtimeHub.of({ register, bindClient, promoteGeneration, publish });
 });
 
 const headerValues = (
@@ -291,6 +305,56 @@ export const runWorkspaceSocket = (
         }
         if (message.value.type === "hello") {
           yield* hub.bindClient(identity.id, connectionId, message.value.clientId);
+        }
+        if (message.value.type === "prepare_resolution") {
+          const result = yield* Effect.result(repository.prepareResolution(identity, message.value.generation, message.value.orderId));
+          if (result._tag === "Failure") {
+            yield* send({ type: "error", requestId: message.value.requestId, code: result.failure.code, message: result.failure.message });
+            return;
+          }
+          const state = yield* repository.snapshot(identity).pipe(Effect.orDie);
+          yield* send({ type: "command_result", requestId: message.value.requestId, result: { kind: "proposal", proposal: result.success }, state });
+          return;
+        }
+        if (message.value.type === "prepare_batch" || message.value.type === "prepare_reset" || message.value.type === "prepare_undo") {
+          const action = message.value.type === "prepare_batch"
+            ? repository.prepareBatch(identity, message.value.generation)
+            : message.value.type === "prepare_reset"
+              ? repository.prepareReset(identity, message.value.generation)
+              : repository.prepareUndo(identity, message.value.generation, message.value.receiptId);
+          const result = yield* Effect.result(action);
+          if (result._tag === "Failure") {
+            yield* send({ type: "error", requestId: message.value.requestId, code: result.failure.code, message: result.failure.message });
+            return;
+          }
+          const state = yield* repository.snapshot(identity).pipe(Effect.orDie);
+          yield* send({ type: "command_result", requestId: message.value.requestId, result: { kind: "proposal", proposal: result.success }, state });
+          return;
+        }
+        if (message.value.type === "accept_proposal") {
+          const result = yield* Effect.result(repository.accept(identity, message.value.generation, message.value.proposalId, message.value.idempotencyKey));
+          if (result._tag === "Failure") {
+            const failure = result.failure;
+            yield* send({ type: "error", requestId: message.value.requestId, code: failure._tag === "WorkspaceCommandError" ? failure.code : "store_error", message: failure.message });
+            return;
+          }
+          const commandResult = { kind: "receipt" as const, receipt: result.success.receipt };
+          if (result.success.generationChanged) yield* hub.promoteGeneration(identity.id, connectionId, result.success.snapshot.generation);
+          yield* send({ type: "command_result", requestId: message.value.requestId, result: commandResult, state: result.success.snapshot });
+          yield* hub.publish(identity.id, result.success.snapshot.generation, result.success.snapshot.sequence, "workspace.committed", { state: result.success.snapshot, result: commandResult });
+          return;
+        }
+        if (message.value.type === "advance_scenario") {
+          const result = yield* Effect.result(repository.advanceScenario(identity, message.value.generation));
+          if (result._tag === "Failure") {
+            const failure = result.failure;
+            yield* send({ type: "error", requestId: message.value.requestId, code: failure._tag === "WorkspaceCommandError" ? failure.code : "store_error", message: failure.message });
+            return;
+          }
+          const commandResult = { kind: "scenario" as const, message: result.success.message };
+          yield* send({ type: "command_result", requestId: message.value.requestId, result: commandResult, state: result.success.snapshot });
+          yield* hub.publish(identity.id, result.success.snapshot.generation, result.success.snapshot.sequence, "workspace.committed", { state: result.success.snapshot, result: commandResult });
+          return;
         }
         const snapshot = yield* repository.snapshot(identity).pipe(Effect.orDie);
         yield* send(snapshotMessage(snapshot, message.value.requestId));
