@@ -609,6 +609,20 @@ describe("bounded provider response bodies", () => {
     await expect(readBoundedBody(new Response(body), 10)).rejects.toMatchObject({ code: "response_too_large" });
     expect(cancelled).toBe(true);
   });
+
+  it("preserves the byte-limit failure when cancellation also fails", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(1_024));
+      },
+      cancel: () => {
+        throw new Error("cancel failed");
+      },
+    });
+    await expect(readBoundedBody(new Response(body), 16)).rejects.toMatchObject({
+      code: "response_too_large",
+    });
+  });
 });
 
 describe("Jev Decisions adapter", () => {

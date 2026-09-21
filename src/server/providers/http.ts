@@ -163,14 +163,14 @@ export const readBoundedBody = async (
     while (true) {
       const item = await reader.read();
       if (item.done) break;
-      size += item.value.byteLength;
-      if (size > maximumBytes) {
-        await reader.cancel();
+      const nextSize = size + item.value.byteLength;
+      if (nextSize > maximumBytes) {
         throw error("response_too_large", "The provider response exceeded the configured byte limit.", {
           status: response.status,
           billableUnknown: response.ok,
         });
       }
+      size = nextSize;
       chunks.push(item.value);
     }
   } catch (cause) {
