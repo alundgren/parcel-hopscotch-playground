@@ -18,6 +18,8 @@ import {
   jsonBytes,
   malformedResponse,
   parseJson,
+  ProviderBodyReadError,
+  providerBodyReadFailure,
   providerFailure,
 } from "./http.js";
 import { redactProviderAudit, redactProviderString } from "./redaction.js";
@@ -327,8 +329,47 @@ export const makeJevAdapter = (
           validateRequest(request, maximumContextBytes);
           const payload = buildJevWireRequest(request);
           const body = JSON.stringify(payload);
-          const result = await fetchOpenRouter(fetcher, `${baseUrl}/api/alpha/decisions`, config.apiKey, body, maximumResponseBytes, signal);
-          return parseJevResponse(result.bytes, request, new TextEncoder().encode(body).byteLength, result.response.headers.get("x-generation-id"));
+          const requestBytes = new TextEncoder().encode(body).byteLength;
+          let result: Awaited<ReturnType<typeof fetchOpenRouter>>;
+          try {
+            result = await fetchOpenRouter(fetcher, `${baseUrl}/api/alpha/decisions`, config.apiKey, body, maximumResponseBytes, signal);
+          } catch (cause) {
+            if (!(cause instanceof ProviderBodyReadError)) throw cause;
+            let partial: JevResult;
+            try {
+              partial = parseJevResponse(
+                cause.bytes,
+                request,
+                requestBytes,
+                cause.generationId,
+              );
+            } catch (partialCause) {
+              if (!(partialCause instanceof ProviderError)) throw cause;
+              throw providerBodyReadFailure(cause, {
+                safeResponse: partialCause.safeResponse,
+                provider: partialCause.provider,
+                actualModel: partialCause.actualModel,
+                providerRequestId: partialCause.providerRequestId,
+                generationId: partialCause.generationId,
+                inputTokens: partialCause.inputTokens,
+                outputTokens: partialCause.outputTokens,
+                totalTokens: partialCause.totalTokens,
+                costUsd: partialCause.costUsd,
+              });
+            }
+            throw providerBodyReadFailure(cause, {
+              safeResponse: partial.safeResponse,
+              provider: partial.metadata.provider,
+              actualModel: partial.metadata.actualModel,
+              providerRequestId: partial.metadata.providerRequestId,
+              generationId: partial.metadata.generationId,
+              inputTokens: partial.metadata.usage.inputTokens,
+              outputTokens: partial.metadata.usage.outputTokens,
+              totalTokens: partial.metadata.usage.totalTokens,
+              costUsd: partial.metadata.usage.costUsd,
+            });
+          }
+          return parseJevResponse(result.bytes, request, requestBytes, result.response.headers.get("x-generation-id"));
         },
         catch: (cause) => cause instanceof ProviderError
           ? cause

@@ -198,6 +198,46 @@ const statusCode = (status: number): ProviderErrorCode => {
   return "provider_error";
 };
 
+export const providerBodyReadFailure = (
+  failure: ProviderBodyReadError,
+  evidence: {
+    readonly safeResponse?: unknown;
+    readonly provider?: string | null;
+    readonly actualModel?: string | null;
+    readonly providerRequestId?: string | null;
+    readonly generationId?: string | null;
+    readonly inputTokens?: number | null;
+    readonly outputTokens?: number | null;
+    readonly totalTokens?: number | null;
+    readonly costUsd?: number | null;
+  } = {},
+): ProviderError => {
+  const httpFailed = failure.status < 200 || failure.status >= 300;
+  return error(
+    httpFailed ? statusCode(failure.status) : "transport_error",
+    httpFailed
+      ? `The provider returned HTTP ${failure.status} before its response body completed.`
+      : "The provider response body ended before it could be read completely.",
+    {
+      status: failure.status,
+      billableUnknown:
+        evidence.costUsd === undefined || evidence.costUsd === null
+          ? failure.billableUnknown
+          : false,
+      safeResponse: evidence.safeResponse ?? null,
+      responseBytes: failure.bytes.byteLength,
+      provider: evidence.provider ?? null,
+      actualModel: evidence.actualModel ?? null,
+      providerRequestId: evidence.providerRequestId ?? null,
+      generationId: evidence.generationId ?? failure.generationId,
+      inputTokens: evidence.inputTokens ?? null,
+      outputTokens: evidence.outputTokens ?? null,
+      totalTokens: evidence.totalTokens ?? null,
+      costUsd: evidence.costUsd ?? null,
+    },
+  );
+};
+
 export const fetchOpenRouter = async (
   fetcher: FetchLike,
   url: string,

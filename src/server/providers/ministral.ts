@@ -19,6 +19,7 @@ import {
   malformedResponse,
   parseJson,
   ProviderBodyReadError,
+  providerBodyReadFailure,
   providerFailure,
   safeProviderError,
 } from "./http.js";
@@ -378,8 +379,9 @@ export const makeMinistralAdapter = (config: OpenRouterAdapterConfig, fetcher: F
             result = await fetchOpenRouter(fetcher, `${baseUrl}/api/v1/chat/completions`, config.apiKey, body, maximumResponseBytes, signal);
           } catch (cause) {
             if (!(cause instanceof ProviderBodyReadError)) throw cause;
+            let partial: MinistralResult;
             try {
-              return parseMinistralStream(
+              partial = parseMinistralStream(
                 cause.bytes,
                 request,
                 requestBytes,
@@ -387,28 +389,29 @@ export const makeMinistralAdapter = (config: OpenRouterAdapterConfig, fetcher: F
               );
             } catch (partialCause) {
               if (!(partialCause instanceof ProviderError)) throw cause;
-              throw providerFailure(
-                "transport_error",
-                "The provider response body ended before it could be read completely.",
-                {
-                  status: cause.status,
-                  billableUnknown:
-                    partialCause.costUsd === null
-                      ? cause.billableUnknown
-                      : false,
-                  safeResponse: partialCause.safeResponse,
-                  responseBytes: cause.bytes.byteLength,
-                  provider: partialCause.provider,
-                  actualModel: partialCause.actualModel,
-                  providerRequestId: partialCause.providerRequestId,
-                  generationId: partialCause.generationId ?? cause.generationId,
-                  inputTokens: partialCause.inputTokens,
-                  outputTokens: partialCause.outputTokens,
-                  totalTokens: partialCause.totalTokens,
-                  costUsd: partialCause.costUsd,
-                },
-              );
+              throw providerBodyReadFailure(cause, {
+                safeResponse: partialCause.safeResponse,
+                provider: partialCause.provider,
+                actualModel: partialCause.actualModel,
+                providerRequestId: partialCause.providerRequestId,
+                generationId: partialCause.generationId,
+                inputTokens: partialCause.inputTokens,
+                outputTokens: partialCause.outputTokens,
+                totalTokens: partialCause.totalTokens,
+                costUsd: partialCause.costUsd,
+              });
             }
+            throw providerBodyReadFailure(cause, {
+              safeResponse: partial.safeResponse,
+              provider: partial.metadata.provider,
+              actualModel: partial.metadata.actualModel,
+              providerRequestId: partial.metadata.providerRequestId,
+              generationId: partial.metadata.generationId,
+              inputTokens: partial.metadata.usage.inputTokens,
+              outputTokens: partial.metadata.usage.outputTokens,
+              totalTokens: partial.metadata.usage.totalTokens,
+              costUsd: partial.metadata.usage.costUsd,
+            });
           }
           return parseMinistralStream(result.bytes, request, requestBytes, result.response.headers.get("x-generation-id"));
         },

@@ -30,6 +30,17 @@ const response = (
     init,
   );
 
+const responseThenError = (bytes: Uint8Array, status = 200) =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        setTimeout(() => controller.error(new Error("connection lost")), 0);
+      },
+    }),
+    { status, headers: { "x-generation-id": "header-generation" } },
+  );
+
 const contentStream = (content = "Done 🪵") =>
   sse(
     {
@@ -315,12 +326,7 @@ describe("Ministral OpenRouter adapter", () => {
       usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13, cost: 0.0042 },
     });
     const adapter = makeMinistralAdapter({ apiKey: "synthetic-key" }, async () =>
-      new Response(new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(complete);
-          setTimeout(() => controller.error(new Error("connection lost")), 0);
-        },
-      }), { headers: { "x-generation-id": "header-generation" } }));
+      responseThenError(complete));
     await expect(Effect.runPromise(adapter.complete(request))).rejects.toMatchObject({
       code: "transport_error",
       billableUnknown: false,
@@ -332,6 +338,37 @@ describe("Ministral OpenRouter adapter", () => {
       outputTokens: 4,
       totalTokens: 13,
       costUsd: 0.0042,
+    });
+  });
+
+  it.each([
+    [200, "transport_error"],
+    [402, "credits_exhausted"],
+    [429, "rate_limited"],
+    [500, "provider_error"],
+  ])("never returns a complete parsed chat after a status %i body read failure", async (status, code) => {
+    const tools: ReadonlyArray<ChatTool> = [{
+      name: "getOrder",
+      description: "Get an order.",
+      parameters: { type: "object" },
+      validateArguments: () => true,
+    }];
+    const complete = sse(
+      {
+        id: "charged-complete",
+        model: "m",
+        provider: "Mistral",
+        choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "getOrder", arguments: "{}" } }] }, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13, cost: 0.0042 },
+      },
+      "[DONE]",
+    );
+    const adapter = makeMinistralAdapter({ apiKey: "synthetic-key" }, async () =>
+      responseThenError(complete, status));
+    await expect(Effect.runPromise(adapter.complete({ ...request, tools }))).rejects.toMatchObject({
+      code,
+      costUsd: 0.0042,
+      providerRequestId: "charged-complete",
     });
   });
 
@@ -621,6 +658,27 @@ describe("Jev Decisions adapter", () => {
           criteria: { hold: "Keep the order on hold.", replace: "Use the available replacement." },
         },
       },
+    });
+  });
+
+  it.each([
+    [200, "transport_error"],
+    [402, "credits_exhausted"],
+    [429, "rate_limited"],
+    [500, "provider_error"],
+  ])("never returns a complete Decisions answer after a status %i body read failure", async (status, code) => {
+    const bytes = encoder.encode(JSON.stringify(valid));
+    const adapter = makeJevAdapter({ apiKey: "synthetic-key" }, async () =>
+      responseThenError(bytes, status));
+    await expect(Effect.runPromise(adapter.decide(decisions))).rejects.toMatchObject({
+      code,
+      provider: "TypeSafe",
+      actualModel: "typesafe/jev-1.13-20260917",
+      providerRequestId: "decision_1",
+      inputTokens: 30,
+      outputTokens: 12,
+      totalTokens: 42,
+      costUsd: 0,
     });
   });
 
