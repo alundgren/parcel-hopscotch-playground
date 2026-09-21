@@ -10,6 +10,7 @@ export type Evidence = typeof Evidence.Type;
 export const OrderSummary = Schema.Struct({
   id: Schema.String, item: Schema.String, issue: Schema.String, status: OrderStatus,
   statusLabel: Schema.String, family: ResolutionFamily, version: Schema.Int,
+  businessValue: Schema.String,
   targetId: Schema.String, evidence: Schema.Array(Evidence),
 });
 export type OrderSummary = typeof OrderSummary.Type;

@@ -1,11 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ServerConfig } from "../../src/server/config";
 import { resolveIdentity } from "../../src/server/identity";
+import { resolutionFacts } from "../../src/server/fulfilment";
 import { runWithWorkspaceRepository, WorkspaceRepository, type WorkspaceRepositoryService } from "../../src/server/persistence";
 
 const paths: Array<string> = [];
@@ -13,6 +15,13 @@ const config: ServerConfig = { environment: "production", host: "127.0.0.1", por
 const identity = (email: string) => Effect.runSync(resolveIdentity(["Cf-Access-Authenticated-User-Email", email], config));
 const workspace = async () => { const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-commands-")); paths.push(directory); return join(directory, "workspace.sqlite"); };
 const useRepository = <A>(filename: string, run: (repository: WorkspaceRepositoryService) => Effect.Effect<A, unknown>) => runWithWorkspaceRepository(filename, Effect.flatMap(WorkspaceRepository, run));
+const raceWorker = (filename: string, email: string, action: "accept" | "scenario", proposalId: string, gate: string) => new Promise<{ ok: boolean; kind?: string; code?: string }>((resolve, reject) => {
+  const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/fixtures/command-race-worker.ts", filename, email, action, proposalId, gate], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = ""; let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  child.once("exit", (code) => { if (code !== 0) reject(new Error(stderr || `Worker exited ${code}`)); else resolve(JSON.parse(stdout) as { ok: boolean; kind?: string; code?: string }); });
+});
 
 afterEach(async () => { await Promise.all(paths.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
@@ -40,9 +49,34 @@ describe("reviewed fulfilment commands", () => {
     const stock = database.prepare("SELECT sku, quantity, version FROM inventory WHERE user_id = ? ORDER BY sku").all(user.id);
     database.close();
     expect(stock).toEqual([
+      { sku: "CARAFE-SMOKE", quantity: 2, version: 1 },
       { sku: "MUG-SAGE", quantity: 3, version: 2 },
       { sku: "SIDE-PLATE", quantity: 2, version: 2 },
+      { sku: "THROW-NATURAL", quantity: 2, version: 1 },
     ]);
+  });
+
+  it("prepares exact per-order facts and holds every ambiguous seeded case", async () => {
+    const filename = await workspace();
+    const user = identity("all-seeds@example.test");
+    const orderIds = await useRepository(filename, (repository) => repository.orderIds(user));
+    const proposals = await useRepository(filename, (repository) => Effect.forEach(orderIds, (orderId) => repository.prepareResolution(user, 1, orderId)));
+    const held = new Set(["BB-1076", "BB-1081", "BB-1116", "BB-1118", "BB-1120", "BB-1123"]);
+    expect(proposals).toHaveLength(24);
+    for (const [index, proposal] of proposals.entries()) {
+      const orderId = orderIds[index]!;
+      const facts = resolutionFacts[orderId]!;
+      expect(proposal.ready).toBe(!held.has(orderId));
+      if (held.has(orderId)) {
+        expect(proposal.changes).toEqual([]);
+        expect(proposal.omissions).toEqual([{ orderId, reason: facts.heldReason }]);
+      } else {
+        expect(proposal.changes[0]).toMatchObject({ orderId: facts.affectedOrderId ?? orderId, before: facts.before.summary, after: facts.after.summary, effect: facts.effect });
+      }
+    }
+    expect(proposals[orderIds.indexOf("BB-1072")]?.changes[0]?.after).toBe("Sjövik");
+    expect(proposals[orderIds.indexOf("BB-1104")]?.changes[0]?.after).toContain("Smoke glass carafe");
+    expect(proposals[orderIds.indexOf("BB-1095")]?.changes[0]?.orderId).toBe("BB-1096");
   });
 
   it("rejects a stale batch atomically when one reviewed record changes", async () => {
@@ -53,7 +87,8 @@ describe("reviewed fulfilment commands", () => {
       return yield* repository.prepareBatch(user, state.generation);
     }));
     expect(proposal.changes.length).toBeGreaterThan(1);
-    await useRepository(filename, (repository) => repository.advanceScenario(user, proposal.generation));
+    const advanced = await useRepository(filename, (repository) => repository.advanceScenario(user, proposal.generation));
+    expect(advanced.snapshot.orders.find((order) => order.id === "BB-1051")?.version).toBe(1);
     await expect(useRepository(filename, (repository) => repository.accept(user, proposal.generation, proposal.id, "stale-batch-key"))).rejects.toMatchObject({ code: "stale_proposal" });
     const state = await useRepository(filename, (repository) => repository.snapshot(user));
     for (const change of proposal.changes) expect(state.orders.some((order) => order.id === change.orderId)).toBe(true);
@@ -93,6 +128,27 @@ describe("reviewed fulfilment commands", () => {
     expect(undo.changes[0]).toMatchObject({ orderId: "BB-1051", expectedVersion: 2 });
     await useRepository(filename, (repository) => repository.advanceScenario(user, 1));
     await expect(useRepository(filename, (repository) => repository.accept(user, 1, undo.id, "conflicting-undo-key"))).rejects.toMatchObject({ code: "stale_proposal" });
+  });
+
+  it("persists the reviewed business value, prevents repeat reservation, and restores both on Undo", async () => {
+    const filename = await workspace();
+    const user = identity("persisted-value@example.test");
+    const receipt = await useRepository(filename, (repository) => Effect.gen(function* () {
+      yield* repository.snapshot(user);
+      const proposal = yield* repository.prepareResolution(user, 1, "BB-1051");
+      return (yield* repository.accept(user, 1, proposal.id, "persist-value-key")).receipt;
+    }));
+    const accepted = await useRepository(filename, (repository) => repository.snapshot(user));
+    expect(accepted.orders.find((order) => order.id === "BB-1051")?.businessValue).toBe("Sage stoneware mug, quantity 1, £24.00");
+    await expect(useRepository(filename, (repository) => repository.prepareResolution(user, 1, "BB-1051"))).rejects.toMatchObject({ code: "already_resolved" });
+    const undo = await useRepository(filename, (repository) => repository.prepareUndo(user, 1, receipt.id));
+    await useRepository(filename, (repository) => repository.accept(user, 1, undo.id, "persist-undo-key"));
+    const restored = await useRepository(filename, (repository) => repository.snapshot(user));
+    expect(restored.orders.find((order) => order.id === "BB-1051")?.businessValue).toBe("Blue stoneware mug, quantity 1, £24.00");
+    const database = new DatabaseSync(filename);
+    const stock = database.prepare("SELECT quantity FROM inventory WHERE user_id = ? AND sku = 'MUG-SAGE'").get(user.id) as { quantity: number };
+    database.close();
+    expect(Number(stock.quantity)).toBe(4);
   });
 
   it("resets only one user, retains audit records, and rejects old-generation proposals and keys", async () => {
@@ -148,6 +204,10 @@ describe("reviewed fulfilment commands", () => {
     ]);
     expect(second.receipt.id).toBe(first.receipt.id);
     expect(first.snapshot.orders.length).toBe(24 - proposal.changes.length);
+    const database = new DatabaseSync(filename);
+    const reserved = database.prepare("SELECT sku, quantity FROM inventory WHERE user_id = ? AND sku IN ('MUG-SAGE', 'THROW-NATURAL') ORDER BY sku").all(user.id);
+    database.close();
+    expect(reserved).toEqual([{ sku: "MUG-SAGE", quantity: 3 }, { sku: "THROW-NATURAL", quantity: 1 }]);
 
     const raceUser = identity("scenario-race@example.test");
     const substitution = await useRepository(filename, (repository) => Effect.gen(function* () {
@@ -172,6 +232,41 @@ describe("reviewed fulfilment commands", () => {
       const result = await useRepository(filename, (repository) => repository.advanceScenario(user, 1));
       expect(result.message).toContain("Scenario advanced");
     }
+    const held = await useRepository(filename, (repository) => repository.prepareResolution(user, 1, "BB-1051"));
+    expect(held).toMatchObject({ ready: false, changes: [], omissions: [{ orderId: "BB-1051" }] });
+    await expect(useRepository(filename, (repository) => repository.accept(user, 1, held.id, "held-stock-key"))).rejects.toMatchObject({ code: "proposal_not_ready" });
     await expect(useRepository(filename, (repository) => repository.advanceScenario(user, 1))).rejects.toMatchObject({ code: "scenario_complete" });
+  });
+
+  it("serializes acceptance and stock advancement across independent processes", async () => {
+    const filename = await workspace();
+    const user = identity("cross-process@example.test");
+    const proposal = await useRepository(filename, (repository) => Effect.gen(function* () {
+      yield* repository.snapshot(user);
+      return yield* repository.prepareResolution(user, 1, "BB-1051");
+    }));
+    const gate = join(filename, "..", "race.go");
+    const accepting = raceWorker(filename, "cross-process@example.test", "accept", proposal.id, gate);
+    const advancing = raceWorker(filename, "cross-process@example.test", "scenario", proposal.id, gate);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await writeFile(gate, "go");
+    const [acceptResult, scenarioResult] = await Promise.all([accepting, advancing]);
+    expect(scenarioResult).toMatchObject({ ok: true, kind: "scenario" });
+    expect(acceptResult.ok || acceptResult.code === "stale_proposal").toBe(true);
+    const final = await useRepository(filename, (repository) => repository.snapshot(user));
+    const mug = final.orders.find((order) => order.id === "BB-1051");
+    const database = new DatabaseSync(filename);
+    const receipts = database.prepare("SELECT COUNT(*) AS count FROM receipts WHERE user_id = ?").get(user.id) as { count: number };
+    const stock = database.prepare("SELECT quantity FROM inventory WHERE user_id = ? AND sku = 'MUG-SAGE'").get(user.id) as { quantity: number };
+    database.close();
+    if (acceptResult.ok) {
+      expect(mug?.businessValue).toContain("Sage stoneware mug");
+      expect(Number(receipts.count)).toBe(1);
+      expect(Number(stock.quantity)).toBe(2);
+    } else {
+      expect(mug?.businessValue).toContain("Blue stoneware mug");
+      expect(Number(receipts.count)).toBe(0);
+      expect(Number(stock.quantity)).toBe(3);
+    }
   });
 });

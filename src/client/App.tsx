@@ -22,28 +22,37 @@ function OrderDetail({ order, onBack, review }: { order: OrderSummary; onBack: (
   </section>;
 }
 
-function ProposalView({ proposal, busy, connected, onAccept, onCancel }: { proposal: ReviewedProposal; busy: boolean; connected: boolean; onAccept: () => void; onCancel: () => void }) {
+function ProposalView({ proposal, orders, busy, connected, onAccept, onCancel }: { proposal: ReviewedProposal; orders: ReadonlyArray<OrderSummary>; busy: boolean; connected: boolean; onAccept: () => void; onCancel: () => void }) {
   const reset = proposal.kind === "reset";
+  const addressChange = proposal.kind === "resolution" && proposal.changes.length === 1 && proposal.changes[0]?.family === "address" ? proposal.changes[0] : null;
+  const addressOrder = addressChange === null ? null : orders.find((order) => order.id === addressChange.orderId) ?? null;
+  const acceptLabel = !proposal.ready ? "Held" : !connected ? "Reconnect to accept" : busy ? "Working…" : reset ? "Reset my demo" : `Accept ${proposal.changes.length} ${proposal.changes.length === 1 ? "change" : "changes"}`;
+  if (addressChange !== null && addressOrder !== null) return <section className="order-detail proposal-screen address-review" aria-labelledby="proposal-title">
+    <div className="detail-heading"><h1 id="proposal-title" tabIndex={-1}>Check address</h1><span className="order-id">{addressOrder.id}</span></div>
+    <div className="address-evidence"><div><span>Order</span><p>{addressChange.before}</p></div><div><span>Customer</span><p>“{addressOrder.evidence[0]?.value}”</p></div></div>
+    <div className="address-proposal"><p><span aria-hidden="true">✧</span> <s>{addressChange.before.split(",")[0]}</s> <span aria-hidden="true">→</span> <strong>{addressChange.after}</strong></p><Button className="address-action" onClick={onAccept} disabled={busy || !connected || !proposal.ready}>{acceptLabel}</Button></div>
+    <Button variant="link" onClick={onCancel} disabled={busy}>Cancel</Button>
+  </section>;
   return <section className="order-detail proposal-screen" aria-labelledby="proposal-title">
-    <h1 id="proposal-title">{proposal.title}</h1>
+    <h1 id="proposal-title" tabIndex={-1}>{proposal.title}</h1>
     <p className={`proposal-state ${proposal.ready ? "ready" : ""}`}>{proposal.ready ? "✓ Ready" : "Needs review"}</p>
-    {proposal.changes.length > 0 && <div className="change-list">{proposal.changes.map((change) => <article className="change-row" key={change.orderId}><span className="order-id">{change.orderId}</span><div><strong>{change.before} <span aria-hidden="true">→</span> {change.after}</strong><p>{change.effect}</p><span className="version-note">Checked at order version {change.expectedVersion}</span></div></article>)}</div>}
-    {proposal.effects.length > 0 && <ul className="effect-list">{proposal.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul>}
+    {proposal.changes.length > 0 && <div className="change-list">{proposal.changes.map((change) => <article className="change-row" key={change.orderId}><span className="order-id">{change.orderId}</span><div><strong>{change.before} <span aria-hidden="true">→</span> {change.after}</strong><p>{change.effect}</p></div></article>)}</div>}
+    {reset && proposal.effects.length > 0 && <ul className="effect-list">{proposal.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul>}
     {proposal.omissions.length > 0 && <div className="omissions" aria-label="Orders left out">{proposal.omissions.map((item) => <p key={item.orderId}><span className="order-id">{item.orderId}</span> excluded · {item.reason}</p>)}</div>}
-    <div className="proposal-actions"><Button className={reset ? "danger-action" : "accept-action"} onClick={onAccept} disabled={busy || !connected}>{!connected ? "Reconnect to accept" : busy ? "Working…" : reset ? "Reset my demo" : `Accept ${proposal.changes.length} ${proposal.changes.length === 1 ? "change" : "changes"}`}</Button><Button variant="quiet" onClick={onCancel} disabled={busy}>Cancel</Button></div>
+    <div className="proposal-actions"><Button className={reset ? "danger-action" : proposal.kind === "batch" ? "batch-action" : "accept-action"} onClick={onAccept} disabled={busy || !connected || !proposal.ready}>{acceptLabel}</Button><Button variant="quiet" onClick={onCancel} disabled={busy}>Cancel</Button></div>
   </section>;
 }
 
 function ReceiptView({ receipt, busy, connected, onBack, onUndo }: { receipt: CommandReceipt; busy: boolean; connected: boolean; onBack: () => void; onUndo: () => void }) {
   return <section className="order-detail receipt-screen" aria-labelledby="receipt-title">
-    <h1 id="receipt-title">{receipt.title}</h1>
+    <h1 id="receipt-title" tabIndex={-1}>{receipt.title}</h1>
     <p className="receipt-state">✓ {receipt.kind === "reset" ? "Fresh workspace ready" : receipt.kind === "undo" ? "Undone by you" : "Accepted by you"}</p>
     {receipt.changes.length > 0 && <div className="receipt-list">{receipt.changes.map((change) => <div className="receipt-row" key={change.orderId}><span className="order-id">{change.orderId}</span><span>{change.after}</span></div>)}</div>}
     <div className="proposal-actions"><Button className="accept-action" onClick={onBack}>Back to work</Button>{receipt.undoable && <Button variant="quiet" onClick={onUndo} disabled={busy || !connected}>{!connected ? "Reconnect to undo" : busy ? "Checking…" : "Undo"}</Button>}</div>
   </section>;
 }
 
-function WorkQueue({ orders, connected, selectedOrderId, setSelectedOrderId, prepare, prepareBatch, prepareReset, advance }: { orders: ReadonlyArray<OrderSummary>; connected: boolean; selectedOrderId: string | null; setSelectedOrderId: (id: string | null) => void; prepare: (id: string) => void; prepareBatch: () => void; prepareReset: () => void; advance: () => void }) {
+function WorkQueue({ orders, latestReceipt, connected, selectedOrderId, setSelectedOrderId, prepare, prepareBatch, prepareReset, advance, openReceipt }: { orders: ReadonlyArray<OrderSummary>; latestReceipt: CommandReceipt | null; connected: boolean; selectedOrderId: string | null; setSelectedOrderId: (id: string | null) => void; prepare: (id: string) => void; prepareBatch: () => void; prepareReset: () => void; advance: () => void; openReceipt: () => void }) {
   const [filter, setFilter] = useState<Filter>("all");
   const selectedOrder = resolveSelectedOrder(orders, selectedOrderId);
   const readyCount = orders.filter((order) => order.status === "ready").length;
@@ -53,7 +62,7 @@ function WorkQueue({ orders, connected, selectedOrderId, setSelectedOrderId, pre
     <h1 id="work-title">Decisions</h1>
     <div className="queue-toolbar"><div className="filters" aria-label="Filter decisions"><Button variant="quiet" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>All {orders.length}</Button><Button variant="quiet" id={targets.readyFilter} aria-pressed={filter === "ready"} onClick={() => setFilter("ready")}>Ready {readyCount}</Button></div><Button variant="link" onClick={prepareBatch} disabled={!connected || readyCount === 0}>Review ready orders</Button></div>
     <ul className="order-list" data-testid="order-list">{visibleOrders.map((order) => <li key={order.id}><button type="button" id={order.targetId} className="order-row" onClick={() => setSelectedOrderId(order.id)}><span className="order-id">{order.id}</span><span className="order-copy"><strong>{order.item}</strong><span>{order.issue}</span></span><span className={`status status-${order.status}`}>{order.statusLabel}</span></button></li>)}</ul>
-    <div className="workspace-controls"><Button variant="link" onClick={advance} disabled={!connected}>Advance stock scenario</Button><Button variant="link" className="reset-link" onClick={prepareReset} disabled={!connected}>Reset my demo</Button></div>
+    <div className="workspace-controls"><span>{latestReceipt !== null && <Button variant="link" onClick={openReceipt}>View last receipt</Button>}<Button variant="link" onClick={advance} disabled={!connected}>Advance stock scenario</Button></span><Button variant="link" className="reset-link" onClick={prepareReset} disabled={!connected}>Reset my demo</Button></div>
   </section>;
 }
 
@@ -78,6 +87,10 @@ export default function App() {
     }
     priorGeneration.current = snapshot.generation;
   }, [snapshot?.generation, proposal?.generation, receipt?.generation]);
+  useEffect(() => {
+    if (proposal !== null) document.getElementById("proposal-title")?.focus();
+    else if (receipt !== null) document.getElementById("receipt-title")?.focus();
+  }, [proposal?.id, receipt?.id]);
   const perform = async (task: () => Promise<CommandResult>) => { setBusy(true); setError(null); try { return await task(); } catch (cause) { setError(cause instanceof Error ? cause.message : "The command failed."); return null; } finally { setBusy(false); } };
   const showProposal = async (task: () => Promise<CommandResult>) => { const result = await perform(task); if (result?.kind === "proposal") { setReceipt(null); setProposal(result.proposal); } };
   const accept = async () => { if (proposal === null) return; const result = await perform(() => runCommand({ type: "accept_proposal", proposalId: proposal.id, idempotencyKey: crypto.randomUUID() })); if (result?.kind === "receipt") { setProposal(null); setSelectedOrderId(null); setReceipt(result.receipt); } };
@@ -85,6 +98,6 @@ export default function App() {
   const advance = async () => { const result = await perform(() => runCommand({ type: "advance_scenario", scenario: "stock_change" })); if (result?.kind === "scenario") setError(result.message); };
 
   return <div className="app-shell"><header className="topbar"><div className="brand"><BrandIcon /> <span>Bracken &amp; Beam</span></div><span className={`connection connection-${status}`} data-testid="connection-status"><span aria-hidden="true" />{connectionText[status]}</span><nav aria-label="Main navigation">{(["work", "explore", "audit"] as const).map((item) => <Button key={item} variant="quiet" aria-current={view === item ? "page" : undefined} onClick={() => setView(item)}>{item[0]!.toUpperCase() + item.slice(1)}</Button>)}</nav></header>
-    {view === "work" ? <main className="work-layout">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => setProposal(null)} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => setReceipt(null)} onUndo={undo} /> : <WorkQueue orders={snapshot.orders} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} setSelectedOrderId={setSelectedOrderId} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} />}<ChatPanel />{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <EmptyRoute title="Explore" text="Scenario guides and the tool catalogue arrive with agent integration." /> : <EmptyRoute title="Audit" text="Inference activity arrives with agent integration. Command audit is already retained by the server." />}
+    {view === "work" ? <main className="work-layout">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => setReceipt(null)} onUndo={undo} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} setSelectedOrderId={setSelectedOrderId} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} />}<ChatPanel />{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <EmptyRoute title="Explore" text="Scenario guides and the tool catalogue arrive with agent integration." /> : <EmptyRoute title="Audit" text="Inference activity arrives with agent integration. Command audit is already retained by the server." />}
   </div>;
 }
