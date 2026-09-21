@@ -1,4 +1,5 @@
 import { ProviderError, type FetchLike, type ProviderErrorCode } from "./contracts.js";
+import { redactProviderString } from "./redaction.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -16,6 +17,14 @@ export const jsonBytes = (value: unknown): number => {
       billableUnknown: false,
       safeResponse: null,
       responseBytes: null,
+      provider: null,
+      actualModel: null,
+      providerRequestId: null,
+      generationId: null,
+      inputTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+      costUsd: null,
     });
   }
 };
@@ -28,6 +37,14 @@ const error = (
     readonly billableUnknown?: boolean;
     readonly safeResponse?: unknown;
     readonly responseBytes?: number | null;
+    readonly provider?: string | null;
+    readonly actualModel?: string | null;
+    readonly providerRequestId?: string | null;
+    readonly generationId?: string | null;
+    readonly inputTokens?: number | null;
+    readonly outputTokens?: number | null;
+    readonly totalTokens?: number | null;
+    readonly costUsd?: number | null;
   } = {},
 ) =>
   new ProviderError({
@@ -37,6 +54,14 @@ const error = (
     billableUnknown: options.billableUnknown ?? false,
     safeResponse: options.safeResponse ?? null,
     responseBytes: options.responseBytes ?? null,
+    provider: options.provider ?? null,
+    actualModel: options.actualModel ?? null,
+    providerRequestId: options.providerRequestId ?? null,
+    generationId: options.generationId ?? null,
+    inputTokens: options.inputTokens ?? null,
+    outputTokens: options.outputTokens ?? null,
+    totalTokens: options.totalTokens ?? null,
+    costUsd: options.costUsd ?? null,
   });
 
 export const invalidRequest = (message: string): ProviderError =>
@@ -52,7 +77,7 @@ export const malformedResponse = (
   });
 
 const text = (value: unknown, maximum = 512): string | null =>
-  typeof value === "string" ? value.slice(0, maximum) : null;
+  typeof value === "string" ? redactProviderString(value, maximum) : null;
 
 const integer = (value: unknown): number | null =>
   typeof value === "number" && Number.isInteger(value) ? value : null;
@@ -95,6 +120,13 @@ export const readBoundedBody = async (
 ): Promise<Uint8Array> => {
   const contentLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
+    if (response.body !== null) {
+      try {
+        await response.body.cancel();
+      } catch {
+        // The response is rejected regardless of cancellation support.
+      }
+    }
     throw error("response_too_large", "The provider response exceeded the configured byte limit.", {
       status: response.status,
       billableUnknown: response.ok,
@@ -118,6 +150,13 @@ export const readBoundedBody = async (
       }
       chunks.push(item.value);
     }
+  } catch (cause) {
+    try {
+      await reader.cancel(cause);
+    } catch {
+      // Preserve the original read or validation failure.
+    }
+    throw cause;
   } finally {
     reader.releaseLock();
   }
@@ -173,6 +212,7 @@ export const fetchOpenRouter = async (
       status: response.status,
       safeResponse: safeProviderError(parsed),
       responseBytes: bytes.byteLength,
+      generationId: text(response.headers.get("x-generation-id"), 256),
     });
   }
   return { response, bytes };

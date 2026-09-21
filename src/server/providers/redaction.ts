@@ -11,9 +11,12 @@ const redactString = (value: string): string =>
     .replace(openRouterKey, "[redacted]")
     .replace(email, "[redacted-email]");
 
+export const redactProviderString = (value: string, maximum = 256): string =>
+  redactString(value).slice(0, maximum);
+
 export const redactProviderAudit = (value: unknown, depth = 0): unknown => {
   if (depth > 12) return "[depth-limit]";
-  if (typeof value === "string") return redactString(value);
+  if (typeof value === "string") return redactProviderString(value, 16 * 1024);
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) {
     return value.map((item) => redactProviderAudit(item, depth + 1));

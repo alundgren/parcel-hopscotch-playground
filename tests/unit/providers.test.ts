@@ -1,6 +1,8 @@
 import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import type { ChatTool, FetchLike, JevRequest } from "../../src/server/providers/contracts";
+import { buildMinistralWireRequest } from "../../src/server/providers/chat-request";
+import { readBoundedBody } from "../../src/server/providers/http";
 import { makeJevAdapter, parseJevResponse } from "../../src/server/providers/jev";
 import { makeMinistralAdapter, parseMinistralStream } from "../../src/server/providers/ministral";
 import { redactProviderAudit } from "../../src/server/providers/redaction";
@@ -40,13 +42,13 @@ const contentStream = (content = "Done 🪵") =>
       id: "gen_chat",
       model: "mistralai/ministral-3b-2512",
       provider: "Mistral",
-      choices: [{ index: 0, delta: { content: "" }, finish_reason: "stop" }],
+      choices: [{ index: 0, delta: { content: "", role: "assistant" }, finish_reason: "stop" }],
     },
     {
       id: "gen_chat",
       model: "mistralai/ministral-3b-2512",
       provider: "Mistral",
-      choices: [{ index: 0, delta: { content: "" }, finish_reason: "stop" }],
+      choices: [{ index: 0, delta: { content: "", role: "assistant" }, finish_reason: "stop" }],
       usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
     },
     "[DONE]",
@@ -144,6 +146,102 @@ describe("Ministral OpenRouter adapter", () => {
       validateArguments: () => true,
     }];
     expect(() => parseMinistralStream(bytes, { ...request, tools }, 1, null)).toThrow();
+  });
+
+  it.each([
+    ["unsupported finish", sse(
+      { id: "x", model: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "getOrder", arguments: "{}" } }] }, finish_reason: "content_filter" }] },
+      "[DONE]",
+    )],
+    ["post-terminal tool fragment", sse(
+      { id: "x", model: "m", choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }] },
+      { id: "x", model: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "getOrder", arguments: "{}" } }] }, finish_reason: null }] },
+      "[DONE]",
+    )],
+    ["duplicate tool call IDs", sse(
+      { id: "x", model: "m", choices: [{ index: 0, delta: { tool_calls: [
+        { index: 0, id: "same", type: "function", function: { name: "getOrder", arguments: "{}" } },
+        { index: 1, id: "same", type: "function", function: { name: "getOrder", arguments: "{}" } },
+      ] }, finish_reason: "tool_calls" }] },
+      "[DONE]",
+    )],
+    ["choice-level error", sse(
+      { id: "x", model: "m", choices: [{ index: 0, error: { code: "blocked", message: "No result" }, delta: { tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "getOrder", arguments: "{}" } }] }, finish_reason: "tool_calls" }] },
+      "[DONE]",
+    )],
+  ])("rejects %s before returning calls", (_name, bytes) => {
+    const tools: ReadonlyArray<ChatTool> = [{
+      name: "getOrder",
+      description: "Get an order.",
+      parameters: { type: "object" },
+      validateArguments: () => true,
+    }];
+    expect(() => parseMinistralStream(bytes, { ...request, tools }, 1, null)).toThrow();
+  });
+
+  it("retains known usage and cost when terminal validation fails", () => {
+    const bytes = sse(
+      {
+        id: "charged", model: "m", provider: "Mistral",
+        choices: [{ index: 0, delta: { content: "partial" }, finish_reason: "length" }],
+        usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13, cost: 0.00042 },
+      },
+      "[DONE]",
+    );
+    expect(() => parseMinistralStream(bytes, request, 1, "generation")).toThrowError(
+      expect.objectContaining({
+        code: "incomplete_response",
+        billableUnknown: false,
+        inputTokens: 9,
+        outputTokens: 4,
+        totalTokens: 13,
+        costUsd: 0.00042,
+        providerRequestId: "charged",
+      }),
+    );
+  });
+
+  it("serializes an assistant tool-call turn and correlated tool result in the live request", async () => {
+    let sent: Record<string, unknown> | null = null;
+    const adapter = makeMinistralAdapter({ apiKey: "synthetic-key" }, async (_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return response(contentStream("next"));
+    });
+    const history = {
+      messages: [
+        { role: "user" as const, content: "Find BB-1042." },
+        { role: "assistant" as const, content: null, toolCalls: [{ id: "call-1", name: "getOrder", arguments: { orderId: "BB-1042" } }] },
+        { role: "tool" as const, toolCallId: "call-1", content: "{\"status\":\"ready\"}" },
+        { role: "user" as const, content: "What next?" },
+      ],
+    };
+    await Effect.runPromise(adapter.complete(history));
+    expect(sent).toMatchObject({
+      messages: [
+        { role: "user", content: "Find BB-1042." },
+        { role: "assistant", content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "getOrder", arguments: "{\"orderId\":\"BB-1042\"}" } }] },
+        { role: "tool", tool_call_id: "call-1", content: "{\"status\":\"ready\"}" },
+        { role: "user", content: "What next?" },
+      ],
+    });
+    expect(buildMinistralWireRequest(history)).toEqual(sent);
+  });
+
+  it("expires operations while they wait for a concurrency permit", async () => {
+    let fetches = 0;
+    const adapter = makeMinistralAdapter(
+      { apiKey: "synthetic-key", maximumConcurrency: 1, timeoutMs: 10 },
+      (_url, init) => {
+        fetches += 1;
+        return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+      },
+    );
+    const outcomes = await Effect.runPromise(Effect.all([
+      Effect.result(adapter.complete(request)),
+      Effect.result(adapter.complete(request)),
+    ], { concurrency: 2 }));
+    expect(outcomes.every((outcome) => outcome._tag === "Failure")).toBe(true);
+    expect(fetches).toBe(1);
   });
 
   it("rejects a completed stream with no content or tool call", () => {
@@ -293,12 +391,34 @@ describe("provider audit redaction", () => {
   });
 });
 
+describe("bounded provider response bodies", () => {
+  it("cancels a body rejected by Content-Length", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({ cancel: () => { cancelled = true; } });
+    await expect(readBoundedBody(new Response(body, { headers: { "content-length": "100" } }), 10)).rejects.toMatchObject({ code: "response_too_large" });
+    expect(cancelled).toBe(true);
+  });
+
+  it("cancels a body that crosses the cumulative limit", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(6));
+        controller.enqueue(new Uint8Array(6));
+      },
+      cancel: () => { cancelled = true; },
+    });
+    await expect(readBoundedBody(new Response(body), 10)).rejects.toMatchObject({ code: "response_too_large" });
+    expect(cancelled).toBe(true);
+  });
+});
+
 describe("Jev Decisions adapter", () => {
   const decisions: JevRequest = {
     state: { note: "Customer agrees if blue is unavailable." },
     questions: {
       consent: { type: "noul", instructions: "Is replacement allowed?" },
-      route: { type: "choice", instructions: "Choose route.", criteria: ["hold", "replace"] },
+      route: { type: "choice", instructions: "Choose route.", criteria: { hold: "Keep the order on hold.", replace: "Use the available replacement." } },
       urgency: { type: "score", instructions: "Score urgency.", criteria: ["low", "medium", "high"] },
     },
   };
@@ -326,6 +446,23 @@ describe("Jev Decisions adapter", () => {
     });
   });
 
+  it("sends Choice criteria as a label-description map", async () => {
+    let sent: Record<string, unknown> | null = null;
+    const adapter = makeJevAdapter({ apiKey: "synthetic-key" }, async (_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return response(encoder.encode(JSON.stringify(valid)));
+    });
+    await Effect.runPromise(adapter.decide(decisions));
+    expect(sent).toMatchObject({
+      questions: {
+        route: {
+          type: "choice",
+          criteria: { hold: "Keep the order on hold.", replace: "Use the available replacement." },
+        },
+      },
+    });
+  });
+
   it.each([
     ["missing answer", { ...valid, answers: { consent: valid.answers.consent, route: valid.answers.route } }],
     ["wrong answer kind", { ...valid, answers: { ...valid.answers, consent: { type: "choice", choice: "yes" } } }],
@@ -335,6 +472,38 @@ describe("Jev Decisions adapter", () => {
     ["bad probability total", { ...valid, answers: { ...valid.answers, route: { ...valid.answers.route, probabilities: { hold: 0.1, replace: 0.1 } } } }],
   ])("rejects %s", (_name, payload) => {
     expect(() => parseJevResponse(encoder.encode(JSON.stringify(payload)), decisions, 1, null)).toThrow();
+  });
+
+  it("retains Decisions usage and metadata when an answer fails validation", () => {
+    const invalid = {
+      ...valid,
+      answers: { ...valid.answers, route: { ...valid.answers.route, choice: "refund" } },
+      usage: { input_tokens: 30, output_tokens: 12, cost: 0.0042 },
+    };
+    expect(() => parseJevResponse(encoder.encode(JSON.stringify(invalid)), decisions, 100, "generation_1")).toThrowError(
+      expect.objectContaining({
+        code: "malformed_response",
+        provider: "TypeSafe",
+        actualModel: "typesafe/jev-1.13-20260917",
+        providerRequestId: "decision_1",
+        generationId: "generation_1",
+        inputTokens: 30,
+        outputTokens: 12,
+        totalTokens: 42,
+        costUsd: 0.0042,
+        billableUnknown: false,
+      }),
+    );
+  });
+
+  it("rejects empty Choice descriptions before transport", async () => {
+    const invalid: JevRequest = {
+      state: {},
+      questions: { route: { type: "choice", instructions: "Choose.", criteria: { hold: "", replace: "Replace." } } },
+    };
+    const fetcher = vi.fn(async () => response(encoder.encode(JSON.stringify(valid))));
+    await expect(Effect.runPromise(makeJevAdapter({ apiKey: "synthetic-key" }, fetcher).decide(invalid))).rejects.toMatchObject({ code: "invalid_request" });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("enforces request bytes before calling the provider", async () => {

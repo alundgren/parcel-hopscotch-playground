@@ -13,6 +13,8 @@ import type {
 } from "./contracts.js";
 import { JEV_MODEL, MINISTRAL_MODEL } from "./contracts.js";
 import { jsonBytes } from "./http.js";
+import { buildMinistralWireRequest } from "./chat-request.js";
+import { buildJevWireRequest } from "./jev.js";
 
 export type ProviderAttemptKind = "chat" | "decisions";
 export type ProviderAttemptOutcome =
@@ -51,6 +53,7 @@ export interface ProviderAttemptFinish {
   readonly errorCode: string | null;
   readonly errorMessage: string | null;
   readonly retryCount: number;
+  readonly durationMs: number | null;
 }
 
 export interface ProviderAttemptRecord {
@@ -132,40 +135,8 @@ export interface AuditedProviderContext {
   readonly requestId: string;
   readonly turnId: string;
   readonly notify?: ProviderAuditNotification;
+  readonly monotonicNow?: () => number;
 }
-
-const safeMinistralRequest = (request: MinistralRequest) => ({
-  model: MINISTRAL_MODEL,
-  messages: request.messages.map((message) => ({
-    role: message.role,
-    content: message.content,
-    ...(message.toolCallId === undefined ? {} : { tool_call_id: message.toolCallId }),
-  })),
-  stream: true,
-  max_tokens: request.maxOutputTokens ?? 256,
-  tools: (request.tools ?? []).map((tool) => ({
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-    },
-  })),
-  ...(request.toolChoice === undefined
-    ? {}
-    : {
-        tool_choice:
-          typeof request.toolChoice === "string"
-            ? request.toolChoice
-            : { type: "function", function: { name: request.toolChoice.name } },
-      }),
-});
-
-const safeJevRequest = (request: JevRequest) => ({
-  model: JEV_MODEL,
-  state: request.state,
-  questions: request.questions,
-});
 
 const resultFinish = (
   result: MinistralResult | JevResult,
@@ -184,6 +155,7 @@ const resultFinish = (
   errorCode: null,
   errorMessage: null,
   retryCount: 0,
+  durationMs: null,
 });
 
 const errorFinish = (failure: ProviderError): ProviderAttemptFinish => ({
@@ -195,19 +167,20 @@ const errorFinish = (failure: ProviderError): ProviderAttemptFinish => ({
         : failure.code === "cancelled"
           ? "cancelled"
           : "error",
-  provider: "OpenRouter",
-  actualModel: null,
-  providerRequestId: null,
-  generationId: null,
+  provider: failure.provider ?? "OpenRouter",
+  actualModel: failure.actualModel,
+  providerRequestId: failure.providerRequestId,
+  generationId: failure.generationId,
   response: failure.safeResponse,
   responseBytes: failure.responseBytes,
-  inputTokens: null,
-  outputTokens: null,
-  totalTokens: null,
-  costUsd: null,
+  inputTokens: failure.inputTokens,
+  outputTokens: failure.outputTokens,
+  totalTokens: failure.totalTokens,
+  costUsd: failure.costUsd,
   errorCode: failure.code,
   errorMessage: failure.message,
   retryCount: 0,
+  durationMs: null,
 });
 
 const interruptedFinish: ProviderAttemptFinish = {
@@ -225,6 +198,7 @@ const interruptedFinish: ProviderAttemptFinish = {
   errorCode: "interrupted",
   errorMessage: "The provider attempt was interrupted before completion.",
   retryCount: 0,
+  durationMs: null,
 };
 
 const audit = <A extends MinistralResult | JevResult>(
@@ -240,29 +214,45 @@ const audit = <A extends MinistralResult | JevResult>(
       requestId: context.requestId,
       turnId: context.turnId,
     });
+    const monotonicNow = context.monotonicNow ?? (() => performance.now());
+    const started = monotonicNow();
     let finish: ProviderAttemptFinish | null = null;
     const observed = effect.pipe(
       Effect.tap((result) => Effect.sync(() => { finish = resultFinish(result); })),
       Effect.tapError((failure) => Effect.sync(() => { finish = errorFinish(failure); })),
     );
     return yield* observed.pipe(
-      Effect.onExit(() =>
-        Effect.uninterruptible(
-          context.repository
-            .finishProviderAttempt(
-              context.identity,
-              attempt.id,
-              finish ?? interruptedFinish,
-            )
-            .pipe(
-              Effect.flatMap((record) =>
-                context.notify === undefined
-                  ? Effect.void
-                  : context.notify(record.userId, record),
-              ),
-            ),
-        ),
-      ),
+      Effect.onExit(() => {
+        const elapsed = Math.max(0, monotonicNow() - started);
+        return Effect.uninterruptible(
+          context.repository.finishProviderAttempt(
+            context.identity,
+            attempt.id,
+            { ...(finish ?? interruptedFinish), durationMs: elapsed },
+          ),
+        ).pipe(
+          Effect.flatMap((record) => {
+            if (context.notify === undefined) return Effect.void;
+            const summary = {
+              id: record.id,
+              generation: record.generation,
+              kind: record.kind,
+              provider: record.provider,
+              requestedModel: record.requestedModel,
+              actualModel: record.actualModel,
+              outcome: record.outcome,
+              durationMs: record.durationMs,
+              inputTokens: record.inputTokens,
+              outputTokens: record.outputTokens,
+              costUsd: record.costUsd,
+            };
+            return Effect.interruptible(context.notify(record.userId, summary)).pipe(
+              Effect.timeout(250),
+              Effect.catch(() => Effect.void),
+            );
+          }),
+        );
+      }),
     );
   });
 
@@ -271,7 +261,7 @@ export const runAuditedMinistral = (
   adapter: MinistralAdapter,
   request: MinistralRequest,
 ): Effect.Effect<MinistralResult, ProviderError> => {
-  const body = safeMinistralRequest(request);
+  const body = buildMinistralWireRequest(request);
   return audit(
     context,
     {
@@ -290,7 +280,7 @@ export const runAuditedJev = (
   adapter: JevAdapter,
   request: JevRequest,
 ): Effect.Effect<JevResult, ProviderError> => {
-  const body = safeJevRequest(request);
+  const body = buildJevWireRequest(request);
   return audit(
     context,
     {

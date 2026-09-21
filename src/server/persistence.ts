@@ -7,7 +7,7 @@ import { evaluateResolution, initialStateFor, materializeResolution, resolutionB
 import type { RequestIdentity } from "./identity.js";
 import { seedOrders } from "./seeds.js";
 import type { ProviderAttemptFinish, ProviderAttemptRecord, ProviderAttemptRepository, ProviderAttemptStart, ProviderAttemptSummary } from "./providers/audit.js";
-import { redactProviderAudit } from "./providers/redaction.js";
+import { redactProviderAudit, redactProviderString } from "./providers/redaction.js";
 
 export class WorkspaceStoreError extends Schema.TaggedError<WorkspaceStoreError>()("WorkspaceStoreError", { message: Schema.String }) {}
 export class WorkspaceCommandError extends Schema.TaggedError<WorkspaceCommandError>()("WorkspaceCommandError", { code: Schema.String, message: Schema.String }) {}
@@ -394,11 +394,11 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
       id,
       user.id,
       input.generation,
-      input.requestId,
-      input.turnId,
+      redactProviderString(input.requestId, 128),
+      redactProviderString(input.turnId, 128),
       input.kind,
-      input.provider,
-      input.model,
+      redactProviderString(input.provider, 128),
+      redactProviderString(input.model, 256),
       JSON.stringify(redactProviderAudit(input.request)),
       input.requestBytes,
       startedAt,
@@ -412,7 +412,9 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
     if (row === undefined) throw new Error("The provider attempt is unavailable.");
     if (row.outcome !== "running" && !(row.outcome === "interrupted" && row.error_code === "server_restart")) return attemptRecord(row);
     const completedAt = new Date().toISOString();
-    const durationMs = Math.max(0, Date.parse(completedAt) - Date.parse(row.started_at));
+    const durationMs = finish.durationMs === null || !Number.isFinite(finish.durationMs)
+      ? null
+      : Math.max(0, Math.round(finish.durationMs));
     const responseJson = finish.response === null ? null : JSON.stringify(redactProviderAudit(finish.response));
     if (responseJson !== null && new TextEncoder().encode(responseJson).byteLength > 256 * 1024) throw new Error("The provider response exceeded the audit byte limit.");
     database.prepare(`UPDATE provider_attempts SET
@@ -421,10 +423,10 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
       input_tokens = ?, output_tokens = ?, total_tokens = ?, cost_usd = ?, outcome = ?,
       error_code = ?, error_message = ?, retry_count = ?
       WHERE id = ? AND user_id = ? AND (outcome = 'running' OR (outcome = 'interrupted' AND error_code = 'server_restart'))`).run(
-      finish.provider,
-      finish.actualModel,
-      finish.providerRequestId,
-      finish.generationId,
+      finish.provider === null ? null : redactProviderString(finish.provider, 128),
+      finish.actualModel === null ? null : redactProviderString(finish.actualModel, 256),
+      finish.providerRequestId === null ? null : redactProviderString(finish.providerRequestId, 256),
+      finish.generationId === null ? null : redactProviderString(finish.generationId, 256),
       responseJson,
       finish.responseBytes,
       completedAt,
@@ -434,8 +436,8 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
       finish.totalTokens,
       finish.costUsd,
       finish.outcome,
-      finish.errorCode,
-      finish.errorMessage,
+      finish.errorCode === null ? null : redactProviderString(finish.errorCode, 128),
+      finish.errorMessage === null ? null : redactProviderString(finish.errorMessage, 512),
       finish.retryCount,
       attemptId,
       owner.id,
@@ -481,7 +483,7 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
   });
   const recoverProviderAttempts: WorkspaceRepositoryService["recoverProviderAttempts"] = () => Effect.sync(() => {
     const recoveredAt = new Date().toISOString();
-    const result = database.prepare("UPDATE provider_attempts SET outcome = 'interrupted', completed_at = ?, duration_ms = MAX(0, CAST((julianday(?) - julianday(started_at)) * 86400000 AS INTEGER)), error_code = 'server_restart', error_message = 'The server restarted before this provider attempt completed.' WHERE outcome = 'running'").run(recoveredAt, recoveredAt);
+    const result = database.prepare("UPDATE provider_attempts SET outcome = 'interrupted', completed_at = ?, duration_ms = NULL, error_code = 'server_restart', error_message = 'The server restarted before this provider attempt completed.' WHERE outcome = 'running'").run(recoveredAt);
     return Number(result.changes);
   });
   return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, accept, advanceScenario, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });

@@ -36,6 +36,14 @@ export class ProviderError extends Schema.TaggedError<ProviderError>()(
     billableUnknown: Schema.Boolean,
     safeResponse: Schema.NullOr(Schema.Unknown),
     responseBytes: Schema.NullOr(Schema.Int),
+    provider: Schema.NullOr(Schema.String),
+    actualModel: Schema.NullOr(Schema.String),
+    providerRequestId: Schema.NullOr(Schema.String),
+    generationId: Schema.NullOr(Schema.String),
+    inputTokens: Schema.NullOr(Schema.Int),
+    outputTokens: Schema.NullOr(Schema.Int),
+    totalTokens: Schema.NullOr(Schema.Int),
+    costUsd: Schema.NullOr(Schema.Number),
   },
 ) {
   declare readonly code: ProviderErrorCode;
@@ -59,11 +67,24 @@ export interface ProviderMetadata {
   readonly usage: ProviderUsage;
 }
 
-export interface ChatMessage {
-  readonly role: "system" | "user" | "assistant" | "tool";
-  readonly content: string;
-  readonly toolCallId?: string;
+export interface AssistantToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: unknown;
 }
+
+export type ChatMessage =
+  | { readonly role: "system" | "user"; readonly content: string }
+  | {
+      readonly role: "assistant";
+      readonly content: string | null;
+      readonly toolCalls?: ReadonlyArray<AssistantToolCall>;
+    }
+  | {
+      readonly role: "tool";
+      readonly content: string;
+      readonly toolCallId: string;
+    };
 
 export interface ChatTool {
   readonly name: string;
@@ -103,7 +124,7 @@ export interface NoulQuestion {
 export interface ChoiceQuestion {
   readonly type: "choice";
   readonly instructions: unknown;
-  readonly criteria: ReadonlyArray<string>;
+  readonly criteria: Readonly<Record<string, string>>;
 }
 
 export interface ScoreQuestion {

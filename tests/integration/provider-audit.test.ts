@@ -145,6 +145,90 @@ describe("provider attempt audit", () => {
     expect(attempts[0]).toMatchObject({ outcome: "credits_exhausted", costUsd: null, retryCount: 0, errorCode: "credits_exhausted" });
   });
 
+  it("persists known charged usage on invalid output and redacts provider metadata", async () => {
+    const filename = await workspace();
+    const owner = identity("charged@example.test");
+    const providerCanary = "Bearer provider-secret";
+    const modelCanary = "model-login@example.test";
+    const idCanary = "sk-or-v1-provider-id-secret";
+    const stream = [
+      `data: ${JSON.stringify({
+        id: idCanary,
+        model: modelCanary,
+        provider: providerCanary,
+        choices: [{ index: 0, delta: { content: "partial" }, finish_reason: "length" }],
+        usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17, cost: 0.00077 },
+      })}`,
+      "data: [DONE]",
+      "",
+      "",
+    ].join("\n\n");
+    const adapter = makeMinistralAdapter({ apiKey: "synthetic-key" }, async () =>
+      new Response(stream, { headers: { "x-generation-id": "generation-login@example.test" } }));
+    const records = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const state = yield* repository.snapshot(owner);
+      yield* Effect.result(runAuditedMinistral(
+        { repository, identity: owner, generation: state.generation, requestId: "charged-login@example.test", turnId: "turn-sk-or-v1-danger" },
+        adapter,
+        chatRequest,
+      ));
+      const summaries = yield* repository.providerAttempts(owner);
+      return {
+        summary: summaries[0],
+        detail: summaries[0] === undefined ? null : yield* repository.providerAttempt(owner, summaries[0].id),
+      };
+    }));
+    expect(records.summary).toMatchObject({
+      outcome: "error",
+      inputTokens: 12,
+      outputTokens: 5,
+      totalTokens: 17,
+      costUsd: 0.00077,
+      errorCode: "incomplete_response",
+    });
+    expect(records.detail?.response).toMatchObject({ usage: { costUsd: 0.00077 } });
+    const serialized = JSON.stringify(records);
+    for (const canary of [providerCanary, modelCanary, idCanary, "charged-login@example.test", "sk-or-v1-danger"]) {
+      expect(serialized).not.toContain(canary);
+    }
+  });
+
+  it("uses monotonic duration and sends only a bounded summary notification", async () => {
+    const filename = await workspace();
+    const owner = identity("notification@example.test");
+    const readings = [100, 107];
+    let notification: unknown = null;
+    const adapter: MinistralAdapter = { complete: () => Effect.succeed(result()) };
+    const started = performance.now();
+    const attempt = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const state = yield* repository.snapshot(owner);
+      yield* runAuditedMinistral(
+        {
+          repository,
+          identity: owner,
+          generation: state.generation,
+          requestId: "notify",
+          turnId: "turn-notify",
+          monotonicNow: () => readings.shift() ?? 107,
+          notify: (_userId, summary) => Effect.sync(() => { notification = summary; }).pipe(Effect.flatMap(() => Effect.never)),
+        },
+        adapter,
+        chatRequest,
+      );
+      return (yield* repository.providerAttempts(owner))[0];
+    }));
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(attempt?.durationMs).toBe(7);
+    expect(Object.keys(notification as Record<string, unknown>).sort()).toEqual([
+      "actualModel", "costUsd", "durationMs", "generation", "id", "inputTokens", "kind",
+      "outcome", "outputTokens", "provider", "requestedModel",
+    ]);
+    expect(notification).not.toHaveProperty("request");
+    expect(notification).not.toHaveProperty("response");
+  });
+
   it("aborts a stalled Effect fiber and finalizes the retained attempt as interrupted", async () => {
     const filename = await workspace();
     const owner = identity("interrupt@example.test");
@@ -255,7 +339,7 @@ describe("provider attempt audit", () => {
       expect(yield* repository.recoverProviderAttempts()).toBe(1);
       return yield* repository.providerAttempt(owner, started.id);
     }));
-    expect(recovered).toMatchObject({ outcome: "interrupted", errorCode: "server_restart", costUsd: null });
+    expect(recovered).toMatchObject({ outcome: "interrupted", errorCode: "server_restart", costUsd: null, durationMs: null });
 
     const completed = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
       const repository = yield* WorkspaceRepository;
@@ -274,6 +358,7 @@ describe("provider attempt audit", () => {
         errorCode: null,
         errorMessage: null,
         retryCount: 0,
+        durationMs: 12,
       });
     }));
     expect(completed).toMatchObject({ outcome: "success", costUsd: 0.00001, inputTokens: 8, errorCode: null });

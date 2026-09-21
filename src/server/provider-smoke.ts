@@ -122,6 +122,15 @@ const result = await runWithWorkspaceRepository(
             type: "noul",
             instructions: "Does the stated condition allow this replacement?",
           },
+          consent_kind: {
+            type: "choice",
+            instructions: "Classify how the customer expressed consent for this replacement.",
+            criteria: {
+              explicit: "The customer agreed without any condition.",
+              conditional: "The customer agreed only if another stated fact is true.",
+              unclear: "The note does not establish whether the customer agreed.",
+            },
+          },
         },
       },
     );

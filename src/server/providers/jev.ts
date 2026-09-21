@@ -20,7 +20,7 @@ import {
   parseJson,
   providerFailure,
 } from "./http.js";
-import { redactProviderAudit } from "./redaction.js";
+import { redactProviderAudit, redactProviderString } from "./redaction.js";
 
 const own = (value: object, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
@@ -101,14 +101,16 @@ const validateQuestion = (name: string, question: DecisionQuestion): void => {
     throw invalidRequest("Decision question names must be safe identifiers.");
   }
   if (question.type === "choice") {
-    if (question.criteria.length < 2 || question.criteria.length > 16) {
+    const labels = Object.keys(question.criteria);
+    if (labels.length < 2 || labels.length > 16) {
       throw invalidRequest("Choice questions require between 2 and 16 criteria.");
     }
     if (
-      new Set(question.criteria).size !== question.criteria.length ||
-      question.criteria.some((item) => item.length === 0 || item.length > 128)
+      labels.some((item) => item.length === 0 || item.length > 128) ||
+      labels.some((item) => !/^[A-Za-z0-9][A-Za-z0-9 _-]{0,127}$/.test(item)) ||
+      labels.some((item) => question.criteria[item]!.trim().length === 0 || question.criteria[item]!.length > 1_024)
     ) {
-      throw invalidRequest("Choice criteria must be unique non-empty labels.");
+      throw invalidRequest("Choice criteria require safe labels and bounded descriptions.");
     }
   }
   if (
@@ -119,7 +121,7 @@ const validateQuestion = (name: string, question: DecisionQuestion): void => {
   }
 };
 
-const safeRequest = (request: JevRequest) => ({
+export const buildJevWireRequest = (request: JevRequest) => ({
   model: JEV_MODEL,
   state: request.state,
   questions: request.questions,
@@ -133,7 +135,7 @@ const validateRequest = (request: JevRequest, maximumContextBytes: number) => {
     );
   }
   for (const name of names) validateQuestion(name, request.questions[name]!);
-  if (jsonBytes(safeRequest(request)) > maximumContextBytes) {
+  if (jsonBytes(buildJevWireRequest(request)) > maximumContextBytes) {
     throw invalidRequest("The decision request exceeded the configured context byte limit.");
   }
 };
@@ -146,9 +148,10 @@ const validateNoul = (value: Record<string, unknown>): DecisionAnswer => {
 
 const validateChoice = (
   value: Record<string, unknown>,
-  criteria: ReadonlyArray<string>,
+  criteria: Readonly<Record<string, string>>,
 ): DecisionAnswer => {
-  if (typeof value.choice !== "string" || !criteria.includes(value.choice)) {
+  const labels = Object.keys(criteria);
+  if (typeof value.choice !== "string" || !labels.includes(value.choice)) {
     throw malformedResponse("A choice answer was not one of the submitted criteria.");
   }
   const confidence = finiteRange(value.confidence, 0, 1);
@@ -159,7 +162,7 @@ const validateChoice = (
     type: "choice",
     choice: value.choice,
     confidence,
-    probabilities: validateProbabilityMap(value.probabilities, criteria, "A choice answer"),
+    probabilities: validateProbabilityMap(value.probabilities, labels, "A choice answer"),
   };
 };
 
@@ -192,80 +195,113 @@ const validateScore = (
   };
 };
 
+const safeIdentifier = (value: string | null): string | null =>
+  value === null ? null : redactProviderString(value, 256);
+
 export const parseJevResponse = (
   bytes: Uint8Array,
   request: JevRequest,
   requestBytes: number,
   generationId: string | null,
 ): JevResult => {
-  const value = parseJson(bytes);
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw malformedResponse("The Decisions response was not an object.");
-  }
-  const payload = value as Record<string, unknown>;
-  if (payload.error !== undefined) {
-    throw providerFailure("provider_error", "The Decisions API returned an error.", {
-      billableUnknown: true,
-    });
-  }
-  if (typeof payload.answers !== "object" || payload.answers === null || Array.isArray(payload.answers)) {
-    throw malformedResponse("The Decisions response did not contain answers.");
-  }
-  const responseAnswers = payload.answers as Record<string, unknown>;
-  const questionNames = Object.keys(request.questions).sort();
-  const answerNames = Object.keys(responseAnswers).sort();
-  if (
-    questionNames.length !== answerNames.length ||
-    questionNames.some((name, index) => name !== answerNames[index])
-  ) {
-    throw malformedResponse("Decision answers did not match the submitted question names.");
-  }
-  const answers: Record<string, DecisionAnswer> = Object.create(null) as Record<string, DecisionAnswer>;
-  for (const name of questionNames) {
-    const question = request.questions[name]!;
-    const unknownAnswer = responseAnswers[name];
-    if (typeof unknownAnswer !== "object" || unknownAnswer === null || Array.isArray(unknownAnswer)) {
-      throw malformedResponse(`Decision answer ${name} was malformed.`);
+  let provider: string | null = null;
+  let actualModel: string | null = null;
+  let providerRequestId: string | null = null;
+  let usage: ProviderUsage = { inputTokens: null, outputTokens: null, totalTokens: null, costUsd: null };
+  let payload: Record<string, unknown> | null = null;
+  try {
+    const value = parseJson(bytes);
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw malformedResponse("The Decisions response was not an object.");
     }
-    const answer = unknownAnswer as Record<string, unknown>;
-    if (answer.type !== question.type) {
-      throw malformedResponse(`Decision answer ${name} had the wrong result kind.`);
+    payload = value as Record<string, unknown>;
+    for (const key of ["provider", "model", "id"] as const) {
+      if (payload[key] !== undefined && typeof payload[key] !== "string") {
+        throw malformedResponse(`The Decisions ${key} was malformed.`);
+      }
     }
-    answers[name] =
-      question.type === "noul"
+    provider = typeof payload.provider === "string" ? payload.provider : null;
+    actualModel = typeof payload.model === "string" ? payload.model : null;
+    providerRequestId = typeof payload.id === "string" ? payload.id : null;
+    usage = normalizeUsage(payload.usage);
+    if (payload.error !== undefined) {
+      throw providerFailure("provider_error", "The Decisions API returned an error.", {
+        billableUnknown: usage.costUsd === null,
+      });
+    }
+    if (typeof payload.answers !== "object" || payload.answers === null || Array.isArray(payload.answers)) {
+      throw malformedResponse("The Decisions response did not contain answers.");
+    }
+    const responseAnswers = payload.answers as Record<string, unknown>;
+    const questionNames = Object.keys(request.questions).sort();
+    const answerNames = Object.keys(responseAnswers).sort();
+    if (questionNames.length !== answerNames.length || questionNames.some((name, index) => name !== answerNames[index])) {
+      throw malformedResponse("Decision answers did not match the submitted question names.");
+    }
+    const answers: Record<string, DecisionAnswer> = Object.create(null) as Record<string, DecisionAnswer>;
+    for (const name of questionNames) {
+      const question = request.questions[name]!;
+      const unknownAnswer = responseAnswers[name];
+      if (typeof unknownAnswer !== "object" || unknownAnswer === null || Array.isArray(unknownAnswer)) {
+        throw malformedResponse(`Decision answer ${redactProviderString(name, 64)} was malformed.`);
+      }
+      const answer = unknownAnswer as Record<string, unknown>;
+      if (answer.type !== question.type) {
+        throw malformedResponse(`Decision answer ${redactProviderString(name, 64)} had the wrong result kind.`);
+      }
+      answers[name] = question.type === "noul"
         ? validateNoul(answer)
         : question.type === "choice"
           ? validateChoice(answer, question.criteria)
           : validateScore(answer, question.criteria);
-  }
-  const provider = typeof payload.provider === "string" ? payload.provider : null;
-  const actualModel = typeof payload.model === "string" ? payload.model : null;
-  const providerRequestId = typeof payload.id === "string" ? payload.id : null;
-  const usage = normalizeUsage(payload.usage);
-  const requestPayload = safeRequest(request);
-  return {
-    kind: "decisions",
-    answers,
-    metadata: {
-      provider,
-      requestedModel: JEV_MODEL,
-      actualModel,
-      providerRequestId,
-      generationId,
-      requestBytes,
-      responseBytes: bytes.byteLength,
-      usage,
-    },
-    safeRequest: redactProviderAudit(requestPayload),
-    safeResponse: redactProviderAudit({
-      provider,
-      model: actualModel,
-      providerRequestId,
-      generationId,
+    }
+    const safeProvider = safeIdentifier(provider);
+    const safeModel = safeIdentifier(actualModel);
+    const safeRequestId = safeIdentifier(providerRequestId);
+    const safeGenerationId = safeIdentifier(generationId);
+    const requestPayload = buildJevWireRequest(request);
+    return {
+      kind: "decisions",
       answers,
-      usage,
-    }),
-  };
+      metadata: {
+        provider: safeProvider,
+        requestedModel: JEV_MODEL,
+        actualModel: safeModel,
+        providerRequestId: safeRequestId,
+        generationId: safeGenerationId,
+        requestBytes,
+        responseBytes: bytes.byteLength,
+        usage,
+      },
+      safeRequest: redactProviderAudit(requestPayload),
+      safeResponse: redactProviderAudit({ provider: safeProvider, model: safeModel, providerRequestId: safeRequestId, generationId: safeGenerationId, answers, usage }),
+    };
+  } catch (cause) {
+    const failure = cause instanceof ProviderError ? cause : malformedResponse("The Decisions response could not be validated.");
+    throw new ProviderError({
+      code: failure.code,
+      message: redactProviderString(failure.message, 1_024),
+      status: failure.status,
+      billableUnknown: usage.costUsd === null ? failure.billableUnknown : false,
+      safeResponse: redactProviderAudit(failure.safeResponse ?? {
+        provider: safeIdentifier(provider),
+        model: safeIdentifier(actualModel),
+        providerRequestId: safeIdentifier(providerRequestId),
+        generationId: safeIdentifier(generationId),
+        answers: payload?.answers ?? null,
+        usage,
+      }),
+      responseBytes: failure.responseBytes ?? bytes.byteLength,
+      provider: failure.provider ?? safeIdentifier(provider),
+      actualModel: failure.actualModel ?? safeIdentifier(actualModel),
+      providerRequestId: failure.providerRequestId ?? safeIdentifier(providerRequestId),
+      generationId: failure.generationId ?? safeIdentifier(generationId),
+      inputTokens: failure.inputTokens ?? usage.inputTokens,
+      outputTokens: failure.outputTokens ?? usage.outputTokens,
+      totalTokens: failure.totalTokens ?? usage.totalTokens,
+      costUsd: failure.costUsd ?? usage.costUsd,
+    });
+  }
 };
 
 export const makeJevAdapter = (
@@ -277,81 +313,33 @@ export const makeJevAdapter = (
     return Math.max(1, Math.min(maximum, Math.floor(candidate)));
   };
   const timeoutMs = bounded(config.timeoutMs, providerBounds.timeoutMs, 60_000);
-  const maximumContextBytes = bounded(
-    config.maximumContextBytes,
-    providerBounds.maximumContextBytes,
-    64 * 1024,
-  );
-  const maximumResponseBytes = bounded(
-    config.maximumResponseBytes,
-    providerBounds.maximumResponseBytes,
-    512 * 1024,
-  );
-  const semaphore = Semaphore.makeUnsafe(
-    bounded(config.maximumConcurrency, providerBounds.maximumConcurrency, 4),
-  );
+  const maximumContextBytes = bounded(config.maximumContextBytes, providerBounds.maximumContextBytes, 64 * 1024);
+  const maximumResponseBytes = bounded(config.maximumResponseBytes, providerBounds.maximumResponseBytes, 512 * 1024);
+  const semaphore = Semaphore.makeUnsafe(bounded(config.maximumConcurrency, providerBounds.maximumConcurrency, 4));
   const baseUrl = config.baseUrl ?? "https://openrouter.ai";
   return {
     decide: (request) => {
       const run = Effect.tryPromise({
         try: async (signal) => {
           if (config.apiKey.trim().length === 0) {
-            throw providerFailure(
-              "configuration",
-              "OPENROUTER_API_KEY is required for live provider requests.",
-            );
+            throw providerFailure("configuration", "OPENROUTER_API_KEY is required for live provider requests.");
           }
           validateRequest(request, maximumContextBytes);
-          const payload = safeRequest(request);
+          const payload = buildJevWireRequest(request);
           const body = JSON.stringify(payload);
-          const result = await fetchOpenRouter(
-            fetcher,
-            `${baseUrl}/api/alpha/decisions`,
-            config.apiKey,
-            body,
-            maximumResponseBytes,
-            signal,
-          );
-          try {
-            return parseJevResponse(
-              result.bytes,
-              request,
-              new TextEncoder().encode(body).byteLength,
-              result.response.headers.get("x-generation-id"),
-            );
-          } catch (cause) {
-            if (cause instanceof ProviderError && cause.responseBytes === null) {
-              throw new ProviderError({
-                code: cause.code,
-                message: cause.message,
-                status: cause.status,
-                billableUnknown: cause.billableUnknown,
-                safeResponse: cause.safeResponse,
-                responseBytes: result.bytes.byteLength,
-              });
-            }
-            throw cause;
-          }
+          const result = await fetchOpenRouter(fetcher, `${baseUrl}/api/alpha/decisions`, config.apiKey, body, maximumResponseBytes, signal);
+          return parseJevResponse(result.bytes, request, new TextEncoder().encode(body).byteLength, result.response.headers.get("x-generation-id"));
         },
-        catch: (cause) =>
-          cause instanceof ProviderError
-            ? cause
-            : providerFailure(
-                "transport_error",
-                "The Decisions request did not complete.",
-                { billableUnknown: true },
-              ),
-      }).pipe(
+        catch: (cause) => cause instanceof ProviderError
+          ? cause
+          : providerFailure("transport_error", "The Decisions request did not complete.", { billableUnknown: true }),
+      });
+      return semaphore.withPermit(run).pipe(
         Effect.timeout(timeoutMs),
-        Effect.mapError((cause) =>
-          cause instanceof ProviderError
-            ? cause
-            : providerFailure("timeout", "The Decisions request timed out.", {
-                billableUnknown: true,
-              }),
-        ),
+        Effect.mapError((cause) => cause instanceof ProviderError
+          ? cause
+          : providerFailure("timeout", "The Decisions request timed out.", { billableUnknown: true })),
       );
-      return semaphore.withPermit(run);
     },
   };
 };
