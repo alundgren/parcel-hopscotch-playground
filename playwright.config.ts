@@ -20,7 +20,7 @@ export default defineConfig({
     },
     {
       name: "narrow",
-      use: { ...devices["Desktop Chrome"], viewport: { width: 320, height: 1400 } },
+      use: { ...devices["Desktop Chrome"], viewport: { width: 320, height: 900 } },
     },
   ],
   webServer: {

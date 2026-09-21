@@ -86,7 +86,10 @@ export const serverLayer = (config: ServerConfig) => {
         }
         const identity = preflight.success[0];
         const socket = yield* request.upgrade;
-        yield* runWorkspaceSocket(socket, identity);
+        yield* runWorkspaceSocket(socket, identity, () => ({
+          bufferedBytes: source.socket.writableLength,
+          needsDrain: source.socket.writableNeedDrain,
+        }));
         return HttpServerResponse.empty();
       }).pipe(
         Effect.catch(() =>

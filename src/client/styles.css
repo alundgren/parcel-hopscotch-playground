@@ -45,7 +45,7 @@ button { color: inherit; }
 }
 .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; font-size: 18px; font-weight: 650; }
 .brand-icon { width: 32px; height: 32px; padding: 2px; background: var(--paper); border-radius: 8px; display: inline-flex; }
-.brand-icon svg { width: 100%; height: 100%; }
+.brand-icon img { width: 100%; height: 100%; object-fit: contain; }
 .topbar nav { display: flex; gap: 8px; }
 
 .button { border: 0; border-radius: 8px; background: transparent; padding: 8px 12px; cursor: pointer; line-height: 1.5; }
@@ -118,7 +118,7 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
 @media (max-width: 760px) {
   .app-shell { padding: 0 10px 10px; }
   .topbar { align-items: flex-start; flex-wrap: wrap; padding: 14px 6px 16px; gap: 10px 14px; }
-  .brand { flex-basis: calc(100% - 90px); }
+  .brand { flex-basis: auto; }
   .connection { margin-top: 7px; }
   .topbar nav { order: 3; width: 100%; }
   .topbar nav .button { padding: 8px 11px; }

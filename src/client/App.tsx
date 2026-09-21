@@ -10,13 +10,7 @@ type Filter = "all" | "ready";
 function BrandIcon() {
   return (
     <span className="brand-icon" aria-hidden="true">
-      <svg viewBox="0 0 32 32" role="img">
-        <rect x="3" y="8" width="19" height="14" rx="2" fill="#334E5B" />
-        <path d="M22 13h4l3 4v5h-7z" fill="#334E5B" />
-        <path d="M7 9h11l2 5H5z" fill="#F9F6F0" />
-        <circle cx="10" cy="24" r="3" fill="#3D6034" />
-        <circle cx="25" cy="24" r="3" fill="#3D6034" />
-      </svg>
+      <img src="/favicon.png" alt="" />
     </span>
   );
 }
@@ -26,7 +20,16 @@ const connectionText: Record<ConnectionStatus, string> = {
   connected: "Connected",
   reconnecting: "Reconnecting",
   offline: "Offline",
+  retired: "Session replaced",
 };
+
+export const resolveSelectedOrder = (
+  orders: ReadonlyArray<OrderSummary>,
+  selectedOrderId: string | null,
+) =>
+  selectedOrderId === null
+    ? null
+    : orders.find((order) => order.id === selectedOrderId) ?? null;
 
 function OrderDetail({ order, onBack }: { order: OrderSummary; onBack: () => void }) {
   return (
@@ -63,7 +66,8 @@ function OrderDetail({ order, onBack }: { order: OrderSummary; onBack: () => voi
 
 function WorkQueue({ orders }: { orders: ReadonlyArray<OrderSummary> }) {
   const [filter, setFilter] = useState<Filter>("all");
-  const [selectedOrder, setSelectedOrder] = useState<OrderSummary | null>(null);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const selectedOrder = resolveSelectedOrder(orders, selectedOrderId);
   const readyCount = orders.filter((order) => order.status === "ready").length;
   const visibleOrders = useMemo(
     () => orders.filter((order) => filter === "all" || order.status === "ready"),
@@ -71,7 +75,7 @@ function WorkQueue({ orders }: { orders: ReadonlyArray<OrderSummary> }) {
   );
 
   if (selectedOrder !== null) {
-    return <OrderDetail order={selectedOrder} onBack={() => setSelectedOrder(null)} />;
+    return <OrderDetail order={selectedOrder} onBack={() => setSelectedOrderId(null)} />;
   }
 
   return (
@@ -104,7 +108,7 @@ function WorkQueue({ orders }: { orders: ReadonlyArray<OrderSummary> }) {
               type="button"
               id={order.targetId}
               className="order-row"
-              onClick={() => setSelectedOrder(order)}
+              onClick={() => setSelectedOrderId(order.id)}
             >
               <span className="order-id">{order.id}</span>
               <span className="order-copy">

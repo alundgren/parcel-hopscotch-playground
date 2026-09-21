@@ -43,3 +43,25 @@ test("opens, filters, inspects evidence, and reconnects over WebSocket", async (
     fullPage: true,
   });
 });
+
+test("retires a replaced browser session without a reconnect loop", async ({
+  page,
+  context,
+}) => {
+  await context.addInitScript(() => {
+    sessionStorage.setItem("parcel-hopscotch-client-id", "duplicated-browser-session");
+  });
+  let firstPageSockets = 0;
+  page.on("websocket", () => { firstPageSockets += 1; });
+  await page.goto("/");
+  await expect(page.getByTestId("connection-status")).toContainText("Connected");
+
+  const replacement = await context.newPage();
+  await replacement.goto("/");
+  await expect(replacement.getByTestId("connection-status")).toContainText("Connected");
+  await expect(page.getByTestId("connection-status")).toContainText("Session replaced");
+  await page.waitForTimeout(1_000);
+  await expect(page.getByTestId("connection-status")).toContainText("Session replaced");
+  expect(firstPageSockets).toBeLessThanOrEqual(2);
+  await replacement.close();
+});

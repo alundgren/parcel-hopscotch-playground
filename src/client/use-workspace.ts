@@ -1,7 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ServerMessage, WorkspaceSnapshot } from "../shared/contracts";
 
-export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline";
+export type ConnectionStatus =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "offline"
+  | "retired";
+
+type WorkspaceEvent = Extract<ServerMessage, { readonly type: "event" }>;
+
+export type EventDecision =
+  | { readonly kind: "ignore" }
+  | { readonly kind: "refresh"; readonly optimistic: WorkspaceSnapshot };
+
+export const decideWorkspaceEvent = (
+  current: WorkspaceSnapshot,
+  event: WorkspaceEvent,
+): EventDecision => {
+  if (event.generation !== current.generation) {
+    return { kind: "refresh", optimistic: current };
+  }
+  if (event.sequence <= current.sequence) return { kind: "ignore" };
+  if (event.sequence === current.sequence + 1) {
+    return {
+      kind: "refresh",
+      optimistic: { ...current, sequence: event.sequence },
+    };
+  }
+  return { kind: "refresh", optimistic: current };
+};
 
 const requestId = () => crypto.randomUUID();
 
@@ -21,6 +49,9 @@ export function useWorkspace() {
   const reconnectTimer = useRef<number | null>(null);
   const reconnectAttempt = useRef(0);
   const stateRef = useRef<WorkspaceSnapshot | null>(null);
+  const disposedRef = useRef(false);
+  const offlineRef = useRef(false);
+  const retiredRef = useRef(false);
   stateRef.current = snapshot;
 
   const connect = useCallback(() => {
@@ -28,6 +59,7 @@ export function useWorkspace() {
       setStatus("offline");
       return;
     }
+    if (disposedRef.current || retiredRef.current) return;
     if (
       socketRef.current?.readyState === WebSocket.OPEN ||
       socketRef.current?.readyState === WebSocket.CONNECTING
@@ -40,6 +72,10 @@ export function useWorkspace() {
     socketRef.current = socket;
 
     socket.addEventListener("open", () => {
+      if (disposedRef.current || socketRef.current !== socket) {
+        socket.close(1000, "Obsolete connection");
+        return;
+      }
       reconnectAttempt.current = 0;
       setStatus("connected");
       const current = stateRef.current;
@@ -62,27 +98,33 @@ export function useWorkspace() {
         return;
       }
       if (message.type === "snapshot") {
+        stateRef.current = message.state;
         setSnapshot(message.state);
         return;
       }
       if (message.type !== "event") return;
       const current = stateRef.current;
-      if (
-        current === null ||
-        message.generation !== current.generation ||
-        message.sequence !== current.sequence + 1
-      ) {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(
-            JSON.stringify({ type: "request_snapshot", requestId: requestId() }),
-          );
-        }
+      if (current === null) return;
+      const decision = decideWorkspaceEvent(current, message);
+      if (decision.kind === "ignore") return;
+      stateRef.current = decision.optimistic;
+      setSnapshot(decision.optimistic);
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(
+          JSON.stringify({ type: "request_snapshot", requestId: requestId() }),
+        );
       }
     });
 
-    socket.addEventListener("close", () => {
-      if (socketRef.current === socket) socketRef.current = null;
-      if (!navigator.onLine) {
+    socket.addEventListener("close", (event) => {
+      if (disposedRef.current || socketRef.current !== socket) return;
+      socketRef.current = null;
+      if (event.code === 4001) {
+        retiredRef.current = true;
+        setStatus("retired");
+        return;
+      }
+      if (offlineRef.current || !navigator.onLine) {
         setStatus("offline");
         return;
       }
@@ -93,22 +135,28 @@ export function useWorkspace() {
   }, []);
 
   useEffect(() => {
+    disposedRef.current = false;
     connect();
     const goOffline = () => {
+      offlineRef.current = true;
       setStatus("offline");
       socketRef.current?.close(1000, "Browser offline");
     };
     const goOnline = () => {
+      offlineRef.current = false;
+      if (retiredRef.current) return;
       reconnectAttempt.current = 1;
       connect();
     };
     window.addEventListener("offline", goOffline);
     window.addEventListener("online", goOnline);
     return () => {
+      disposedRef.current = true;
       window.removeEventListener("offline", goOffline);
       window.removeEventListener("online", goOnline);
       if (reconnectTimer.current !== null) window.clearTimeout(reconnectTimer.current);
       socketRef.current?.close(1000, "Workspace unmounted");
+      socketRef.current = null;
     };
   }, [connect]);
 

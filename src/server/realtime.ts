@@ -12,10 +12,25 @@ import type { RequestIdentity } from "./identity.js";
 import { WorkspaceRepository } from "./persistence.js";
 
 const maximumMessageBytes = 16 * 1024;
+const maximumOutgoingBufferBytes = 256 * 1024;
 const maximumConnectionsPerUser = 4;
 const maximumRememberedRequestIds = 128;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+
+export interface OutgoingBufferState {
+  readonly bufferedBytes: number;
+  readonly needsDrain: boolean;
+}
+
+export const rejectsOutgoingWrite = (
+  state: OutgoingBufferState,
+  messageBytes: number,
+): boolean =>
+  messageBytes > maximumOutgoingBufferBytes ||
+  state.bufferedBytes + messageBytes > maximumOutgoingBufferBytes ||
+  (state.needsDrain &&
+    state.bufferedBytes + messageBytes > maximumOutgoingBufferBytes / 2);
 
 export class RealtimeLimitError extends Schema.TaggedError<RealtimeLimitError>()(
   "RealtimeLimitError",
@@ -165,6 +180,10 @@ const snapshotMessage = (
 export const runWorkspaceSocket = (
   socket: Socket.Socket,
   identity: RequestIdentity,
+  outgoingBuffer: () => OutgoingBufferState = () => ({
+    bufferedBytes: 0,
+    needsDrain: false,
+  }),
 ): Effect.Effect<void, never, WorkspaceRepository | RealtimeHub | Scope.Scope> =>
   Effect.gen(function* () {
     const repository = yield* WorkspaceRepository;
@@ -173,29 +192,40 @@ export const runWorkspaceSocket = (
     const writer = yield* socket.writer;
     const initialSnapshot = yield* repository.snapshot(identity).pipe(Effect.orDie);
     const connectionId = randomUUID();
-    const send = (message: ServerMessage) =>
-      writer.write(JSON.stringify(message)).pipe(Effect.orDie);
-    const close = (code: number, reason: string) =>
-      writer.write(new Socket.CloseEvent(code, reason)).pipe(Effect.orDie);
+    let outgoingClosed = false;
+    const close = (code: number, reason: string) => {
+      outgoingClosed = true;
+      return writer.write(new Socket.CloseEvent(code, reason)).pipe(Effect.orDie);
+    };
+    const send = (message: ServerMessage) => {
+      if (outgoingClosed) return Effect.void;
+      const encoded = JSON.stringify(message);
+      const messageBytes = textEncoder.encode(encoded).byteLength;
+      if (rejectsOutgoingWrite(outgoingBuffer(), messageBytes)) {
+        return close(1013, "The outgoing realtime buffer is full.");
+      }
+      return writer.write(encoded).pipe(Effect.orDie);
+    };
 
-    yield* hub
-      .register(identity.id, {
+    const registration = yield* Effect.result(
+      hub.register(identity.id, {
         id: connectionId,
         generation: initialSnapshot.generation,
         send,
         close,
         clientId: null,
-      })
-      .pipe(
-        Effect.catch((error) =>
-          send({
-            type: "error",
-            requestId: null,
-            code: "connection_limit",
-            message: error.message,
-          }).pipe(Effect.andThen(close(1013, error.message))),
-        ),
-      );
+      }),
+    );
+    if (registration._tag === "Failure") {
+      yield* send({
+        type: "error",
+        requestId: null,
+        code: "connection_limit",
+        message: registration.failure.message,
+      });
+      yield* close(1013, registration.failure.message);
+      return;
+    }
     yield* send(snapshotMessage(initialSnapshot, null));
 
     const seenRequestIds = new Set<string>();
