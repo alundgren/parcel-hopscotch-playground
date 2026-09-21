@@ -67,6 +67,10 @@ export interface RealtimeHubService {
     event: string,
     payload: unknown,
   ) => Effect.Effect<void>;
+  readonly publishAudit: (
+    userId: string,
+    payload: unknown,
+  ) => Effect.Effect<void>;
 }
 
 export class RealtimeHub extends Context.Service<RealtimeHub, RealtimeHubService>()(
@@ -140,7 +144,19 @@ export const realtimeHubLayer = Layer.sync(RealtimeHub)(() => {
     if (connection !== undefined) connection.generation = generation;
   });
 
-  return RealtimeHub.of({ register, bindClient, promoteGeneration, publish });
+  const publishAudit: RealtimeHubService["publishAudit"] = (userId, payload) =>
+    Effect.forEach(
+      [...(connections.get(userId)?.values() ?? [])],
+      (connection) =>
+        connection.send({
+          type: "audit_event",
+          event: "audit.attempt.completed",
+          payload,
+        }),
+      { concurrency: 4, discard: true },
+    );
+
+  return RealtimeHub.of({ register, bindClient, promoteGeneration, publish, publishAudit });
 });
 
 const headerValues = (
