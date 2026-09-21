@@ -7,7 +7,6 @@ import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ServerConfig } from "../../src/server/config";
 import { resolveIdentity } from "../../src/server/identity";
-import { resolutionFacts } from "../../src/server/fulfilment";
 import { runWithWorkspaceRepository, WorkspaceRepository, type WorkspaceRepositoryService } from "../../src/server/persistence";
 
 const paths: Array<string> = [];
@@ -61,22 +60,76 @@ describe("reviewed fulfilment commands", () => {
     const user = identity("all-seeds@example.test");
     const orderIds = await useRepository(filename, (repository) => repository.orderIds(user));
     const proposals = await useRepository(filename, (repository) => Effect.forEach(orderIds, (orderId) => repository.prepareResolution(user, 1, orderId)));
-    const held = new Set(["BB-1076", "BB-1081", "BB-1116", "BB-1118", "BB-1120", "BB-1123"]);
+    const expected: Record<string, { ready: boolean; affected?: string; before?: string; after?: string; reason?: string }> = {
+      "BB-1042": { ready: true, before: "14 Willow Lane, Bath BA1 2AB", after: "41 Willow Lane, Bath BA1 2AB" },
+      "BB-1072": { ready: true, before: "North Sjövik", after: "Sjövik" },
+      "BB-1102": { ready: true, before: "22 Birch Road", after: "Flat 6, 22 Birch Road" },
+      "BB-1114": { ready: true, before: "Bath BA1 4OF", after: "Bath BA1 4QF" },
+      "BB-1051": { ready: true, before: "Blue stoneware mug, quantity 1, £24.00", after: "Sage stoneware mug, quantity 1, £24.00" },
+      "BB-1063": { ready: true, before: "Natural linen throw, not reserved", after: "Natural linen throw, quantity 1 reserved" },
+      "BB-1076": { ready: false, reason: "The customer asked for a picture first, so the replacement is not agreed." },
+      "BB-1104": { ready: true, before: "Clear glass carafe, quantity 1, £38.00", after: "Smoke glass carafe, quantity 1, £38.00" },
+      "BB-1068": { ready: true, before: "Breakfast set with 3 of 4 side plates", after: "Breakfast set with 4 of 4 side plates" },
+      "BB-1081": { ready: false, reason: "The divider insert has not reached packing." },
+      "BB-1090": { ready: true, before: "Matched candle pair with gift sleeve", after: "Matched candle pair confirmed" },
+      "BB-1116": { ready: false, reason: "The small bowl scan is still absent." },
+      "BB-1070": { ready: true, before: "One parcel at 15.8 kg", after: "Two parcels at 7.9 kg each" },
+      "BB-1084": { ready: true, before: "One parcel at 2.4 kg against a 2.5 kg booking", after: "Booked parcel confirmed at 2.4 kg" },
+      "BB-1107": { ready: true, before: "One parcel at 18.2 kg", after: "Two parcels at 9.1 kg each" },
+      "BB-1118": { ready: false, reason: "The service cannot be selected until volumetric weight is reviewed." },
+      "BB-1088": { ready: true, before: "No depot scan for 48 hours", after: "Warehouse follow-up queued for the delayed scan" },
+      "BB-1092": { ready: true, before: "Missed collection", after: "Collection rebooked for tomorrow" },
+      "BB-1110": { ready: true, before: "Carrier scan received at 08:12", after: "Carrier handoff confirmed" },
+      "BB-1120": { ready: false, reason: "No collection scan has arrived." },
+      "BB-1095": { ready: true, affected: "BB-1096", before: "Potential duplicate of BB-1095", after: "Held as the later potential duplicate" },
+      "BB-1096": { ready: true, before: "Potential duplicate of BB-1095", after: "Held as the later potential duplicate" },
+      "BB-1112": { ready: true, before: "Similar order awaiting comparison", after: "Order confirmed distinct" },
+      "BB-1123": { ready: false, reason: "Separate payment references make this case ambiguous." },
+    };
     expect(proposals).toHaveLength(24);
     for (const [index, proposal] of proposals.entries()) {
       const orderId = orderIds[index]!;
-      const facts = resolutionFacts[orderId]!;
-      expect(proposal.ready).toBe(!held.has(orderId));
-      if (held.has(orderId)) {
+      const outcome = expected[orderId]!;
+      expect(proposal.ready).toBe(outcome.ready);
+      if (!outcome.ready) {
         expect(proposal.changes).toEqual([]);
-        expect(proposal.omissions).toEqual([{ orderId, reason: facts.heldReason }]);
+        expect(proposal.omissions).toEqual([{ orderId, reason: outcome.reason }]);
       } else {
-        expect(proposal.changes[0]).toMatchObject({ orderId: facts.affectedOrderId ?? orderId, before: facts.before.summary, after: facts.after.summary, effect: facts.effect });
+        expect(proposal.changes[0]).toMatchObject({ orderId: outcome.affected ?? orderId, before: outcome.before, after: outcome.after });
+        expect(proposal.changes[0]?.effect).toBeTruthy();
       }
     }
-    expect(proposals[orderIds.indexOf("BB-1072")]?.changes[0]?.after).toBe("Sjövik");
-    expect(proposals[orderIds.indexOf("BB-1104")]?.changes[0]?.after).toContain("Smoke glass carafe");
-    expect(proposals[orderIds.indexOf("BB-1095")]?.changes[0]?.orderId).toBe("BB-1096");
+  });
+
+  it("uses canonical duplicate state from either entry point and restores its displayed before value", async () => {
+    const filename = await workspace();
+    const viaEarlier = identity("duplicate-earlier@example.test");
+    const direct = identity("duplicate-direct@example.test");
+    const apply = (user: ReturnType<typeof identity>, orderId: string, key: string) => useRepository(filename, (repository) => Effect.gen(function* () {
+      yield* repository.snapshot(user);
+      const proposal = yield* repository.prepareResolution(user, 1, orderId);
+      const commit = yield* repository.accept(user, 1, proposal.id, key);
+      return { proposal, commit };
+    }));
+    const earlier = await apply(viaEarlier, "BB-1095", "duplicate-earlier-key");
+    const directResult = await apply(direct, "BB-1096", "duplicate-direct-key");
+    expect(earlier.proposal.changes[0]).toMatchObject({ orderId: "BB-1096", before: "Potential duplicate of BB-1095", after: "Held as the later potential duplicate" });
+    expect(directResult.proposal.changes[0]).toMatchObject({ orderId: "BB-1096", before: "Potential duplicate of BB-1095", after: "Held as the later potential duplicate" });
+    expect(earlier.commit.snapshot.orders.find((order) => order.id === "BB-1096")?.businessValue).toBe("Held as the later potential duplicate");
+    expect(directResult.commit.snapshot.orders.find((order) => order.id === "BB-1096")?.businessValue).toBe("Held as the later potential duplicate");
+    const database = new DatabaseSync(filename);
+    const stored = database.prepare("SELECT state_json FROM orders WHERE user_id = ? AND order_id = 'BB-1096'").get(viaEarlier.id) as { state_json: string };
+    expect(JSON.parse(stored.state_json)).toMatchObject({ relatedOrderId: "BB-1095", held: true });
+    database.close();
+    const undone = await useRepository(filename, (repository) => Effect.gen(function* () {
+      const proposal = yield* repository.prepareUndo(viaEarlier, 1, earlier.commit.receipt.id);
+      return yield* repository.accept(viaEarlier, 1, proposal.id, "duplicate-undo-key");
+    }));
+    expect(undone.snapshot.orders.find((order) => order.id === "BB-1096")?.businessValue).toBe("Potential duplicate of BB-1095");
+    const restoredDatabase = new DatabaseSync(filename);
+    const restored = restoredDatabase.prepare("SELECT state_json FROM orders WHERE user_id = ? AND order_id = 'BB-1096'").get(viaEarlier.id) as { state_json: string };
+    restoredDatabase.close();
+    expect(JSON.parse(restored.state_json)).toMatchObject({ summary: "Potential duplicate of BB-1095", relatedOrderId: "BB-1095", held: false });
   });
 
   it("rejects a stale batch atomically when one reviewed record changes", async () => {
@@ -149,6 +202,21 @@ describe("reviewed fulfilment commands", () => {
     const stock = database.prepare("SELECT quantity FROM inventory WHERE user_id = ? AND sku = 'MUG-SAGE'").get(user.id) as { quantity: number };
     database.close();
     expect(Number(stock.quantity)).toBe(4);
+  });
+
+  it("keeps an already reserved replacement ready when later stock is exhausted", async () => {
+    const filename = await workspace();
+    const user = identity("reserved-readiness@example.test");
+    await useRepository(filename, (repository) => Effect.gen(function* () {
+      yield* repository.snapshot(user);
+      const proposal = yield* repository.prepareResolution(user, 1, "BB-1051");
+      yield* repository.accept(user, 1, proposal.id, "reserved-ready-key");
+      yield* repository.advanceScenario(user, 1);
+      yield* repository.advanceScenario(user, 1);
+      yield* repository.advanceScenario(user, 1);
+    }));
+    const snapshot = await useRepository(filename, (repository) => repository.snapshot(user));
+    expect(snapshot.orders.find((order) => order.id === "BB-1051")).toMatchObject({ status: "ready", statusLabel: "Ready", businessValue: "Sage stoneware mug, quantity 1, £24.00" });
   });
 
   it("resets only one user, retains audit records, and rejects old-generation proposals and keys", async () => {
@@ -232,6 +300,8 @@ describe("reviewed fulfilment commands", () => {
       const result = await useRepository(filename, (repository) => repository.advanceScenario(user, 1));
       expect(result.message).toContain("Scenario advanced");
     }
+    const exhausted = await useRepository(filename, (repository) => repository.snapshot(user));
+    expect(exhausted.orders.find((order) => order.id === "BB-1051")).toMatchObject({ status: "review", statusLabel: "Review" });
     const held = await useRepository(filename, (repository) => repository.prepareResolution(user, 1, "BB-1051"));
     expect(held).toMatchObject({ ready: false, changes: [], omissions: [{ orderId: "BB-1051" }] });
     await expect(useRepository(filename, (repository) => repository.accept(user, 1, held.id, "held-stock-key"))).rejects.toMatchObject({ code: "proposal_not_ready" });

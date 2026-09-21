@@ -82,6 +82,9 @@ test("reviews an address and batch, undoes the batch, and resets the demo", asyn
   await page.getByRole("button", { name: "Accept 1 change" }).click();
   await expect(page.getByText("Accepted by you")).toBeVisible();
   await page.getByRole("button", { name: "Back to work" }).click();
+  await page.locator("#target-order-BB-1042").click();
+  await expect(page.locator(".detail-current")).toContainText("41 Willow Lane, Bath BA1 2AB");
+  await page.getByRole("button", { name: "Back to queue" }).click();
 
   await page.getByRole("button", { name: "Review ready orders" }).click();
   await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
@@ -138,7 +141,9 @@ test("holds conditional consent and exhausted stock without an acceptance action
     await advance.click();
     await expect(advance).toBeEnabled();
   }
+  await expect(page.locator("#target-order-BB-1051 .status")).toHaveText("Review");
   await page.locator("#target-order-BB-1051").click();
+  await expect(page.locator(".detail-heading .status")).toHaveText("Review");
   await page.getByRole("button", { name: "Review change" }).click();
   await expect(page.getByText("MUG-SAGE does not have enough stock.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Held" })).toBeDisabled();

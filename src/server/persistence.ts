@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
 import type { CommandReceipt, OrderStatus, ReviewedProposal, WorkspaceSnapshot } from "../shared/contracts.js";
 import { targets } from "../shared/targets.js";
-import { evaluateResolution, resolutionFacts, type InventoryCondition, type OrderBusinessState, type ResolutionPolicy } from "./fulfilment.js";
+import { evaluateResolution, initialStateFor, materializeResolution, resolutionBlockReason, resolutionFacts, type InventoryCondition, type OrderBusinessState, type ResolutionPolicy } from "./fulfilment.js";
 import type { RequestIdentity } from "./identity.js";
 import { seedOrders } from "./seeds.js";
 
@@ -73,10 +73,10 @@ const seedUser = (database: DatabaseSync, userId: string) => {
   if (Number(count.count) === 0) {
     const order = database.prepare("INSERT INTO orders (user_id, order_id, item, issue, status, family, seed_position, version, completed, resolved, state_json) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, 0, ?)");
     const evidence = database.prepare("INSERT INTO order_evidence (user_id, order_id, label, value, occurred_at) VALUES (?, ?, ?, ?, ?)");
-    seedOrders.forEach((item, position) => { order.run(userId, item.id, item.item, item.issue, item.status, item.family, position, JSON.stringify(resolutionFacts[item.id]!.before)); evidence.run(userId, item.id, item.evidenceLabel, item.evidenceValue, item.occurredAt); });
+    seedOrders.forEach((item, position) => { order.run(userId, item.id, item.item, item.issue, item.status, item.family, position, JSON.stringify(initialStateFor(item.id))); evidence.run(userId, item.id, item.evidenceLabel, item.evidenceValue, item.occurredAt); });
   }
   const hydrate = database.prepare("UPDATE orders SET state_json = ? WHERE user_id = ? AND order_id = ? AND state_json = '{}'");
-  seedOrders.forEach((item) => hydrate.run(JSON.stringify(resolutionFacts[item.id]!.before), userId, item.id));
+  seedOrders.forEach((item) => hydrate.run(JSON.stringify(initialStateFor(item.id)), userId, item.id));
   const inventory = database.prepare("INSERT OR IGNORE INTO inventory (user_id, sku, quantity, version) VALUES (?, ?, ?, 1)");
   inventory.run(userId, "MUG-SAGE", 4);
   inventory.run(userId, "SIDE-PLATE", 3);
@@ -101,23 +101,30 @@ const appendEvent = (database: DatabaseSync, userId: string, generation: number,
 
 const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, now = Date.now()): WorkspaceSnapshot => {
   const user = ensureUser(database, identity);
-  const orders = database.prepare(`SELECT order_id, item, issue, status, family, version, state_json FROM orders WHERE user_id = ? AND completed = 0 ORDER BY CASE order_id WHEN 'BB-1051' THEN 0 WHEN 'BB-1063' THEN 1 WHEN 'BB-1042' THEN 2 WHEN 'BB-1088' THEN 3 ELSE 4 END, seed_position`).all(user.id) as Array<{ order_id: string; item: string; issue: string; status: OrderStatus; family: WorkspaceSnapshot["orders"][number]["family"]; version: number; state_json: string }>;
+  const orders = database.prepare(`SELECT order_id, item, issue, status, family, version, resolved, state_json FROM orders WHERE user_id = ? AND completed = 0 ORDER BY CASE order_id WHEN 'BB-1051' THEN 0 WHEN 'BB-1063' THEN 1 WHEN 'BB-1042' THEN 2 WHEN 'BB-1088' THEN 3 ELSE 4 END, seed_position`).all(user.id) as Array<{ order_id: string; item: string; issue: string; status: OrderStatus; family: WorkspaceSnapshot["orders"][number]["family"]; version: number; resolved: number; state_json: string }>;
   const evidence = database.prepare("SELECT order_id, label, value, occurred_at FROM order_evidence WHERE user_id = ? ORDER BY order_id, occurred_at").all(user.id) as Array<{ order_id: string; label: string; value: string; occurred_at: string }>;
   const receipt = database.prepare("SELECT payload_json FROM receipts WHERE user_id = ? AND generation = ? ORDER BY committed_at DESC, rowid DESC LIMIT 1").get(user.id, user.generation) as { payload_json: string } | undefined;
   return {
     generation: user.generation,
     sequence: sequenceFor(database, user.id, user.generation),
-    orders: orders.map((item) => ({ id: item.order_id, item: item.item, issue: item.issue, status: item.status, statusLabel: statusLabels[item.status], family: item.family, version: Number(item.version), businessValue: (JSON.parse(item.state_json) as OrderBusinessState).summary, targetId: targets.orderRow(item.order_id), evidence: evidence.filter((entry) => entry.order_id === item.order_id).map((entry) => ({ label: entry.label, value: entry.value, occurredAt: entry.occurred_at, age: ageLabel(entry.occurred_at, now) })) })),
+    orders: orders.map((item) => {
+      const currentState = JSON.parse(item.state_json) as OrderBusinessState;
+      const facts = resolutionFacts[item.order_id];
+      const material = facts === undefined ? null : materializeResolution(facts);
+      const stock = material?.inventory === undefined ? null : inventoryFor(database, user.id, material.inventory.sku);
+      const status = Number(item.resolved) === 0 && item.status === "ready" && facts !== undefined && resolutionBlockReason(facts, stock) !== null ? "review" : item.status;
+      return { id: item.order_id, item: item.item, issue: item.issue, status, statusLabel: statusLabels[status], family: item.family, version: Number(item.version), businessValue: currentState.summary, targetId: targets.orderRow(item.order_id), evidence: evidence.filter((entry) => entry.order_id === item.order_id).map((entry) => ({ label: entry.label, value: entry.value, occurredAt: entry.occurred_at, age: ageLabel(entry.occurred_at, now) })) };
+    }),
     latestReceipt: receipt === undefined ? null : (JSON.parse(receipt.payload_json) as StoredReceipt).public,
   };
 };
 
 const expectGeneration = (actual: number, expected: number) => { if (actual !== expected) throw fail("generation_changed", "This workspace was reset. Refresh before continuing."); };
 const rowFor = (database: DatabaseSync, userId: string, orderId: string) => database.prepare("SELECT order_id AS id, item, issue, status, family, version, completed, resolved, state_json FROM orders WHERE user_id = ? AND order_id = ?").get(userId, orderId) as ({ id: string; item: string; issue: string; status: OrderStatus; family: WorkspaceSnapshot["orders"][number]["family"]; version: number; completed: number; resolved: number; state_json: string } | undefined);
-const inventoryFor = (database: DatabaseSync, userId: string, sku: string) => {
+function inventoryFor(database: DatabaseSync, userId: string, sku: string) {
   const row = database.prepare("SELECT quantity, version FROM inventory WHERE user_id = ? AND sku = ?").get(userId, sku) as { quantity: number; version: number } | undefined;
   return row === undefined ? null : { sku, quantity: Number(row.quantity), version: Number(row.version) };
-};
+}
 const storeProposal = (database: DatabaseSync, userId: string, stored: StoredProposal) => {
   database.prepare("INSERT INTO proposals (id, user_id, generation, status, payload_json, created_at) VALUES (?, ?, ?, 'pending', ?, ?)").run(stored.public.id, userId, stored.public.generation, JSON.stringify(stored), stored.public.createdAt);
   return stored.public;
@@ -133,8 +140,10 @@ const preparePolicy = (database: DatabaseSync, userId: string, orderId: string):
   const affected = facts.affectedOrderId === undefined ? selected : rowFor(database, userId, facts.affectedOrderId);
   if (affected === undefined) throw fail("order_not_found", "The affected order is not in this workspace.");
   if (Number(affected.completed) !== 0 || Number(affected.resolved) !== 0) throw fail("already_resolved", "That resolution was already accepted.");
-  const stock = facts.inventory === undefined ? null : inventoryFor(database, userId, facts.inventory.sku);
-  const evaluation = evaluateResolution(selected, facts, Number(affected.version), stock);
+  const material = materializeResolution(facts);
+  const stock = material.inventory === undefined ? null : inventoryFor(database, userId, material.inventory.sku);
+  const currentState = JSON.parse(affected.state_json) as OrderBusinessState;
+  const evaluation = evaluateResolution(selected, currentState, facts, Number(affected.version), stock);
   if (!evaluation.ready) return evaluation;
   return { ready: true, policy: { ...evaluation.policy, priorStatus: affected.status, priorIssue: affected.issue, priorCompleted: Number(affected.completed), priorResolved: Number(affected.resolved), priorState: JSON.parse(affected.state_json) as OrderBusinessState, nextCompleted: Number(affected.completed), nextResolved: 1 } };
 };
@@ -149,7 +158,7 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
   const prepareResolution: WorkspaceRepositoryService["prepareResolution"] = (identity, generation, orderId) => command(() => transact(database, () => {
     const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
     const evaluated = preparePolicy(database, user.id, orderId);
-    const title = resolutionFacts[orderId]?.before === undefined ? `Review ${orderId}` : resolutionFacts[orderId]!.before.summary.includes("Willow Lane") ? "Check address" : `Review ${orderId}`;
+    const title = seedOrders.find((item) => item.id === orderId)?.family === "address" ? "Check address" : `Review ${orderId}`;
     const policies = evaluated.ready ? [evaluated.policy] : [];
     const publicProposal = makePublic(generation, "resolution", title, policies, evaluated.ready ? [] : [{ orderId, reason: evaluated.reason }], evaluated.ready ? [] : [evaluated.reason], evaluated.ready);
     return storeProposal(database, user.id, { public: publicProposal, policies });

@@ -17,6 +17,7 @@ function OrderDetail({ order, onBack, review }: { order: OrderSummary; onBack: (
     <Button variant="link" onClick={onBack} className="back-button"><span aria-hidden="true">←</span> Back to queue</Button>
     <div className="detail-heading"><div><span className="order-id">{order.id}</span><h1 id="detail-title">{order.family === "address" ? "Check address" : order.item}</h1></div><span className={`status status-${order.status}`}>{order.statusLabel}</span></div>
     <p className="detail-summary">{order.issue}</p>
+    <div className="detail-current"><span>Current</span><p>{order.businessValue}</p></div>
     <div className="evidence" id={targets.orderEvidence(order.id)}>{order.evidence.map((item) => <div className="evidence-row" key={`${item.label}-${item.occurredAt}`}><div><span className="evidence-label">{item.label}</span><span className="evidence-age">{item.age}</span></div><p>“{item.value}”</p></div>)}</div>
     <div className="detail-actions"><Button onClick={review.run} disabled={review.disabled}>Review change</Button></div>
   </section>;
