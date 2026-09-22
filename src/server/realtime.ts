@@ -353,6 +353,7 @@ export const runWorkspaceSocket = (
             turnId: agentMessage.turnId,
             requestId: agentMessage.requestId,
             message: agentMessage.message,
+            viewContext: agentMessage.context,
             connectionId,
             send: (outgoing) => Effect.runPromise(send(outgoing)),
           })));
@@ -363,7 +364,7 @@ export const runWorkspaceSocket = (
         }
         if (message.value.type === "cancel_agent_turn") {
           const cancelMessage = message.value;
-          const cancelled = yield* Effect.promise(() => agentCoordinator.cancel(identity, cancelMessage.generation, cancelMessage.turnId));
+          const cancelled = yield* Effect.promise(() => agentCoordinator.cancel(repository, identity, cancelMessage.generation, cancelMessage.turnId));
           if (!cancelled) yield* send({ type: "error", requestId: cancelMessage.requestId, code: "turn_not_active", message: "That turn is no longer active." });
           return;
         }

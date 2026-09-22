@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Schema } from "effect";
-import { ServerMessageSchema, WorkspaceSnapshot as WorkspaceSnapshotSchema, type AgentUiOperation, type CommandResult, type ServerMessage, type WorkspaceCommand, type WorkspaceSnapshot } from "../shared/contracts";
+import { ServerMessageSchema, WorkspaceSnapshot as WorkspaceSnapshotSchema, type AgentUiOperation, type AgentViewContext, type CommandResult, type ServerMessage, type WorkspaceCommand, type WorkspaceSnapshot } from "../shared/contracts";
 
 export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline" | "retired";
 type WorkspaceEvent = Extract<ServerMessage, { readonly type: "event" }>;
@@ -119,13 +119,13 @@ export function useWorkspace() {
     });
   }, [status]);
 
-  const sendAgentMessage = useCallback((content: string): string => {
+  const sendAgentMessage = useCallback((content: string, viewContext: AgentViewContext): string => {
     const socket = socketRef.current; const state = stateRef.current;
     if (socket === null || socket.readyState !== WebSocket.OPEN || state === null || status !== "connected") throw new Error("Reconnect before sending a message.");
     const turnId = `turn_${crypto.randomUUID()}`;
     turnStartedRef.current.set(turnId, performance.now());
     setAgentError(null);
-    socket.send(JSON.stringify({ type: "send_agent_turn", requestId: requestId(), generation: state.generation, turnId, message: content }));
+    socket.send(JSON.stringify({ type: "send_agent_turn", requestId: requestId(), generation: state.generation, turnId, message: content, context: viewContext }));
     return turnId;
   }, [status]);
 

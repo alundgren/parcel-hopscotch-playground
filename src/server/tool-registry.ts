@@ -3,7 +3,7 @@ import type { AgentUiOperation, ReviewedProposal } from "../shared/contracts.js"
 import { OrderStatus, ResolutionFamily, ReviewedProposal as ReviewedProposalSchema } from "../shared/contracts.js";
 import type { RequestIdentity } from "./identity.js";
 import type { WorkspaceRepositoryService } from "./persistence.js";
-import type { JevRequest, JevResult } from "./providers/contracts.js";
+import { ProviderError, type JevRequest, type JevResult } from "./providers/contracts.js";
 
 const Identifier = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128));
 const ShortText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2_000));
@@ -180,7 +180,7 @@ export const makeToolRegistry = (handlers: ToolHandlers): Readonly<Record<ToolNa
       try {
         output = await handlers[name](context, decoded as never);
       } catch (error) {
-        if (error instanceof ToolExecutionError) throw error;
+        if (error instanceof ToolExecutionError || error instanceof ProviderError) throw error;
         throw new ToolExecutionError("tool_failed", error instanceof Error ? error.message : `${name} failed.`);
       }
       try {

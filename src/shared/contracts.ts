@@ -74,9 +74,22 @@ export type WorkspaceCommand = typeof PrepareResolutionMessage.Type | typeof Pre
 export const HelloMessage = Schema.Struct({ type: Schema.Literal("hello"), requestId: Schema.String, clientId: Schema.String, knownGeneration: Schema.Int, knownSequence: Schema.Int });
 export const SnapshotRequest = Schema.Struct({ type: Schema.Literal("request_snapshot"), requestId: Schema.String });
 export const PingRequest = Schema.Struct({ type: Schema.Literal("ping"), requestId: Schema.String });
+const AgentContextId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128));
+export const AgentViewFocus = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("order"), orderId: AgentContextId }),
+  Schema.Struct({ kind: Schema.Literal("proposal"), proposalId: AgentContextId }),
+  Schema.Struct({ kind: Schema.Literal("receipt"), receiptId: AgentContextId }),
+]);
+export type AgentViewFocus = typeof AgentViewFocus.Type;
+export const AgentViewContext = Schema.Struct({
+  view: Schema.Literals(["work", "explore", "audit"]),
+  focus: Schema.NullOr(AgentViewFocus),
+});
+export type AgentViewContext = typeof AgentViewContext.Type;
 export const SendAgentTurnMessage = Schema.Struct({
   type: Schema.Literal("send_agent_turn"), requestId: Schema.String,
   generation: Schema.Int, turnId: Schema.String, message: Schema.String,
+  context: AgentViewContext,
 });
 export const CancelAgentTurnMessage = Schema.Struct({
   type: Schema.Literal("cancel_agent_turn"), requestId: Schema.String,

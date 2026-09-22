@@ -13,6 +13,7 @@ let directory: string;
 let databasePath: string;
 let port: number;
 let origin: string;
+const workContext = { context: { view: "work", focus: null } } as const;
 
 const availablePort = () =>
   new Promise<number>((resolve, reject) => {
@@ -202,6 +203,37 @@ describe("realtime server", () => {
     second.socket.close();
   });
 
+  it("admits only one simultaneous agent turn for an owner across two sockets", async () => {
+    const first = await connect("agent-admission@example.test");
+    const second = await connect("agent-admission@example.test");
+    const received: Array<ServerMessage> = [];
+    const record = (data: WebSocket.RawData) => { received.push(JSON.parse(data.toString()) as ServerMessage); };
+    first.socket.on("message", record);
+    second.socket.on("message", record);
+
+    first.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "admission-one", generation: 1, turnId: "turn_12345678-admission-one", message: "Start a slow turn.", ...workContext }));
+    second.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "admission-two", generation: 1, turnId: "turn_12345678-admission-two", message: "Start a slow turn.", ...workContext }));
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const database = new DatabaseSync(databasePath);
+    const user = database.prepare("SELECT id FROM users WHERE identity_digest IS NOT NULL AND id IN (SELECT user_id FROM agent_turns WHERE id LIKE 'turn_12345678-admission-%')").get() as { id: string };
+    const turns = database.prepare("SELECT id FROM agent_turns WHERE user_id = ? AND id LIKE 'turn_12345678-admission-%'").all(user.id) as Array<{ id: string }>;
+    const attempts = database.prepare("SELECT COUNT(*) AS count FROM provider_attempts WHERE user_id = ? AND turn_id LIKE 'turn_12345678-admission-%'").get(user.id) as { count: number };
+    database.close();
+    expect(turns).toHaveLength(1);
+    expect(Number(attempts.count)).toBe(1);
+    expect(received.filter((message) => message.type === "error" && message.code === "agent_start_failed")).toHaveLength(1);
+
+    const activeTurnId = turns[0]!.id;
+    const cancelled = nextMessage(first.socket, (message) => message.type === "agent_state" && message.state.activeTurn === null);
+    first.socket.send(JSON.stringify({ type: "cancel_agent_turn", requestId: "cancel-admitted", generation: 1, turnId: activeTurnId }));
+    await cancelled;
+    first.socket.off("message", record);
+    second.socket.off("message", record);
+    first.socket.close();
+    second.socket.close();
+  });
+
   it("delivers reset success to the accepting socket, retires another tab, and rejects old accepted work", async () => {
     const first = await connect("reset-tabs@example.test");
     const second = await connect("reset-tabs@example.test");
@@ -275,7 +307,7 @@ describe("realtime server", () => {
         }
       });
     });
-    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "start-agent", generation: 1, turnId, message: "Find BB-1042, open it, and highlight the evidence." }));
+    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "start-agent", generation: 1, turnId, message: "Find BB-1042, open it, and highlight the evidence.", ...workContext }));
     const finalState = await completed;
     expect(operations).toEqual(["navigate", "highlight"]);
     expect(finalState.state.chat.filter((item) => item.turnId === turnId).map((item) => item.role)).toEqual(["user", "assistant"]);
@@ -288,7 +320,7 @@ describe("realtime server", () => {
     database.close();
 
     const duplicateState = nextMessage(connection.socket, (message) => message.type === "agent_state");
-    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "retry-agent", generation: 1, turnId, message: "Run it again." }));
+    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "retry-agent", generation: 1, turnId, message: "Run it again.", ...workContext }));
     await duplicateState;
     await new Promise((resolve) => setTimeout(resolve, 100));
     const verify = new DatabaseSync(databasePath);
@@ -297,7 +329,7 @@ describe("realtime server", () => {
     verify.close();
 
     const rejected = nextMessage(connection.socket, (message) => message.type === "error" && message.code === "invalid_message");
-    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "identity-injection", generation: 1, turnId: "turn_87654321", message: "Show work", userId: "someone-else" }));
+    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "identity-injection", generation: 1, turnId: "turn_87654321", message: "Show work", ...workContext, userId: "someone-else" }));
     await expect(rejected).resolves.toMatchObject({ type: "error", requestId: null, code: "invalid_message" });
     connection.socket.close();
   });
@@ -306,7 +338,7 @@ describe("realtime server", () => {
     const connection = await connect("agent-cancel@example.test");
     const turnId = "turn_12345678-cancel";
     const running = nextMessage(connection.socket, (message) => message.type === "agent_state" && message.state.activeTurn?.id === turnId);
-    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "start-cancel", generation: 1, turnId, message: "Start a slow turn and inspect BB-1042." }));
+    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "start-cancel", generation: 1, turnId, message: "Start a slow turn and inspect BB-1042.", ...workContext }));
     await running;
 
     const operations: Array<string> = [];
@@ -338,7 +370,7 @@ describe("realtime server", () => {
   it("cancels an old-generation provider turn on reset without restoring chat or losing its audit", async () => {
     const connection = await connect("agent-reset@example.test");
     const running = nextMessage(connection.socket, (message) => message.type === "agent_state" && message.state.activeTurn?.id === "turn_12345678-reset");
-    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "start-slow", generation: 1, turnId: "turn_12345678-reset", message: "Start a slow turn and inspect BB-1042." }));
+    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "start-slow", generation: 1, turnId: "turn_12345678-reset", message: "Start a slow turn and inspect BB-1042.", ...workContext }));
     await running;
 
     const prepared = nextMessage(connection.socket, (message) => message.type === "command_result" && message.requestId === "prepare-reset-during-turn");
@@ -362,7 +394,7 @@ describe("realtime server", () => {
     database.close();
 
     const stale = nextMessage(connection.socket, (message) => message.type === "error" && message.requestId === "stale-turn");
-    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "stale-turn", generation: 1, turnId: "turn_87654321-stale", message: "Show work" }));
+    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "stale-turn", generation: 1, turnId: "turn_87654321-stale", message: "Show work", ...workContext }));
     await expect(stale).resolves.toMatchObject({ type: "error", code: "agent_start_failed" });
     connection.socket.close();
   });
@@ -370,7 +402,7 @@ describe("realtime server", () => {
   it("recovers an in-flight turn on reconnect without starting another provider request", async () => {
     const first = await connect("agent-reconnect@example.test");
     const running = nextMessage(first.socket, (message) => message.type === "agent_state" && message.state.activeTurn?.id === "turn_12345678-reconnect");
-    first.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "start-reconnect", generation: 1, turnId: "turn_12345678-reconnect", message: "Start a slow turn and inspect BB-1042." }));
+    first.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "start-reconnect", generation: 1, turnId: "turn_12345678-reconnect", message: "Start a slow turn and inspect BB-1042.", ...workContext }));
     await running;
     const closed = new Promise<void>((resolve) => first.socket.once("close", () => resolve()));
     first.socket.close();

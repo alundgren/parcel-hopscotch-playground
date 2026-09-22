@@ -72,6 +72,7 @@ button { color: inherit; }
 h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-weight: 650; letter-spacing: -.015em; }
 
 .queue-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 0 14px; border-bottom: 1px solid var(--line); }
+.queue-toolbar > span { display: flex; align-items: center; gap: 12px; }
 .filters { display: flex; gap: 8px; }
 .filters .button { padding: 7px 12px; }
 .filters .button[aria-pressed="true"] { background: #e8ece9; }
@@ -160,6 +161,7 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
   .work-layout { display: flex; flex-direction: column; gap: 18px; }
   .work-panel, .order-detail { height: 560px; min-height: 0; max-height: none; padding: 22px 16px 14px; }
   .queue-toolbar { align-items: flex-start; flex-direction: column; padding: 18px 0 12px; gap: 10px; }
+  .queue-toolbar > span { align-items: flex-start; flex-direction: column; gap: 4px; }
   .review-status { display: none; }
   .order-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 16px 0; }
   .order-id { grid-column: 1; }

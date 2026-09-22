@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
-import type { CommandReceipt, OrderStatus, ReviewedProposal, WorkspaceSnapshot } from "../shared/contracts.js";
+import type { AgentViewContext, CommandReceipt, OrderStatus, ReviewedProposal, WorkspaceSnapshot } from "../shared/contracts.js";
 import type { ChatMessage } from "./providers/contracts.js";
 import { targets } from "../shared/targets.js";
 import { evaluateResolution, initialStateFor, materializeResolution, resolutionBlockReason, resolutionFacts, type InventoryCondition, type OrderBusinessState, type ResolutionPolicy } from "./fulfilment.js";
@@ -44,6 +44,11 @@ export interface AgentTurnUpdate {
   readonly finishedAt?: string | null;
   readonly measurement?: AgentTurnRecord["measurement"];
 }
+export type ResolvedAgentViewContext =
+  | { readonly view: "work" | "explore" | "audit"; readonly focus: null }
+  | { readonly view: "work"; readonly focus: { readonly kind: "order"; readonly order: { readonly id: string; readonly item: string; readonly issue: string; readonly status: OrderStatus; readonly businessValue: string; readonly evidence: ReadonlyArray<{ readonly label: string; readonly value: string }> } } }
+  | { readonly view: "work"; readonly focus: { readonly kind: "proposal"; readonly proposal: Pick<ReviewedProposal, "id" | "kind" | "title" | "ready" | "changes" | "omissions" | "effects"> } }
+  | { readonly view: "work"; readonly focus: { readonly kind: "receipt"; readonly receipt: Pick<CommandReceipt, "id" | "kind" | "title" | "changes" | "undoable"> } };
 export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly snapshot: (identity: RequestIdentity, now?: number) => Effect.Effect<WorkspaceSnapshot, WorkspaceStoreError>;
   readonly orderIds: (identity: RequestIdentity) => Effect.Effect<ReadonlyArray<string>, WorkspaceStoreError>;
@@ -57,6 +62,7 @@ export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly updateAgentTurn: (identity: RequestIdentity, generation: number, turnId: string, update: AgentTurnUpdate) => Effect.Effect<AgentTurnRecord, WorkspaceCommandError>;
   readonly agentTurn: (identity: RequestIdentity, generation: number, turnId: string) => Effect.Effect<AgentTurnRecord | null, WorkspaceCommandError>;
   readonly agentHistories: (identity: RequestIdentity, generation: number, excludeTurnId: string, limit?: number) => Effect.Effect<ReadonlyArray<ReadonlyArray<ChatMessage>>, WorkspaceCommandError>;
+  readonly resolveAgentViewContext: (identity: RequestIdentity, generation: number, context: AgentViewContext) => Effect.Effect<ResolvedAgentViewContext, WorkspaceCommandError>;
   readonly completeAgentMeasurement: (identity: RequestIdentity, generation: number, turnId: string, durationMs: number) => Effect.Effect<void, WorkspaceCommandError>;
   readonly recordCommandMeasurement: (identity: RequestIdentity, generation: number, receiptId: string, durationMs: number) => Effect.Effect<void, WorkspaceCommandError>;
   readonly markAgentConnectionIncomplete: (identity: RequestIdentity, connectionId: string) => Effect.Effect<void>;
@@ -274,6 +280,50 @@ const agentTurnRecord = (row: AgentTurnRow): AgentTurnRecord => ({
   measurement: row.measurement,
 });
 
+const maximumStoredHistoryBytes = 28 * 1024;
+const maximumStoredToolResultBytes = 2 * 1024;
+const encodedBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const compactStoredToolResult = (message: ChatMessage): ChatMessage => {
+  if (message.role !== "tool" || new TextEncoder().encode(message.content).byteLength <= maximumStoredToolResultBytes) return message;
+  let outcome = "completed";
+  try {
+    const parsed = JSON.parse(message.content) as { ok?: unknown };
+    outcome = parsed.ok === false ? "failed" : parsed.ok === true ? "completed" : "returned a result";
+  } catch {
+    outcome = "returned a result";
+  }
+  return {
+    ...message,
+    content: JSON.stringify({ ok: outcome === "completed", truncated: true, summary: `The tool ${outcome}; its full result exceeded the stored context limit.` }),
+  };
+};
+const groupHistory = (history: ReadonlyArray<ChatMessage>): Array<Array<ChatMessage>> => {
+  const groups: Array<Array<ChatMessage>> = [];
+  for (const message of history) {
+    const previous = groups.at(-1);
+    if (message.role === "tool" && previous?.[0]?.role === "assistant" && previous[0].toolCalls !== undefined) previous.push(message);
+    else groups.push([message]);
+  }
+  return groups;
+};
+const boundStoredHistory = (history: ReadonlyArray<ChatMessage>): ReadonlyArray<ChatMessage> => {
+  const compacted = history.map(compactStoredToolResult);
+  if (encodedBytes(compacted) <= maximumStoredHistoryBytes) return compacted;
+  const groups = groupHistory(compacted);
+  const first = groups[0]?.[0]?.role === "user" ? groups[0]! : [];
+  const candidates = first.length === 0 ? groups : groups.slice(1);
+  const selected: Array<Array<ChatMessage>> = [];
+  const omitted: Array<Array<ChatMessage>> = [];
+  const summary: ChatMessage = { role: "assistant", content: "Earlier completed tool outcomes were omitted from stored context because this turn reached its history limit." };
+  let bytes = encodedBytes([...first, summary]);
+  for (const group of [...candidates].reverse()) {
+    const groupBytes = encodedBytes(group);
+    if (bytes + groupBytes > maximumStoredHistoryBytes) omitted.unshift(group);
+    else { selected.unshift(group); bytes += groupBytes; }
+  }
+  return omitted.length === 0 ? [...first, ...selected.flat()] : [...first, summary, ...selected.flat()];
+};
+
 const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMode: WorkspaceSnapshot["agentMode"], now = Date.now()): WorkspaceSnapshot => {
   const user = ensureUser(database, identity);
   const orders = database.prepare(`SELECT order_id, item, issue, status, family, version, resolved, state_json FROM orders WHERE user_id = ? AND completed = 0 ORDER BY CASE order_id WHEN 'BB-1051' THEN 0 WHEN 'BB-1063' THEN 1 WHEN 'BB-1042' THEN 2 WHEN 'BB-1088' THEN 3 ELSE 4 END, seed_position`).all(user.id) as Array<{ order_id: string; item: string; issue: string; status: OrderStatus; family: WorkspaceSnapshot["orders"][number]["family"]; version: number; resolved: number; state_json: string }>;
@@ -295,7 +345,7 @@ const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMo
     selectedMessageBytes += bytes;
   }
   const active = database.prepare("SELECT * FROM agent_turns WHERE user_id = ? AND generation = ? AND status IN ('running', 'waiting_for_ui') ORDER BY started_at DESC LIMIT 1").get(user.id, user.generation) as AgentTurnRow | undefined;
-  const agentProposal = database.prepare("SELECT p.payload_json FROM agent_turns t JOIN proposals p ON p.id = t.proposal_id AND p.user_id = t.user_id WHERE t.user_id = ? AND t.generation = ? AND p.status = 'pending' ORDER BY t.started_at DESC LIMIT 1").get(user.id, user.generation) as { payload_json: string } | undefined;
+  const pendingProposal = database.prepare("SELECT payload_json FROM proposals WHERE user_id = ? AND generation = ? AND status = 'pending' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(user.id, user.generation) as { payload_json: string } | undefined;
   return {
     generation: user.generation,
     sequence: sequenceFor(database, user.id, user.generation),
@@ -308,7 +358,7 @@ const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMo
       return { id: item.order_id, item: item.item, issue: item.issue, status, statusLabel: statusLabels[status], family: item.family, version: Number(item.version), businessValue: currentState.summary, targetId: targets.orderRow(item.order_id), evidence: evidence.filter((entry) => entry.order_id === item.order_id).map((entry) => ({ label: entry.label, value: entry.value, occurredAt: entry.occurred_at, age: ageLabel(entry.occurred_at, now) })) };
     }),
     latestReceipt: receipt === undefined ? null : (JSON.parse(receipt.payload_json) as StoredReceipt).public,
-    currentProposal: agentProposal === undefined ? null : (JSON.parse(agentProposal.payload_json) as StoredProposal).public,
+    currentProposal: pendingProposal === undefined ? null : (JSON.parse(pendingProposal.payload_json) as StoredProposal).public,
     chat: selectedMessages.map((message) => ({
       id: message.id,
       turnId: message.id.includes(":") ? message.id.slice(0, message.id.lastIndexOf(":")) : message.id,
@@ -619,7 +669,8 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     expectGeneration(user.generation, generation);
     const current = turnRow(user.id, generation, turnId);
     if (current === undefined) throw fail("turn_not_found", "That agent turn is unavailable.");
-    const historyJson = JSON.stringify(update.history);
+    const boundedHistory = boundStoredHistory(update.history);
+    const historyJson = JSON.stringify(boundedHistory);
     if (new TextEncoder().encode(historyJson).byteLength > 32 * 1024) throw fail("history_too_large", "The conversation history exceeded its limit.");
     const measurement = current.measurement === "incomplete" ? "incomplete" : (update.measurement ?? current.measurement);
     database.prepare(`UPDATE agent_turns SET status = ?, phase = ?, history_json = ?,
@@ -636,10 +687,13 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
       generation,
       turnId,
     );
-    if (["waiting_for_ui", "complete", "cancelled", "failed", "interrupted"].includes(update.status)) {
-      const assistant = [...update.history].reverse().find((entry) => entry.role === "assistant" && entry.content !== null && entry.content.trim().length > 0);
+    const terminalVisible = update.status === "complete" || update.status === "cancelled" || update.status === "failed" || update.status === "interrupted" || (update.status === "waiting_for_ui" && update.phase === "Rendering answer");
+    if (terminalVisible) {
+      const assistant = [...boundedHistory].reverse().find((entry) => entry.role === "assistant" && entry.content !== null && entry.content.trim().length > 0);
       if (assistant?.role === "assistant" && assistant.content !== null) {
-        database.prepare("INSERT OR IGNORE INTO chat_messages (id, user_id, generation, role, body, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)").run(
+        database.prepare(`INSERT INTO chat_messages (id, user_id, generation, role, body, created_at)
+          VALUES (?, ?, ?, 'assistant', ?, ?)
+          ON CONFLICT(id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at`).run(
           `${turnId}:assistant`, user.id, generation, assistant.content.slice(0, 8_000), new Date().toISOString(),
         );
       }
@@ -658,6 +712,28 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     const limit = Math.max(1, Math.min(8, Math.floor(requestedLimit)));
     const rows = database.prepare("SELECT history_json FROM agent_turns WHERE user_id = ? AND generation = ? AND id <> ? AND status = 'complete' ORDER BY started_at DESC LIMIT ?").all(user.id, generation, excludeTurnId, limit) as Array<{ history_json: string }>;
     return rows.reverse().map((row) => JSON.parse(row.history_json) as ReadonlyArray<ChatMessage>);
+  });
+  const resolveAgentViewContext: WorkspaceRepositoryService["resolveAgentViewContext"] = (identity, generation, context) => command(() => {
+    const user = ensureUser(database, identity);
+    expectGeneration(user.generation, generation);
+    if (context.view !== "work" && context.focus !== null) throw fail("invalid_view_context", "Only the Work view can identify selected work.");
+    if (context.focus === null) return { view: context.view, focus: null };
+    if (context.focus.kind === "order") {
+      const orderId = context.focus.orderId;
+      const order = readSnapshot(database, identity, agentMode).orders.find((candidate) => candidate.id === orderId);
+      if (order === undefined) throw fail("invalid_view_context", "The selected order is not available in this workspace.");
+      return { view: "work", focus: { kind: "order", order: { id: order.id, item: order.item, issue: order.issue, status: order.status, businessValue: order.businessValue, evidence: order.evidence.map(({ label, value }) => ({ label, value })) } } };
+    }
+    if (context.focus.kind === "proposal") {
+      const row = database.prepare("SELECT payload_json FROM proposals WHERE id = ? AND user_id = ? AND generation = ? AND status = 'pending'").get(context.focus.proposalId, user.id, generation) as { payload_json: string } | undefined;
+      if (row === undefined) throw fail("invalid_view_context", "The selected proposal is not available in this workspace.");
+      const proposal = (JSON.parse(row.payload_json) as StoredProposal).public;
+      return { view: "work", focus: { kind: "proposal", proposal: { id: proposal.id, kind: proposal.kind, title: proposal.title, ready: proposal.ready, changes: proposal.changes, omissions: proposal.omissions, effects: proposal.effects } } };
+    }
+    const row = database.prepare("SELECT payload_json FROM receipts WHERE id = ? AND user_id = ? AND generation = ?").get(context.focus.receiptId, user.id, generation) as { payload_json: string } | undefined;
+    if (row === undefined) throw fail("invalid_view_context", "The selected receipt is not available in this workspace.");
+    const receipt = (JSON.parse(row.payload_json) as StoredReceipt).public;
+    return { view: "work", focus: { kind: "receipt", receipt: { id: receipt.id, kind: receipt.kind, title: receipt.title, changes: receipt.changes, undoable: receipt.undoable } } };
   });
   const completeAgentMeasurement: WorkspaceRepositoryService["completeAgentMeasurement"] = (identity, generation, turnId, durationMs) => command(() => transact(database, () => {
     if (!Number.isFinite(durationMs) || durationMs < 0 || durationMs > 10 * 60_000) throw fail("invalid_duration", "The completed-turn duration is invalid.");
@@ -688,18 +764,20 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     const finishedAt = new Date().toISOString();
     const rows = database.prepare("SELECT user_id, generation, id, history_json FROM agent_turns WHERE status IN ('running', 'waiting_for_ui')").all() as Array<{ user_id: string; generation: number; id: string; history_json: string }>;
     for (const row of rows) {
-      const history = JSON.parse(row.history_json) as Array<ChatMessage>;
-      history.push({ role: "assistant", content: "The server restarted before this turn completed. You can send the request again." });
+      const terminal = "The server restarted before this turn completed. You can send the request again.";
+      const history = boundStoredHistory([...(JSON.parse(row.history_json) as Array<ChatMessage>), { role: "assistant", content: terminal }]);
       database.prepare("UPDATE agent_turns SET status = 'interrupted', phase = 'Interrupted', history_json = ?, error_message = 'The server restarted before this turn completed.', finished_at = ?, measurement = 'incomplete' WHERE user_id = ? AND generation = ? AND id = ?").run(
         JSON.stringify(history), finishedAt, row.user_id, row.generation, row.id,
       );
-      database.prepare("INSERT OR IGNORE INTO chat_messages (id, user_id, generation, role, body, created_at) VALUES (?, ?, ?, 'assistant', ?, ?)").run(
-        `${row.id}:assistant`, row.user_id, row.generation, "The server restarted before this turn completed. You can send the request again.", finishedAt,
+      database.prepare(`INSERT INTO chat_messages (id, user_id, generation, role, body, created_at)
+        VALUES (?, ?, ?, 'assistant', ?, ?)
+        ON CONFLICT(id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at`).run(
+        `${row.id}:assistant`, row.user_id, row.generation, terminal, finishedAt,
       );
     }
     return rows.length;
   });
-  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, completeAgentMeasurement, recordCommandMeasurement, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
+  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, resolveAgentViewContext, completeAgentMeasurement, recordCommandMeasurement, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
 })));
 
 export const workspacePersistenceLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMode"] = "unavailable") => repositoryLayer(filename, agentMode);

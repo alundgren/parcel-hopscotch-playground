@@ -34,7 +34,23 @@ describe("agent tool registry", () => {
       generation: 1,
       turnId: "turn_12345678",
       message: "Show my work",
+      context: { view: "work", focus: null },
       userId: "another-user",
+    })).toThrow();
+    expect(() => Schema.decodeUnknownSync(ClientMessage, { onExcessProperty: "error" })({
+      type: "send_agent_turn",
+      requestId: "req-context",
+      generation: 1,
+      turnId: "turn_12345678-context",
+      message: "Show this",
+      context: { view: "work", focus: { kind: "order", orderId: "BB-1042", selector: "#app" } },
+    })).toThrow();
+    expect(() => Schema.decodeUnknownSync(ClientMessage)({
+      type: "send_agent_turn",
+      requestId: "req-missing-context",
+      generation: 1,
+      turnId: "turn_12345678-missing-context",
+      message: "Show this",
     })).toThrow();
   });
 

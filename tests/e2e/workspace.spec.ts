@@ -191,3 +191,61 @@ test("uses the agent to inspect evidence, prepare a batch for human acceptance, 
   await page.getByRole("button", { name: "Reset my demo" }).click();
   await expect(page.getByText("Fresh workspace ready")).toBeVisible();
 });
+
+test("uses selected work context and recovers navigation while final replies render", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await expect(page.getByTestId("connection-status")).toContainText("Connected");
+  const composer = page.getByPlaceholder("Message...");
+  const send = async (message: string) => {
+    await composer.fill(message);
+    await page.getByRole("button", { name: "Send message" }).click();
+  };
+
+  await page.locator("#target-order-BB-1072").click();
+  await send("Explain this order.");
+  await expect(page.locator(".detail-heading")).toContainText("BB-1072");
+  await expect(page.getByText("I found the order and showed the relevant evidence.")).toBeVisible();
+  await expect(composer).toBeEnabled();
+
+  await send("Show BB-1042.");
+  await expect(page.locator(".detail-heading")).toContainText("BB-1042");
+  await expect(composer).toBeEnabled();
+
+  await send("Prepare all the green orders as a batch.");
+  await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
+  await expect(page.getByText("Accepted by you")).toHaveCount(0);
+  await send("Show BB-1042.");
+  await expect(page.getByRole("heading", { name: "Check address" })).toBeVisible();
+  await expect(composer).toBeEnabled();
+  await page.getByRole("button", { name: "Back to queue" }).click();
+  await expect(page.getByRole("button", { name: "Review saved proposal" })).toBeVisible();
+  await page.getByRole("button", { name: "Review saved proposal" }).click();
+  await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("agent-context-navigation.png"), fullPage: true });
+  await page.getByRole("button", { name: /Accept \d+ changes/ }).click();
+  await expect(page.getByText("Accepted by you")).toBeVisible();
+
+  await send("Show BB-1042.");
+  await expect(page.getByRole("heading", { name: "Check address" })).toBeVisible();
+  await expect(page.getByText("Accepted by you")).toHaveCount(0);
+  await expect(composer).toBeEnabled();
+
+  await send("Slow turn, show BB-1042.");
+  await expect(page.locator("#target-order-BB-1042-evidence")).toHaveClass(/agent-highlight/);
+  await page.getByRole("button", { name: "Audit", exact: true }).click();
+  await page.waitForTimeout(800);
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await expect(page.getByText("I found the order and showed the relevant evidence.").last()).toBeVisible();
+  await expect(composer).toBeEnabled();
+
+  await send("Open Explore.");
+  await expect(page.getByRole("heading", { name: "Explore" })).toBeVisible();
+  await page.waitForTimeout(5_200);
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await expect(page.getByText("I opened Explore. Return to Work to continue the conversation.")).toBeVisible();
+  await expect(composer).toBeEnabled();
+
+  await page.getByRole("button", { name: "Reset my demo" }).click();
+  await page.getByRole("button", { name: "Reset my demo" }).click();
+  await expect(page.getByText("Fresh workspace ready")).toBeVisible();
+});
