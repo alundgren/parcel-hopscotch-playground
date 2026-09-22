@@ -59,6 +59,43 @@ const nextMessage = (
     socket.on("message", listener);
   });
 
+const nextMessageFromSockets = (
+  sockets: ReadonlyArray<WebSocket>,
+  predicate: (message: ServerMessage) => boolean,
+) =>
+  new Promise<ServerMessage>((resolve, reject) => {
+    const cleanup = () => sockets.forEach((socket) => socket.off("message", listener));
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for a message across sockets."));
+    }, 5000);
+    const listener = (data: WebSocket.RawData) => {
+      const message = JSON.parse(data.toString()) as ServerMessage;
+      if (!predicate(message)) return;
+      clearTimeout(timeout);
+      cleanup();
+      resolve(message);
+    };
+    sockets.forEach((socket) => socket.on("message", listener));
+  });
+
+const closeSocket = (socket: WebSocket) =>
+  new Promise<void>((resolve) => {
+    if (socket.readyState === WebSocket.CLOSED) {
+      resolve();
+      return;
+    }
+    const timeout = setTimeout(() => {
+      socket.terminate();
+      resolve();
+    }, 1000);
+    socket.once("close", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    socket.close();
+  });
+
 const waitForProviderAttempt = async (turnId: string) => {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -222,34 +259,68 @@ describe("realtime server", () => {
   });
 
   it("admits only one simultaneous agent turn for an owner across two sockets", async () => {
-    const first = await connect("agent-admission@example.test");
-    const second = await connect("agent-admission@example.test");
+    const sockets: Array<WebSocket> = [];
     const received: Array<ServerMessage> = [];
     const record = (data: WebSocket.RawData) => { received.push(JSON.parse(data.toString()) as ServerMessage); };
-    first.socket.on("message", record);
-    second.socket.on("message", record);
+    let activeTurnId: string | undefined;
+    let turnStopped = false;
 
-    first.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "admission-one", generation: 1, turnId: "turn_12345678-admission-one", message: "Start a slow turn.", ...workContext }));
-    second.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "admission-two", generation: 1, turnId: "turn_12345678-admission-two", message: "Start a slow turn.", ...workContext }));
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    try {
+      const first = await connect("agent-admission@example.test");
+      sockets.push(first.socket);
+      const second = await connect("agent-admission@example.test");
+      sockets.push(second.socket);
+      first.socket.on("message", record);
+      second.socket.on("message", record);
 
-    const database = new DatabaseSync(databasePath);
-    const user = database.prepare("SELECT id FROM users WHERE identity_digest IS NOT NULL AND id IN (SELECT user_id FROM agent_turns WHERE id LIKE 'turn_12345678-admission-%')").get() as { id: string };
-    const turns = database.prepare("SELECT id FROM agent_turns WHERE user_id = ? AND id LIKE 'turn_12345678-admission-%'").all(user.id) as Array<{ id: string }>;
-    const attempts = database.prepare("SELECT COUNT(*) AS count FROM provider_attempts WHERE user_id = ? AND turn_id LIKE 'turn_12345678-admission-%'").get(user.id) as { count: number };
-    database.close();
-    expect(turns).toHaveLength(1);
-    expect(Number(attempts.count)).toBe(1);
-    expect(received.filter((message) => message.type === "error" && message.code === "agent_start_failed")).toHaveLength(1);
+      const admitted = nextMessage(first.socket, (message) => message.type === "agent_state"
+        && message.state.activeTurn?.id.startsWith("turn_12345678-admission-") === true);
+      const rejected = nextMessageFromSockets(
+        sockets,
+        (message) => message.type === "error" && message.code === "agent_start_failed",
+      );
+      first.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "admission-one", generation: 1, turnId: "turn_12345678-admission-one", message: "Start a slow turn.", ...workContext }));
+      second.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "admission-two", generation: 1, turnId: "turn_12345678-admission-two", message: "Start a slow turn.", ...workContext }));
 
-    const activeTurnId = turns[0]!.id;
-    const cancelled = nextMessage(first.socket, (message) => message.type === "agent_state" && message.state.activeTurn === null);
-    first.socket.send(JSON.stringify({ type: "cancel_agent_turn", requestId: "cancel-admitted", generation: 1, turnId: activeTurnId }));
-    await cancelled;
-    first.socket.off("message", record);
-    second.socket.off("message", record);
-    first.socket.close();
-    second.socket.close();
+      const [admittedMessage, rejectedMessage] = await Promise.all([admitted, rejected]);
+      if (admittedMessage.type !== "agent_state" || admittedMessage.state.activeTurn === null) {
+        throw new Error("The admitted agent turn was not published.");
+      }
+      activeTurnId = admittedMessage.state.activeTurn.id;
+      expect(rejectedMessage).toMatchObject({ type: "error", code: "agent_start_failed" });
+      await waitForProviderAttempt(activeTurnId);
+
+      const database = new DatabaseSync(databasePath);
+      try {
+        database.exec("PRAGMA busy_timeout = 5000");
+        const user = database.prepare("SELECT id FROM users WHERE identity_digest IS NOT NULL AND id IN (SELECT user_id FROM agent_turns WHERE id LIKE 'turn_12345678-admission-%')").get() as { id: string };
+        const turns = database.prepare("SELECT id FROM agent_turns WHERE user_id = ? AND id LIKE 'turn_12345678-admission-%'").all(user.id) as Array<{ id: string }>;
+        const attempts = database.prepare("SELECT COUNT(*) AS count FROM provider_attempts WHERE user_id = ? AND turn_id LIKE 'turn_12345678-admission-%'").get(user.id) as { count: number };
+        expect(turns).toHaveLength(1);
+        expect(turns[0]!.id).toBe(activeTurnId);
+        expect(Number(attempts.count)).toBe(1);
+        expect(received.filter((message) => message.type === "error" && message.code === "agent_start_failed")).toHaveLength(1);
+      } finally {
+        database.close();
+      }
+
+      const cancelled = nextMessage(first.socket, (message) => message.type === "agent_state" && message.state.activeTurn === null);
+      first.socket.send(JSON.stringify({ type: "cancel_agent_turn", requestId: "cancel-admitted", generation: 1, turnId: activeTurnId }));
+      await cancelled;
+      turnStopped = true;
+    } finally {
+      if (activeTurnId !== undefined && !turnStopped) {
+        const socket = sockets.find((candidate) => candidate.readyState === WebSocket.OPEN);
+        if (socket !== undefined) {
+          const stopped = nextMessage(socket, (message) => (message.type === "agent_state" && message.state.activeTurn === null)
+            || (message.type === "error" && message.requestId === "cleanup-admitted"));
+          socket.send(JSON.stringify({ type: "cancel_agent_turn", requestId: "cleanup-admitted", generation: 1, turnId: activeTurnId }));
+          await stopped.catch(() => undefined);
+        }
+      }
+      sockets.forEach((socket) => socket.off("message", record));
+      await Promise.all(sockets.map(closeSocket));
+    }
   });
 
   it("delivers reset success to the accepting socket, retires another tab, and rejects old accepted work", async () => {
