@@ -11,7 +11,7 @@
     "dev": "concurrently -k -n server,web -c blue,green \"pnpm dev:server\" \"pnpm dev:web\"",
     "dev:server": "node --env-file-if-exists=.env.local --import tsx --watch src/server/main.ts",
     "dev:web": "vite",
-    "build": "pnpm typecheck && vite build && tsc -p tsconfig.server.json",
+    "build": "pnpm typecheck && NODE_ENV=production vite build && tsc -p tsconfig.server.json",
     "start": "node --env-file-if-exists=.env.local dist/server/server/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit",
     "test": "vitest run",
