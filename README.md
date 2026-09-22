@@ -8,36 +8,38 @@ The experiment compares Ministral conversation and tool use with Jev constrained
 
 ## Fresh local setup
 
-Install Node 22.18 or newer and pnpm 12.5.0. If pnpm is unavailable, install that exact version with `npm install --global pnpm@12.5.0`.
+Install Vite Plus 0.3.0 from the exact [official installer source](https://github.com/voidzero-dev/vite-plus/blob/b2d15e3899dcc8adedfd45d98de9d30046a624f4/packages/cli/install.sh). The installer manages the project-pinned Node 24.19.0 runtime and pnpm 12.5.0. It adds only the Vite Plus executable directory to supported shell startup files; it does not replace system Node or change another package manager's settings. Load the generated shell environment before running `vp`; a new terminal will load it automatically.
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/voidzero-dev/vite-plus/b2d15e3899dcc8adedfd45d98de9d30046a624f4/packages/cli/install.sh | VP_VERSION=0.3.0 VP_NODE_MANAGER=yes bash
+. "${XDG_CONFIG_HOME:-$HOME/.config}/vite-plus/env"
 git clone https://github.com/alundgren/parcel-hopscotch-playground.git
 cd parcel-hopscotch-playground
 cp .env.example .env.local
-pnpm install --frozen-lockfile
-pnpm exec playwright install --with-deps chromium
-pnpm dev
+vp install --frozen-lockfile
+vp exec playwright install --with-deps chromium
+vp run dev
 ```
 
-Open `http://127.0.0.1:5173`. The Vite client proxies the Effect Node server on port 3000. `pnpm dev:server` and `pnpm start` load the ignored `.env.local` file automatically. An exported process variable takes precedence over the same key in that file.
+Open `http://127.0.0.1:5173`. The Vite client proxies the Effect Node server on port 3000. `vp run dev:server` and `vp run start` load the ignored `.env.local` file automatically. An exported process variable takes precedence over the same key in that file.
 
 The example configuration uses the deterministic scripted provider and an explicitly enabled development identity. It makes no paid requests. For a built-server check, set `PUBLIC_ORIGIN=http://127.0.0.1:3000`, then run:
 
 ```bash
-pnpm build
-pnpm start
+vp run build
+vp run start
 ```
 
-To run the deliberate live checks, set `AGENT_PROVIDER_MODE=live` and put `OPENROUTER_API_KEY` in `.env.local`. Do not pass the key in a command argument or add the file to Git. `pnpm smoke:providers` makes one bounded request to each agreed model. `pnpm benchmark:providers -- --mode live --confirm-live ...` is the separately bounded benchmark command. Ordinary development, tests, container verification and CI do not need or use the key.
+To run the deliberate live checks, set `AGENT_PROVIDER_MODE=live` and put `OPENROUTER_API_KEY` in `.env.local`. Do not pass the key in a command argument or add the file to Git. `vp run smoke:providers` makes one bounded request to each agreed model. `vp run benchmark:providers -- --mode live --confirm-live ...` is the separately bounded benchmark command. Ordinary development, tests, container verification and CI do not need or use the key.
 
 ## Checks and evidence
 
 ```bash
-pnpm check
-pnpm test:e2e
-pnpm proof:visual
-pnpm proof:video
-pnpm benchmark:providers -- --mode fixture --output-dir /tmp/parcel-provider-benchmark-fixture
+vp run check
+vp run test:e2e
+vp run proof:visual
+vp run proof:video
+vp run benchmark:providers -- --mode fixture --output-dir /tmp/parcel-provider-benchmark-fixture
 ```
 
 Playwright uses the scripted providers through the real WebSocket transport and SQLite repository. It records videos in `test-results/`. The visual command creates six same-state comparisons against the unchanged approved prototype at 1440 by 1000 and 320 by 900. The video command records readable desktop and narrow demonstrations. Its pauses occur after the measured completion boundaries.
@@ -70,14 +72,14 @@ Open `http://127.0.0.1:3000`. This development identity example is only for dire
 Run the complete local packaging check with:
 
 ```bash
-pnpm verify:container
+vp run verify:container
 ```
 
 The command first refuses non-Unix Docker endpoints. It builds a temporary image for the local Docker engine's platform, publishes only on loopback, checks React, health, PID 1, UID/GID 1000, production identity rejection and acceptance, WebSocket operation, an accepted order change, SIGTERM shutdown, and named-volume plus bind-directory persistence after container replacement. It removes only its uniquely named containers, volume, bind directory and image.
 
 For the bind check, a short-lived root helper inside the local Docker engine changes only the verifier-created temporary directory to UID/GID 1000, then restores its original host ownership before cleanup. The application containers still run as the nonroot `node` user.
 
-The image uses the digest-pinned Node 26.7.0 Bookworm slim multi-platform index. Node 26 is supported through 2029-04-30 and is scheduled to become LTS on 2026-10-28. The Dockerfile compiles on the builder platform and prepares runtime dependencies for the target architecture.
+The image uses the exact Vite Plus 0.3.0 builder index and Node 24.19.0 Bookworm slim runtime index recorded in the [operator guide](docs/operator-guide.md). The Dockerfile compiles the application and installs a fresh production-only dependency tree on the builder platform. The current production graph has no target-dependent native package. Recheck that fact before copying dependencies if the graph changes. See the operator guide for the ARM64 artifact inspection and execution limit.
 
 ## Operation and data
 

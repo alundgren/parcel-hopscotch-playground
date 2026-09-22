@@ -50,7 +50,7 @@ const staticResponse = (url: string) => {
     ),
     Effect.catch(() =>
       Effect.succeed(
-        HttpServerResponse.text("Client build not found. Run pnpm build first.", {
+        HttpServerResponse.text("Client build not found. Run vp run build first.", {
           status: 503,
         }),
       ),

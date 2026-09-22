@@ -1,24 +1,27 @@
 # syntax=docker/dockerfile:1.7
 
-FROM --platform=$BUILDPLATFORM node:26.7.0-bookworm-slim@sha256:4db36457f406501e6f608802e5da617e5fbd0e80b75901b6a09de1ae5a667d32 AS build
-ARG TARGETARCH
+FROM --platform=$BUILDPLATFORM ghcr.io/voidzero-dev/vite-plus:0.3.0@sha256:bca24ac970b21298430ad281f306dbe0a17be3fd1d6c9ec5f2cc73da65740b88 AS build
 WORKDIR /app
-RUN npm install --global pnpm@12.5.0
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-RUN pnpm install --frozen-lockfile
-COPY . .
-RUN pnpm build && pnpm deploy --prod --cpu=$TARGETARCH --os=linux /runtime
-RUN install -d -o 1000 -g 1000 /runtime-data && \
-  touch /runtime-data/.parcel-hopscotch-volume && \
-  chown 1000:1000 /runtime-data/.parcel-hopscotch-volume
+COPY --chown=1000:1000 package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+RUN vp install --frozen-lockfile
+COPY --chown=1000:1000 . .
+RUN vp run build
+RUN install -d -o 1000 -g 1000 /app/runtime-data && \
+  touch /app/runtime-data/.parcel-hopscotch-volume && \
+  chown 1000:1000 /app/runtime-data/.parcel-hopscotch-volume
 
-FROM node:26.7.0-bookworm-slim@sha256:4db36457f406501e6f608802e5da617e5fbd0e80b75901b6a09de1ae5a667d32 AS runtime
+FROM --platform=$BUILDPLATFORM ghcr.io/voidzero-dev/vite-plus:0.3.0@sha256:bca24ac970b21298430ad281f306dbe0a17be3fd1d6c9ec5f2cc73da65740b88 AS production-dependencies
+WORKDIR /app
+COPY --chown=1000:1000 package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+RUN vp install --prod --frozen-lockfile
+
+FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATABASE_PATH=/data/parcel.sqlite
-COPY --from=build --chown=node:node /runtime/package.json ./package.json
-COPY --from=build --chown=node:node /runtime/node_modules ./node_modules
+COPY --from=production-dependencies --chown=node:node /app/package.json ./package.json
+COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
-COPY --from=build --chown=node:node /runtime-data /data
+COPY --from=build --chown=node:node /app/runtime-data /data
 COPY --chown=node:node LICENSE ./LICENSE
 VOLUME ["/data"]
 EXPOSE 3000
