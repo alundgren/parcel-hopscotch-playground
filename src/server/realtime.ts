@@ -8,6 +8,7 @@ import {
   type WorkspaceSnapshot,
 } from "../shared/contracts.js";
 import type { ServerConfig } from "./config.js";
+import type { AgentCoordinator } from "./agent-runtime.js";
 import type { RequestIdentity } from "./identity.js";
 import { WorkspaceRepository } from "./persistence.js";
 
@@ -71,6 +72,12 @@ export interface RealtimeHubService {
     userId: string,
     payload: unknown,
   ) => Effect.Effect<void>;
+  readonly publishAgent: (
+    userId: string,
+    generation: number,
+    state: WorkspaceSnapshot,
+    excludeConnectionId?: string,
+  ) => Effect.Effect<void>;
 }
 
 export class RealtimeHub extends Context.Service<RealtimeHub, RealtimeHubService>()(
@@ -83,7 +90,7 @@ export const realtimeHubLayer = Layer.sync(RealtimeHub)(() => {
   const register: RealtimeHubService["register"] = (userId, connection) =>
     Effect.gen(function* () {
       const existing = connections.get(userId) ?? new Map<string, HubConnection>();
-      if (existing.size >= maximumConnectionsPerUser) {
+      if (existing.size >= maximumConnectionsPerUser + 1) {
         return yield* new RealtimeLimitError({
           message: "Too many live workspace connections.",
         });
@@ -117,6 +124,10 @@ export const realtimeHubLayer = Layer.sync(RealtimeHub)(() => {
       }
       const connection = current.get(connectionId);
       if (connection !== undefined) connection.clientId = clientId;
+      if (current.size > maximumConnectionsPerUser && connection !== undefined) {
+        yield* connection.close(1013, "Too many live workspace connections.");
+        current.delete(connectionId);
+      }
     });
 
   const publish: RealtimeHubService["publish"] = (
@@ -156,7 +167,16 @@ export const realtimeHubLayer = Layer.sync(RealtimeHub)(() => {
       { concurrency: 4, discard: true },
     );
 
-  return RealtimeHub.of({ register, bindClient, promoteGeneration, publish, publishAudit });
+  const publishAgent: RealtimeHubService["publishAgent"] = (userId, generation, state, excludeConnectionId) =>
+    Effect.forEach(
+      [...(connections.get(userId)?.values() ?? [])],
+      (connection) => connection.id !== excludeConnectionId && connection.generation === generation
+        ? connection.send({ type: "agent_state", state })
+        : Effect.void,
+      { concurrency: 4, discard: true },
+    );
+
+  return RealtimeHub.of({ register, bindClient, promoteGeneration, publish, publishAudit, publishAgent });
 });
 
 const headerValues = (
@@ -210,6 +230,7 @@ const snapshotMessage = (
 export const runWorkspaceSocket = (
   socket: Socket.Socket,
   identity: RequestIdentity,
+  agentCoordinator: AgentCoordinator,
   outgoingBuffer: () => OutgoingBufferState = () => ({
     bufferedBytes: 0,
     needsDrain: false,
@@ -293,7 +314,7 @@ export const runWorkspaceSocket = (
           });
           return;
         }
-        const message = yield* Schema.decodeUnknownEffect(ClientMessage)(
+        const message = yield* Schema.decodeUnknownEffect(ClientMessage, { onExcessProperty: "error" })(
           unknownMessage,
         ).pipe(Effect.option);
         if (message._tag === "None") {
@@ -322,6 +343,53 @@ export const runWorkspaceSocket = (
         if (message.value.type === "hello") {
           yield* hub.bindClient(identity.id, connectionId, message.value.clientId);
         }
+        if (message.value.type === "send_agent_turn") {
+          const agentMessage = message.value;
+          const result = yield* Effect.result(Effect.tryPromise(() => agentCoordinator.start({
+            repository,
+            hub,
+            identity,
+            generation: agentMessage.generation,
+            turnId: agentMessage.turnId,
+            requestId: agentMessage.requestId,
+            message: agentMessage.message,
+            connectionId,
+            send: (outgoing) => Effect.runPromise(send(outgoing)),
+          })));
+          if (result._tag === "Failure") {
+            yield* send({ type: "error", requestId: agentMessage.requestId, code: "agent_start_failed", message: result.failure instanceof Error ? result.failure.message : "The agent turn could not start." });
+          }
+          return;
+        }
+        if (message.value.type === "cancel_agent_turn") {
+          const cancelMessage = message.value;
+          const cancelled = yield* Effect.promise(() => agentCoordinator.cancel(identity, cancelMessage.generation, cancelMessage.turnId));
+          if (!cancelled) yield* send({ type: "error", requestId: cancelMessage.requestId, code: "turn_not_active", message: "That turn is no longer active." });
+          return;
+        }
+        if (message.value.type === "agent_ui_ack") {
+          const accepted = agentCoordinator.acknowledgeUi(identity, message.value.generation, message.value.turnId, message.value.operationId, connectionId, message.value.outcome);
+          if (!accepted) yield* send({ type: "error", requestId: message.value.requestId, code: "acknowledgement_expired", message: "That UI operation is no longer waiting for acknowledgement." });
+          return;
+        }
+        if (message.value.type === "agent_complete_ack") {
+          if (!agentCoordinator.acknowledgeComplete(identity, message.value.generation, message.value.turnId, connectionId)) {
+            yield* send({ type: "error", requestId: message.value.requestId, code: "acknowledgement_expired", message: "That completed turn is not awaiting this browser's acknowledgement." });
+            return;
+          }
+          const completed = yield* Effect.result(repository.completeAgentMeasurement(identity, message.value.generation, message.value.turnId, message.value.durationMs));
+          if (completed._tag === "Failure") {
+            yield* send({ type: "error", requestId: message.value.requestId, code: completed.failure.code, message: completed.failure.message });
+            return;
+          }
+          yield* send({ type: "agent_state", state: yield* repository.snapshot(identity).pipe(Effect.orDie) });
+          return;
+        }
+        if (message.value.type === "command_visible_ack") {
+          const recorded = yield* Effect.result(repository.recordCommandMeasurement(identity, message.value.generation, message.value.receiptId, message.value.durationMs));
+          if (recorded._tag === "Failure") yield* send({ type: "error", requestId: message.value.requestId, code: recorded.failure.code, message: recorded.failure.message });
+          return;
+        }
         if (message.value.type === "prepare_resolution") {
           const result = yield* Effect.result(repository.prepareResolution(identity, message.value.generation, message.value.orderId));
           if (result._tag === "Failure") {
@@ -348,15 +416,19 @@ export const runWorkspaceSocket = (
           return;
         }
         if (message.value.type === "accept_proposal") {
-          const result = yield* Effect.result(repository.accept(identity, message.value.generation, message.value.proposalId, message.value.idempotencyKey));
+          const acceptMessage = message.value;
+          const result = yield* Effect.result(repository.accept(identity, acceptMessage.generation, acceptMessage.proposalId, acceptMessage.idempotencyKey));
           if (result._tag === "Failure") {
             const failure = result.failure;
-            yield* send({ type: "error", requestId: message.value.requestId, code: failure._tag === "WorkspaceCommandError" ? failure.code : "store_error", message: failure.message });
+            yield* send({ type: "error", requestId: acceptMessage.requestId, code: failure._tag === "WorkspaceCommandError" ? failure.code : "store_error", message: failure.message });
             return;
           }
           const commandResult = { kind: "receipt" as const, receipt: result.success.receipt };
-          if (result.success.generationChanged) yield* hub.promoteGeneration(identity.id, connectionId, result.success.snapshot.generation);
-          yield* send({ type: "command_result", requestId: message.value.requestId, result: commandResult, state: result.success.snapshot });
+          if (result.success.generationChanged) {
+            yield* Effect.promise(() => agentCoordinator.cancelGeneration(identity, acceptMessage.generation));
+            yield* hub.promoteGeneration(identity.id, connectionId, result.success.snapshot.generation);
+          }
+          yield* send({ type: "command_result", requestId: acceptMessage.requestId, result: commandResult, state: result.success.snapshot });
           yield* hub.publish(identity.id, result.success.snapshot.generation, result.success.snapshot.sequence, "workspace.committed", { state: result.success.snapshot, result: commandResult });
           return;
         }
@@ -386,5 +458,6 @@ export const runWorkspaceSocket = (
     }).pipe(
       Effect.catchReason("SocketError", "SocketCloseError", () => Effect.void),
       Effect.catch(() => Effect.void),
+      Effect.ensuring(Effect.promise(() => agentCoordinator.disconnect(repository, identity, connectionId))),
     );
   }).pipe(Effect.catch(() => Effect.void));

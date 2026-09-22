@@ -7,7 +7,7 @@ import { runWithWorkspaceRepository, WorkspaceRepository } from "../../src/serve
 
 const [filename, email, action, proposalId, gate] = process.argv.slice(2);
 if (filename === undefined || email === undefined || action === undefined || proposalId === undefined || gate === undefined) process.exit(2);
-const config: ServerConfig = { environment: "production", host: "127.0.0.1", port: 0, publicOrigin: "https://parcel.example.test", databasePath: filename, allowDevelopmentIdentity: false, developmentEmail: null };
+const config: ServerConfig = { environment: "production", host: "127.0.0.1", port: 0, publicOrigin: "https://parcel.example.test", databasePath: filename, allowDevelopmentIdentity: false, developmentEmail: null, agentMode: "unavailable", openRouterApiKey: null };
 const identity = Effect.runSync(resolveIdentity(["Cf-Access-Authenticated-User-Email", email], config));
 while (!existsSync(gate)) await wait(5);
 try {

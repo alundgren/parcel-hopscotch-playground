@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { CommandReceipt, CommandResult, OrderSummary, ReviewedProposal } from "../shared/contracts";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import type { CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, WorkspaceSnapshot } from "../shared/contracts";
 import { targets } from "../shared/targets";
 import { Button } from "./components/ui/button";
 import { useWorkspace, type ConnectionStatus } from "./use-workspace";
@@ -67,7 +67,31 @@ function WorkQueue({ orders, latestReceipt, connected, selectedOrderId, setSelec
   </section>;
 }
 
-function ChatPanel() { return <aside className="chat-panel" aria-label="Assistant chat"><div className="chat-copy"><p>Review each proposed change before it updates your workspace.</p><p>Stock, record versions and ownership are checked again when you accept.</p></div><form className="composer" id={targets.chatComposer} aria-describedby="chat-status"><label className="sr-only" htmlFor="chat-message">Message</label><input id="chat-message" type="text" placeholder="Message..." disabled /><Button variant="icon" type="submit" aria-label="Send message" disabled><span aria-hidden="true">↑</span></Button></form><span className="sr-only" id="chat-status">Agent integration is not available.</span></aside>; }
+function ChatPanel({ snapshot, connected, onSend, onCancel, error }: { snapshot: WorkspaceSnapshot; connected: boolean; onSend: (message: string) => void; onCancel: () => void; error: string | null }) {
+  const [message, setMessage] = useState("");
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const active = snapshot.activeTurn;
+  useEffect(() => { listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }); }, [snapshot.chat.length, active?.phase]);
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const value = message.trim();
+    if (value.length === 0 || active !== null || !connected) return;
+    onSend(value);
+    setMessage("");
+  };
+  return <aside className="chat-panel" aria-label={`Assistant chat, ${snapshot.agentMode} provider`} data-provider-mode={snapshot.agentMode}>
+    <div className="chat-messages" ref={listRef} aria-live="polite">
+      {snapshot.chat.map((item) => <p key={item.id} className={`chat-message chat-${item.role}`} data-chat-turn={item.turnId} data-chat-role={item.role}>{item.content}</p>)}
+      {active !== null && <div className="turn-progress" role="status"><span className="progress-dot" aria-hidden="true" /> <span>{active.phase}</span><Button variant="link" onClick={onCancel}>Cancel</Button></div>}
+      {error !== null && <p className="chat-error" role="alert">{error}</p>}
+    </div>
+    <form className="composer" id={targets.chatComposer} onSubmit={submit}>
+      <label className="sr-only" htmlFor="chat-message">Message</label>
+      <input id="chat-message" type="text" placeholder="Message..." value={message} maxLength={2000} onChange={(event) => setMessage(event.target.value)} disabled={!connected || active !== null} />
+      <Button variant="icon" type="submit" aria-label="Send message" disabled={!connected || active !== null || message.trim().length === 0}><span aria-hidden="true">↑</span></Button>
+    </form>
+  </aside>;
+}
 function EmptyRoute({ title, text }: { title: string; text: string }) { return <main className="empty-route"><h1>{title}</h1><p>{text}</p></main>; }
 
 export default function App() {
@@ -77,7 +101,8 @@ export default function App() {
   const [receipt, setReceipt] = useState<CommandReceipt | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { snapshot, status, runCommand } = useWorkspace();
+  const { snapshot, status, runCommand, sendAgentMessage, cancelAgentTurn, agentOperation, acknowledgeAgentOperation, acknowledgeAgentComplete, acknowledgeCommandVisible, agentError } = useWorkspace();
+  const acceptStarted = useRef<number | null>(null);
   const priorGeneration = useRef<number | null>(null);
   useEffect(() => {
     if (snapshot === null) return;
@@ -92,13 +117,70 @@ export default function App() {
     if (proposal !== null) document.getElementById("proposal-title")?.focus();
     else if (receipt !== null) document.getElementById("receipt-title")?.focus();
   }, [proposal?.id, receipt?.id]);
+  useEffect(() => {
+    if (snapshot?.currentProposal !== null && snapshot?.currentProposal !== undefined && proposal?.id !== snapshot.currentProposal.id) {
+      setReceipt(null);
+      setProposal(snapshot.currentProposal);
+    }
+  }, [snapshot?.currentProposal?.id]);
+  useEffect(() => {
+    if (agentOperation === null || snapshot === null) return;
+    if (agentOperation.kind === "navigate") {
+      if (agentOperation.view === "order") { setView("work"); setSelectedOrderId(agentOperation.orderId ?? null); }
+      else { setView(agentOperation.view); setSelectedOrderId(null); }
+    }
+    if (agentOperation.kind === "present_proposal") {
+      const prepared = snapshot.currentProposal;
+      if (prepared !== null && prepared.id === agentOperation.proposalId) { setView("work"); setReceipt(null); setProposal(prepared); }
+    }
+    let cancelled = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (cancelled) return;
+      const target = agentOperation.kind === "highlight"
+        ? document.getElementById(agentOperation.targetId)
+        : agentOperation.kind === "present_proposal"
+          ? document.getElementById("proposal-title")
+          : agentOperation.view === "order"
+            ? agentOperation.orderId === undefined ? null : document.getElementById(targets.orderEvidence(agentOperation.orderId))
+            : document.querySelector(`[data-view="${agentOperation.view}"]`);
+      if (target instanceof HTMLElement && agentOperation.kind === "highlight") {
+        target.classList.add("agent-highlight");
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        window.setTimeout(() => target.classList.remove("agent-highlight"), 2400);
+      }
+      acknowledgeAgentOperation(agentOperation, target === null ? "missing" : "applied");
+    }));
+    return () => { cancelled = true; };
+  }, [agentOperation?.id, snapshot?.currentProposal?.id]);
+  useEffect(() => {
+    const active = snapshot?.activeTurn;
+    if (snapshot === null || active == null || active.phase !== "Rendering answer") return;
+    let cancelled = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (cancelled) return;
+      const rendered = document.querySelector(`[data-chat-turn="${CSS.escape(active.id)}"][data-chat-role="assistant"]`);
+      if (rendered !== null) acknowledgeAgentComplete(active.id, snapshot.generation);
+    }));
+    return () => { cancelled = true; };
+  }, [snapshot?.activeTurn?.id, snapshot?.activeTurn?.phase, snapshot?.chat.length]);
+  useEffect(() => {
+    if (receipt === null || acceptStarted.current === null) return;
+    let cancelled = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (cancelled || document.getElementById("receipt-title") === null || acceptStarted.current === null) return;
+      const durationMs = performance.now() - acceptStarted.current;
+      acceptStarted.current = null;
+      acknowledgeCommandVisible(receipt.id, receipt.generation, durationMs);
+    }));
+    return () => { cancelled = true; };
+  }, [receipt?.id]);
   const perform = async (task: () => Promise<CommandResult>) => { setBusy(true); setError(null); try { return await task(); } catch (cause) { setError(cause instanceof Error ? cause.message : "The command failed."); return null; } finally { setBusy(false); } };
   const showProposal = async (task: () => Promise<CommandResult>) => { const result = await perform(task); if (result?.kind === "proposal") { setReceipt(null); setProposal(result.proposal); } };
-  const accept = async () => { if (proposal === null) return; const result = await perform(() => runCommand({ type: "accept_proposal", proposalId: proposal.id, idempotencyKey: crypto.randomUUID() })); if (result?.kind === "receipt") { setProposal(null); setSelectedOrderId(null); setReceipt(result.receipt); } };
+  const accept = async () => { if (proposal === null) return; acceptStarted.current = performance.now(); const result = await perform(() => runCommand({ type: "accept_proposal", proposalId: proposal.id, idempotencyKey: crypto.randomUUID() })); if (result?.kind === "receipt") { setProposal(null); setSelectedOrderId(null); setReceipt(result.receipt); } else { acceptStarted.current = null; } };
   const undo = async () => { if (receipt === null) return; await showProposal(() => runCommand({ type: "prepare_undo", receiptId: receipt.id })); };
   const advance = async () => { const result = await perform(() => runCommand({ type: "advance_scenario", scenario: "stock_change" })); if (result?.kind === "scenario") setError(result.message); };
 
   return <div className="app-shell"><header className="topbar"><div className="brand"><BrandIcon /> <span>Bracken &amp; Beam</span></div><span className={`connection connection-${status}`} data-testid="connection-status"><span aria-hidden="true" />{connectionText[status]}</span><nav aria-label="Main navigation">{(["work", "explore", "audit"] as const).map((item) => <Button key={item} variant="quiet" aria-current={view === item ? "page" : undefined} onClick={() => setView(item)}>{item[0]!.toUpperCase() + item.slice(1)}</Button>)}</nav></header>
-    {view === "work" ? <main className="work-layout">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => setReceipt(null)} onUndo={undo} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} setSelectedOrderId={setSelectedOrderId} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} />}<ChatPanel />{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <EmptyRoute title="Explore" text="Scenario guides and the tool catalogue arrive with agent integration." /> : <EmptyRoute title="Audit" text="Inference activity arrives with agent integration. Command audit is already retained by the server." />}
+    {view === "work" ? <main className="work-layout" data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => setReceipt(null)} onUndo={undo} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} setSelectedOrderId={setSelectedOrderId} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} onSend={(message) => { try { sendAgentMessage(message); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><EmptyRoute title="Explore" text="Scenario guides and the tool catalogue arrive with agent integration." /></div> : <div data-view="audit"><EmptyRoute title="Audit" text="Inference activity arrives with agent integration. Command audit is already retained by the server." /></div>}
   </div>;
 }

@@ -8,6 +8,8 @@ const ServerConfigSchema = Schema.Struct({
   databasePath: Schema.String,
   allowDevelopmentIdentity: Schema.Boolean,
   developmentEmail: Schema.NullOr(Schema.String),
+  agentMode: Schema.Literals(["live", "scripted", "unavailable"]),
+  openRouterApiKey: Schema.NullOr(Schema.String),
 });
 
 export type ServerConfig = typeof ServerConfigSchema.Type;
@@ -20,6 +22,13 @@ export const loadConfig = (
   environment: NodeJS.ProcessEnv = process.env,
 ): Effect.Effect<ServerConfig, ConfigError> => {
   const nodeEnvironment = environment.NODE_ENV ?? "development";
+  const requestedAgentMode = environment.AGENT_PROVIDER_MODE;
+  const openRouterApiKey = environment.OPENROUTER_API_KEY?.trim() || null;
+  const agentMode = requestedAgentMode === "scripted" || nodeEnvironment === "test"
+    ? "scripted"
+    : requestedAgentMode === "live" || openRouterApiKey !== null
+      ? "live"
+      : "unavailable";
   const candidate = {
     environment: nodeEnvironment,
     host: environment.HOST ?? "127.0.0.1",
@@ -28,6 +37,8 @@ export const loadConfig = (
     databasePath: environment.DATABASE_PATH ?? ".tmp/parcel-hopscotch.sqlite",
     allowDevelopmentIdentity: environment.ENABLE_DEV_IDENTITY === "true",
     developmentEmail: environment.DEV_USER_EMAIL ?? null,
+    agentMode,
+    openRouterApiKey,
   };
 
   return Schema.decodeUnknownEffect(ServerConfigSchema)(candidate).pipe(
@@ -41,6 +52,9 @@ export const loadConfig = (
             message: "Development identity cannot be enabled in production.",
           }),
         );
+      }
+      if (config.agentMode === "live" && config.openRouterApiKey === null) {
+        return Effect.fail(new ConfigError({ message: "OPENROUTER_API_KEY is required when the live agent provider is enabled." }));
       }
       return Effect.succeed(config);
     }),

@@ -154,3 +154,40 @@ test("holds conditional consent and exhausted stock without an acceptance action
   await page.getByRole("button", { name: "Reset my demo" }).click();
   await expect(page.getByText("Fresh workspace ready")).toBeVisible();
 });
+
+test("uses the agent to inspect evidence, prepare a batch for human acceptance, and prepare reset", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await expect(page.getByTestId("connection-status")).toContainText("Connected");
+  const composer = page.getByPlaceholder("Message...");
+
+  await composer.fill("Find BB-1042, open it, and highlight the evidence.");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByText("I found the order and showed the relevant evidence.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Check address" })).toBeVisible();
+  await expect(page.locator("#target-order-BB-1042-evidence")).toContainText("The number is 41, not 14");
+
+  await composer.fill("Does BB-1076 have explicit consent?");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByText(/Consent: conditional/)).toBeVisible();
+  await expect(page.getByText(/Alternatives: conditional 98%/)).toBeVisible();
+
+  await composer.fill("Prepare all the green orders as a batch.");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
+  await expect(page.getByText("The eligible orders are ready for your review. Nothing changes until you accept the batch.")).toBeVisible();
+  await expect(page.getByText("Accepted by you")).toHaveCount(0);
+  await expect(page.getByLabel("Orders left out")).toContainText("BB-1088");
+  await page.screenshot({ path: testInfo.outputPath("agent-batch-review.png"), fullPage: true });
+
+  await page.getByRole("button", { name: /Accept \d+ changes/ }).click();
+  await expect(page.getByText("Accepted by you")).toBeVisible();
+  await page.getByRole("button", { name: "Back to work" }).click();
+
+  await composer.fill("Prepare a reset for my review.");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByRole("heading", { name: "Reset my demo" })).toBeVisible();
+  await expect(page.getByText("Fresh workspace ready")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("agent-reset-review.png"), fullPage: true });
+  await page.getByRole("button", { name: "Reset my demo" }).click();
+  await expect(page.getByText("Fresh workspace ready")).toBeVisible();
+});
