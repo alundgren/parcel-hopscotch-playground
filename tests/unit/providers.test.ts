@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatTool, FetchLike, JevRequest } from "../../src/server/providers/contracts";
+import { ProviderError, type ChatTool, type FetchLike, type JevRequest } from "../../src/server/providers/contracts";
 import { buildMinistralWireRequest } from "../../src/server/providers/chat-request";
 import { readBoundedBody } from "../../src/server/providers/http";
 import { makeJevAdapter, parseJevResponse } from "../../src/server/providers/jev";
@@ -68,6 +68,30 @@ const contentStream = (content = "Done 🪵") =>
 const request = { messages: [{ role: "user" as const, content: "Finish." }] };
 
 describe("Ministral OpenRouter adapter", () => {
+  it("allows 4,096 output tokens and a complete stream with one envelope per token", async () => {
+    const frames = Array.from({ length: 4_096 }, () => ({
+      id: "gen_long", model: "mistralai/ministral-3b-2512", provider: "Mistral",
+      choices: [{ index: 0, delta: { content: "word " }, finish_reason: null }],
+    }));
+    const bytes = sse(...frames, {
+      id: "gen_long", model: "mistralai/ministral-3b-2512", provider: "Mistral",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 8, completion_tokens: 4_096, total_tokens: 4_104 },
+    }, "[DONE]");
+    expect(bytes.byteLength).toBeGreaterThan(256 * 1024);
+    const fetcher = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body)).max_tokens).toBe(4_096);
+      return response(bytes);
+    });
+    const adapter = makeMinistralAdapter({ apiKey: "synthetic-key" }, fetcher);
+    const result = await Effect.runPromise(adapter.complete(request));
+    expect(result.content).toBe("word ".repeat(4_096));
+    expect(result.metadata.usage.outputTokens).toBe(4_096);
+    await expect(Effect.runPromise(adapter.complete({ ...request, maxOutputTokens: 4_097 })))
+      .rejects.toMatchObject({ code: "invalid_request" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts every byte split, multibyte content, CRLF, and the documented repeated terminal usage frame", async () => {
     const bytes = contentStream();
     for (let split = 1; split < bytes.byteLength; split += 1) {
@@ -187,6 +211,25 @@ describe("Ministral OpenRouter adapter", () => {
       { role: "assistant", content: null, toolCalls: [{ id: oversizedId, name: "getOrder", arguments: {} }] },
       { role: "tool", toolCallId: oversizedId, content: "{}" },
     ] })).toThrow(/invalid metadata/i);
+  });
+
+  it("retains redacted invalid tool arguments without accepting the call", () => {
+    const tools: ReadonlyArray<ChatTool> = [{
+      name: "listOrders", description: "List orders.", parameters: { type: "object" }, validateArguments: () => false,
+    }];
+    const bytes = sse(
+      { id: "x", model: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "c", type: "function", function: {
+        name: "listOrders", arguments: JSON.stringify({ status: "invented", authorization: "private-value", query: "sk-or-v1-private-value" }),
+      } }] }, finish_reason: "tool_calls" }] }, "[DONE]",
+    );
+    let failure: unknown;
+    try { parseMinistralStream(bytes, { ...request, tools }, 1, null); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ProviderError);
+    expect((failure as ProviderError).message).toContain("did not match its declared input");
+    expect((failure as ProviderError).safeResponse).toMatchObject({ toolCalls: [{
+      id: "c", name: "listOrders", arguments: { status: "invented", authorization: "[redacted]", query: "[redacted]" },
+    }] });
+    expect(JSON.stringify((failure as ProviderError).safeResponse)).not.toContain("private-value");
   });
 
   it.each([

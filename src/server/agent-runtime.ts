@@ -1,5 +1,6 @@
 import { Effect, Fiber } from "effect";
 import { randomUUID } from "node:crypto";
+import { exploreScenarios } from "../shared/explore.js";
 import type { AgentUiOperation, AgentViewContext, ServerMessage } from "../shared/contracts.js";
 import type { ServerConfig } from "./config.js";
 import type { RequestIdentity } from "./identity.js";
@@ -14,7 +15,7 @@ import { makeMinistralAdapter } from "./providers/ministral.js";
 import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, ToolExecutionError, type AgentUiRequest } from "./tool-registry.js";
 import { toolHandlers } from "./tool-handlers.js";
 
-const maximumToolRounds = 3;
+const maximumToolRounds = 8;
 const maximumCallsPerRound = 6;
 const uiTimeoutMs = 5_000;
 const finalAcknowledgementTimeoutMs = 5_000;
@@ -120,12 +121,20 @@ const scriptedMinistral = (): MinistralAdapter => ({
       const toolCallIndex = request.messages.findLastIndex((message) => message.role === "assistant" && message.toolCalls !== undefined);
       const toolMessages = request.messages.slice(toolCallIndex + 1).filter((message) => message.role === "tool");
       const failed = toolMessages.some((message) => message.role === "tool" && message.content.includes('"ok":false'));
+      const overviewOrders = toolMessages.map((message) => JSON.parse(message.content) as { result?: { orders?: Array<{ id: string; status: string; family: string; issue: string }> } })
+        .find((message) => message.result?.orders !== undefined)?.result?.orders ?? [];
+      const overviewText = [
+        ...["ready", "review", "waiting"].map((status) => `${status[0]!.toUpperCase()}${status.slice(1)}: ${overviewOrders.filter((order) => order.status === status).length}`),
+        ...overviewOrders.filter((order) => order.status === "review").slice(0, 3).map((order) => `${order.id}: ${order.status}, ${order.family}. ${order.issue}`),
+      ].join("\n");
       const content = failed
         ? "I could not finish every requested step. The completed results remain visible, and you can retry the missing step."
         : text.includes("tutorial") || text.includes("teach") || text.includes("learn")
           ? "The tutorial is ready. Your verified work advances it, and you can dismiss it at any time."
         : text.includes("reset")
           ? "The reset is ready for your review. Nothing changes until you accept it."
+          : text.includes("summarize the queue")
+            ? overviewText
           : text.includes("attention")
             ? "I grouped the current queue and opened Work so you can review what is ready and what still needs a decision."
           : text.includes("audit")
@@ -148,7 +157,7 @@ const scriptedMinistral = (): MinistralAdapter => ({
         ? [{ id: id(), name: "startTutorial", arguments: { tutorialId: text.includes("substitut") || text.includes("replacement") ? "substitution-review" : text.includes("batch") ? "batch-approval" : "address-correction" } }]
       : text.includes("reset")
       ? [{ id: id(), name: "prepareReset", arguments: {} }]
-      : text.includes("attention")
+      : (text.includes("attention") || text.includes("summarize the queue"))
         ? [
             { id: id(), name: "listOrders", arguments: {} },
             { id: id(), name: "groupOrders", arguments: { groupBy: "status" } },
@@ -205,7 +214,7 @@ const unavailableJev: JevAdapter = {
 const adaptersFor = (config: ServerConfig): { readonly ministral: MinistralAdapter; readonly jev: JevAdapter } => {
   if (config.agentMode === "scripted") return { ministral: scriptedMinistral(), jev: scriptedJev() };
   if (config.agentMode === "live" && config.openRouterApiKey !== null) {
-    const adapterConfig = { apiKey: config.openRouterApiKey, timeoutMs: 20_000, maximumConcurrency: 2 };
+    const adapterConfig = { apiKey: config.openRouterApiKey, maximumConcurrency: providerBounds.maximumConcurrency };
     return { ministral: makeMinistralAdapter(adapterConfig), jev: makeJevAdapter(adapterConfig) };
   }
   return { ministral: unavailableMinistral, jev: unavailableJev };
@@ -321,7 +330,7 @@ export const makeAgentCoordinator = (
     priorTurns: ReadonlyArray<ReadonlyArray<ChatMessage>>,
     currentHistory: ReadonlyArray<ChatMessage>,
   ): MinistralRequest => {
-    const requestFor = (messages: ReadonlyArray<ChatMessage>): MinistralRequest => ({ messages, tools: modelTools, toolChoice: "auto", maxOutputTokens: 256 });
+    const requestFor = (messages: ReadonlyArray<ChatMessage>): MinistralRequest => ({ messages, tools: modelTools, toolChoice: "auto", maxOutputTokens: providerBounds.maximumOutputTokens });
     const fits = (messages: ReadonlyArray<ChatMessage>): boolean =>
       messages.length <= 32 && jsonBytes(buildMinistralWireRequest(requestFor(messages))) <= providerBounds.maximumContextBytes;
     const currentGroups = historyGroups(currentHistory);
@@ -462,83 +471,13 @@ export const makeAgentCoordinator = (
     completionConnections.set(active.identity.id, pending);
   };
 
-  const runConsentScenario = async (
-    active: ActiveTurn,
-    repository: WorkspaceRepositoryService,
-    hub: RealtimeHubService,
-    initial: AgentTurnRecord,
-  ): Promise<ExploreScenarioLaunch> => {
-    let history = [...initial.history];
-    const providerRequestId = `${active.turnId}:jev:1`;
-    const toolRequestId = `${active.turnId}:tool:consent`;
-    let output: unknown = null;
-    let failure: Error | null = null;
-    try {
-      await ensureCurrentGeneration(active, repository);
-      await update(active, repository, history, "running", "Checking consent");
-      output = await registry.checkConsent.execute({
-        repository,
-        identity: active.identity,
-        generation: active.generation,
-        turnId: active.turnId,
-        requestId: toolRequestId,
-        runJev: async (request) => {
-          if (active.cancelled) throw new Error("cancelled");
-          await ensureCurrentGeneration(active, repository);
-          active.jevCount += 1;
-          const result = await providerResult(active, runAuditedJev({
-            repository,
-            identity: active.identity,
-            generation: active.generation,
-            requestId: providerRequestId,
-            turnId: active.turnId,
-            mode: config.agentMode,
-            notify: (userId, attempt) => hub.publishAudit(userId, attempt),
-          }, adapters.jev, request));
-          if (!result.ok) throw result.error;
-          await ensureCurrentGeneration(active, repository);
-          return result.value;
-        },
-        requestUi: async () => ({ applied: false, message: "This scenario does not request a UI operation." }),
-      }, { orderId: "BB-1076" });
-    } catch (cause) {
-      if (active.cancelled || (cause instanceof Error && cause.message === "cancelled")) throw cause;
-      failure = cause instanceof Error ? cause : new Error("Jev could not complete the consent check.");
-    }
-    if (active.cancelled) throw new Error("cancelled");
-    await ensureCurrentGeneration(active, repository);
-    const attempts = await Effect.runPromise(repository.providerAttempts(active.identity, 2, { requestId: providerRequestId }));
-    const attempt = attempts.find((candidate) => candidate.requestId === providerRequestId && candidate.turnId === active.turnId);
-    if (attempt === undefined) throw new Error("The consent check did not produce an audit trace.");
-    const message = failure === null
-      ? consentDisclosure(output) ?? "Jev completed the consent check."
-      : `Jev could not complete the consent check: ${failure.message}`;
-    await Effect.runPromise(repository.recordApplicationAudit(active.identity, active.generation, {
-      kind: "tool",
-      label: registry.checkConsent.purpose,
-      outcome: failure === null ? "completed" : "failed",
-      requestId: toolRequestId,
-      turnId: active.turnId,
-      attemptId: attempt.id,
-      body: { tool: "checkConsent", arguments: { orderId: "BB-1076" }, result: failure === null ? output : { ok: false, message: failure.message } },
-    }));
-    history = [...history, { role: "assistant", content: message }];
-    if (failure !== null) {
-      await update(active, repository, history, "failed", "Failed", { error: message, finished: true, measurement: "incomplete" });
-      releaseActive(active);
-      return { scenario: "consent", outcome: "failed", attemptId: attempt.id, turnId: active.turnId, message };
-    }
-    waitForFinalRender(active, repository, history);
-    await update(active, repository, history, "waiting_for_ui", "Rendering Audit result", { finished: true });
-    return { scenario: "consent", outcome: "completed", attemptId: attempt.id, turnId: active.turnId, message };
-  };
-
-  const runTurn = async (active: ActiveTurn, repository: WorkspaceRepositoryService, hub: RealtimeHubService, initial: AgentTurnRecord, viewContext: ResolvedAgentViewContext) => {
+  const runTurn = async (active: ActiveTurn, repository: WorkspaceRepositoryService, hub: RealtimeHubService, initial: AgentTurnRecord, viewContext: ResolvedAgentViewContext, finalView: "chat" | "audit" = "chat") => {
     let history = [...initial.history];
     const disclosures: Array<string> = [];
+    let consentRequestId: string | null = null;
     try {
       const priorGroups = await Effect.runPromise(repository.agentHistories(active.identity, active.generation, active.turnId, 6));
-      const system: ChatMessage = { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Use only the registered tools. Never accept or commit a proposal. Prepare exact previews for the person to review. Application policy owns stock, arithmetic, permissions, and eligibility. Keep answers concise. A work item named in the latest user message overrides the selected application context. If a tool reports a missing UI target or another recoverable result, say what remains available. The application displays validated consent evidence and every returned alternative directly; do not repeat them unless the person asks." };
+      const system: ChatMessage = { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Use only the registered tools. Never accept or commit a proposal. Prepare exact previews for the person to review. Application policy owns stock, arithmetic, permissions, and eligibility. For queue overviews, report each status total on its own line as Ready: N, Review: N, Waiting: N. Then give one to three review orders, if any exist, each on its own line as ID: status, family. Exact recorded issue. Include only these lines, with no inferred urgency or other claims. Read individual order facts before describing issues. Independent status and family groups are not intersections; match order IDs to combine them. Omit unused filters rather than inventing filter values. Look up an order ID with getOrder before reasoning about its evidence; an order ID is not note text. getOrder only reads data; it does not open the order. To show or highlight order evidence, first navigate to the order view with its orderId, then highlight orderEvidence after navigation succeeds. Never claim a UI operation succeeded when its result says ok: false. Use classifyNote only for actual customer or operator note text, never for an ID or a request to find an order. Use checkConsent to assess an order's customer consent. For teaching requests, inspect the task and start the matching available tutorial: address-correction, substitution-review, or batch-approval. Prepare tools show the review automatically; the application acknowledges a displayed proposal, so do not request another narration step. Keep answers concise. A work item named in the latest user message overrides the selected application context. If a tool reports a missing UI target or another recoverable result, say what remains available. The application displays validated consent evidence and every returned alternative directly; do not repeat them unless the person asks." };
       const applicationContext: ChatMessage = { role: "system", content: `${contextPrefix}${JSON.stringify(viewContext)}` };
       for (let round = 0; round < maximumToolRounds; round += 1) {
         if (active.cancelled) throw new Error("cancelled");
@@ -572,12 +511,14 @@ export const makeAgentCoordinator = (
             repository,
             history,
             active.uiMissing ? "complete" : "waiting_for_ui",
-            active.uiMissing ? "Complete with missing UI" : "Rendering answer",
+            active.uiMissing ? "Complete with missing UI" : finalView === "audit" ? "Rendering Audit result" : "Rendering answer",
             { finished: true, ...(active.uiMissing ? { measurement: "incomplete" as const } : {}) },
           );
-          return;
+          return consentRequestId;
         }
         if (result.value.toolCalls.length > maximumCallsPerRound) throw new Error("The provider requested too many tools in one round.");
+        let displayedProposal = false;
+        const toolFailures: Array<string> = [];
         for (const call of result.value.toolCalls) {
           if (active.cancelled) throw new Error("cancelled");
           await ensureCurrentGeneration(active, repository);
@@ -608,11 +549,18 @@ export const makeAgentCoordinator = (
                   await ensureCurrentGeneration(active, repository);
                   return jev.value;
                 },
-                requestUi: (operation) => requestUi(active, repository, history, operation),
+                requestUi: async (operation) => {
+                  const acknowledgement = await requestUi(active, repository, history, operation);
+                  if (operation.kind === "navigate" || operation.kind === "present_proposal") {
+                    displayedProposal = operation.kind === "present_proposal" && acknowledgement.applied;
+                  }
+                  return acknowledgement;
+                },
               }, call.arguments);
               if (active.cancelled) throw new Error("cancelled");
               await ensureCurrentGeneration(active, repository);
               if (call.name === "checkConsent") {
+                consentRequestId = `${active.turnId}:jev:${active.jevCount}`;
                 const disclosure = consentDisclosure(output);
                 if (disclosure !== null && !disclosures.includes(disclosure)) disclosures.push(disclosure);
               }
@@ -623,6 +571,8 @@ export const makeAgentCoordinator = (
               if (isProviderError(error)) providerError = error;
             }
           }
+          const payload = JSON.parse(content) as { ok: boolean; error?: { message?: string }; result?: { ok?: boolean; message?: string } };
+          if (!payload.ok || payload.result?.ok === false) toolFailures.push(`${call.name}: ${payload.error?.message ?? payload.result?.message ?? "The tool failed."}`);
           history.push({ role: "tool", content, toolCallId: call.id });
           let auditedResult: unknown = content;
           try { auditedResult = JSON.parse(content); } catch { /* The bounded text still records the terminal tool outcome. */ }
@@ -641,8 +591,20 @@ export const makeAgentCoordinator = (
           await update(active, repository, history, "running", "Working");
           if (providerError !== null) throw providerError;
         }
+        if (displayedProposal) {
+          if (active.cancelled) throw new Error("cancelled");
+          await ensureCurrentGeneration(active, repository);
+          const acknowledgement = "The proposal is ready for your review. Nothing changes until you accept it.";
+          history.push({ role: "assistant", content: [...disclosures, acknowledgement, ...toolFailures, ...(active.uiMissing ? ["Some requested UI could not be displayed."] : [])].join(" ") });
+          const failed = toolFailures.length > 0;
+          if (!failed && !active.uiMissing) waitForFinalRender(active, repository, history);
+          await update(active, repository, history, failed ? "failed" : active.uiMissing ? "complete" : "waiting_for_ui",
+            failed ? "Failed" : active.uiMissing ? "Complete with missing UI" : finalView === "audit" ? "Rendering Audit result" : "Rendering answer",
+            { finished: true, ...(failed ? { error: toolFailures.join(" ") } : {}), ...(failed || active.uiMissing ? { measurement: "incomplete" as const } : {}) });
+          return consentRequestId;
+        }
       }
-      throw new Error("The turn reached the three-round tool limit.");
+      throw new Error("The turn reached the eight-request tool limit.");
     } catch (error) {
       clearPendingCompletion(active);
       if (active.cancelled || (error instanceof Error && error.message === "cancelled")) {
@@ -689,7 +651,7 @@ export const makeAgentCoordinator = (
           context.turnId,
           context.requestId,
           context.connectionId,
-          "Does \"Sage might work, but send a picture first\" count as consent?",
+          exploreScenarios.find((scenario) => scenario.id === "consent")!.prompt,
         ));
         if (!created.created) throw new Error("That Explore scenario was already started.");
         active = {
@@ -715,7 +677,21 @@ export const makeAgentCoordinator = (
         const admitted = active;
         void (async () => {
           try {
-            const result = await runConsentScenario(admitted, context.repository, context.hub, created.turn);
+            const viewContext = await Effect.runPromise(context.repository.resolveAgentViewContext(context.identity, context.generation, { view: "explore", focus: null }));
+            const consentRequestId = await runTurn(admitted, context.repository, context.hub, created.turn, viewContext, "audit");
+            const turn = await Effect.runPromise(context.repository.agentTurn(context.identity, context.generation, context.turnId));
+            if (admitted.cancelled || turn?.status === "cancelled") throw new Error("cancelled");
+            const attempts = await Effect.runPromise(context.repository.providerAttempts(context.identity, 1, consentRequestId == null ? { turnId: context.turnId } : { requestId: consentRequestId }));
+            const attempt = attempts[0];
+            if (attempt === undefined) throw new Error("The scenario did not produce an inference trace.");
+            const completed = consentRequestId != null && turn?.status === "waiting_for_ui" && turn.phase === "Rendering Audit result";
+            const message = completed ? "The consent result is available in Audit." : "The consent scenario did not complete. Inspect its recorded results in Audit.";
+            if (!completed) {
+              clearPendingCompletion(admitted);
+              await update(admitted, context.repository, turn?.history ?? created.turn.history, "failed", "Failed", { error: message, finished: true, measurement: "incomplete" });
+              releaseActive(admitted);
+            }
+            const result: ExploreScenarioLaunch = { scenario: "consent", outcome: completed ? "completed" : "failed", attemptId: attempt.id, turnId: context.turnId, message };
             await context.send({
               type: "command_result",
               requestId: context.requestId,

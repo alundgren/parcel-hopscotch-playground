@@ -76,7 +76,94 @@ afterEach(async () => {
 });
 
 describe("agent runtime", () => {
-  it("runs the known consent scenario through audited Jev and returns its exact trace", async () => {
+  it("finishes a five-request workflow with automatic access to every tool and bounded persisted history", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const requests: Array<MinistralRequest> = [];
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      requests.push(request);
+      return result([{ id: `step_${requests.length}`, name: requests.length < 5 ? "getOrder" : "prepareAddressCorrection", arguments: { orderId: "BB-1042" } }]);
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = "turn_12345678-five-requests";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "five", message: "Inspect the address evidence and prepare its correction.", viewContext: workView, connectionId: "five", send: async (message) => {
+        if (message.type === "agent_ui_operation") coordinator.acknowledgeUi(identity, 1, turnId, message.operation.id, "five", "applied");
+      } }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(requests).toHaveLength(5);
+      for (const request of requests) {
+        expect(request.toolChoice).toBe("auto");
+        expect(request.maxOutputTokens).toBe(4096);
+        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).sort());
+        expect(request.tools).toHaveLength(16);
+        expect(jsonBytes(buildMinistralWireRequest(request))).toBeLessThanOrEqual(32 * 1024);
+        expect(request.messages.length).toBeLessThanOrEqual(32);
+      }
+      expect(turn.history.at(-1)?.content).toContain("Nothing changes until you accept it");
+      expect(jsonBytes(turn.history)).toBeLessThanOrEqual(24 * 1024);
+      expect(turn.serverDurationMs).toBeGreaterThanOrEqual(0);
+      expect(turn.measurement).toBe("pending");
+      const state = yield* repository.snapshot(identity);
+      expect(state.orders.find((order) => order.id === "BB-1042")?.businessValue).toBe("14 Willow Lane, Bath BA1 2AB");
+      expect(state.latestReceipt).toBeNull();
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "five")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 100);
+      expect(yield* repository.agentTurn(identity, 1, turnId)).toMatchObject({ status: "complete", measurement: "complete", completeDurationMs: 100 });
+    }));
+  });
+
+  it.each(["missing", "cancelled", "tool-failure", "prepare-failure"] as const)("preserves %s when preparing a proposal", async (condition) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const requests: Array<MinistralRequest> = [];
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      requests.push(request);
+      if (requests.length > 1) return result([], "The requested step could not be completed. Review the saved work in Work.");
+      return result([
+        { id: "prepare", name: "prepareAddressCorrection", arguments: { orderId: condition === "prepare-failure" ? "BB-9999" : "BB-1042" } },
+        ...(condition === "tool-failure" ? [{ id: "bad", name: "unknownTool", arguments: {} }] : []),
+      ]);
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev }, { finalAcknowledgementMs: 100 });
+      const turnId = `turn_12345678-${condition}`;
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: condition, message: "Prepare the correction.", viewContext: workView, connectionId: condition, send: async (message) => {
+        if (message.type !== "agent_ui_operation") return;
+        if (condition === "cancelled") await coordinator.cancel(repository, identity, 1, turnId);
+        else coordinator.acknowledgeUi(identity, 1, turnId, message.operation.id, condition, condition === "missing" ? "missing" : "applied");
+      } }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, [condition === "cancelled" ? "cancelled" : condition === "tool-failure" ? "failed" : "complete"]));
+      const content = turn.history.at(-1)?.content ?? "";
+      if (condition === "tool-failure") {
+        expect(content).toContain("The proposal is ready for your review");
+        expect(content).toContain("Unknown tool: unknownTool");
+      } else expect(content).not.toContain("The proposal is ready for your review");
+      expect(requests).toHaveLength(condition === "cancelled" || condition === "tool-failure" ? 1 : 2);
+      if (condition === "missing") expect(toolPayloads(requests[1]!.messages)[0]?.payload).toMatchObject({ ok: false });
+      expect(turn.measurement).toBe("incomplete");
+      expect((yield* repository.snapshot(identity)).latestReceipt).toBeNull();
+    }));
+  });
+
+  it("does not replace a model's unsuccessful consent scenario with a direct Jev call", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral: { complete: () => Effect.succeed(result([], "I have not checked the evidence.")) }, jev: unusedJev });
+      const sent: Array<ServerMessage> = [];
+      yield* Effect.promise(() => coordinator.runExploreScenario({ repository, hub, identity, generation: 1, turnId: "turn_12345678-no-consent", requestId: "no-consent", scenario: "consent", connectionId: "no-consent", send: async (message) => { sent.push(message); } }));
+      const response = yield* Effect.promise(() => waitForMessage(sent, (message) => message.type === "command_result"));
+      expect(response).toMatchObject({ type: "command_result", result: { kind: "explore", outcome: "failed" } });
+      const attempts = yield* repository.providerAttempts(identity, 10);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.kind).toBe("chat");
+      expect(yield* repository.agentTurn(identity, 1, "turn_12345678-no-consent")).toMatchObject({ status: "failed", measurement: "incomplete" });
+    }));
+  });
+
+
+  it("lets Ministral select consent from all registered tools and returns the audited trace", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");
     const jev: JevAdapter = { decide: (request) => Effect.succeed({
@@ -88,7 +175,12 @@ describe("agent runtime", () => {
     }) };
     await runWithWorkspaceRepository(filename, Effect.gen(function* () {
       const repository = yield* WorkspaceRepository;
-      const coordinator = makeAgentCoordinator(config, { ministral: { complete: () => Effect.fail(providerFailure("provider_error", "Ministral must not run for this scenario.")) }, jev });
+      const coordinator = makeAgentCoordinator(config, { ministral: { complete: (request) => Effect.sync(() => {
+        expect(request.toolChoice).toBe("auto");
+        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).sort());
+        expect(request.tools).toHaveLength(16);
+        return request.messages.at(-1)?.role === "tool" ? result([], "The consent result is recorded.") : result([{ id: "consent", name: "checkConsent", arguments: { orderId: "BB-1076" } }]);
+      }) }, jev });
       const sent: Array<ServerMessage> = [];
       expect(yield* Effect.promise(() => coordinator.runExploreScenario({
         repository, hub, identity, generation: 1, turnId: "turn_12345678-explore-consent", requestId: "request-explore-consent", scenario: "consent", connectionId: "connection-explore-consent", send: async (message) => { sent.push(message); },
@@ -96,7 +188,7 @@ describe("agent runtime", () => {
       const response = yield* Effect.promise(() => waitForMessage(sent, (message) => message.type === "command_result" && message.requestId === "request-explore-consent"));
       if (response.type !== "command_result" || response.result.kind !== "explore") throw new Error("Explore result was not returned.");
       const launch = response.result;
-      expect(launch).toMatchObject({ scenario: "consent", turnId: "turn_12345678-explore-consent", message: expect.stringContaining("Consent: conditional") });
+      expect(launch).toMatchObject({ scenario: "consent", turnId: "turn_12345678-explore-consent", message: "The consent result is available in Audit." });
       const attempts = yield* repository.providerAttempts(identity, 10, { requestId: "turn_12345678-explore-consent:jev:1" });
       expect(attempts).toHaveLength(1);
       expect(attempts[0]).toMatchObject({ id: launch.attemptId, turnId: launch.turnId, kind: "decisions", mode: "scripted", outcome: "success" });
@@ -110,13 +202,18 @@ describe("agent runtime", () => {
     }));
   });
 
-  it("returns the exact failed consent trace without a chat-model fallback", async () => {
+  it("returns the failed model-selected consent trace without a scripted fallback", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");
     const jev: JevAdapter = { decide: () => Effect.fail(providerFailure("configuration", "Jev is unavailable for this test.")) };
     await runWithWorkspaceRepository(filename, Effect.gen(function* () {
       const repository = yield* WorkspaceRepository;
-      const coordinator = makeAgentCoordinator(config, { ministral: { complete: () => Effect.fail(providerFailure("provider_error", "Ministral must not run for this scenario.")) }, jev });
+      const coordinator = makeAgentCoordinator(config, { ministral: { complete: (request) => Effect.sync(() => {
+        expect(request.toolChoice).toBe("auto");
+        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).sort());
+        expect(request.tools).toHaveLength(16);
+        return request.messages.at(-1)?.role === "tool" ? result([], "The consent result is recorded.") : result([{ id: "consent", name: "checkConsent", arguments: { orderId: "BB-1076" } }]);
+      }) }, jev });
       const sent: Array<ServerMessage> = [];
       expect(yield* Effect.promise(() => coordinator.runExploreScenario({
         repository, hub, identity, generation: 1, turnId: "turn_12345678-explore-failure", requestId: "request-explore-failure", scenario: "consent", connectionId: "connection-explore-failure", send: async (message) => { sent.push(message); },
@@ -125,7 +222,7 @@ describe("agent runtime", () => {
       if (response.type !== "command_result" || response.result.kind !== "explore") throw new Error("Explore failure result was not returned.");
       const launch = response.result;
       expect(launch.outcome).toBe("failed");
-      expect(launch.message).toContain("Jev could not complete the consent check");
+      expect(launch.message).toContain("did not complete");
       const attempt = yield* repository.providerAttempt(identity, launch.attemptId);
       expect(attempt).toMatchObject({ turnId: launch.turnId, requestId: `${launch.turnId}:jev:1`, outcome: "error", errorCode: "configuration" });
       const detail = yield* repository.auditDetail(identity, launch.attemptId);
@@ -135,7 +232,7 @@ describe("agent runtime", () => {
     }));
   });
 
-  it("interrupts a direct consent attempt on generation cancellation and rejects stale generations", async () => {
+  it("interrupts a model-selected consent attempt on generation cancellation and rejects stale generations", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");
     const delayedResult = {
@@ -148,7 +245,12 @@ describe("agent runtime", () => {
     const jev: JevAdapter = { decide: () => Effect.sleep(2_000).pipe(Effect.as(delayedResult)) };
     await runWithWorkspaceRepository(filename, Effect.gen(function* () {
       const repository = yield* WorkspaceRepository;
-      const coordinator = makeAgentCoordinator(config, { ministral: { complete: () => Effect.fail(providerFailure("provider_error", "Ministral must not run for this scenario.")) }, jev });
+      const coordinator = makeAgentCoordinator(config, { ministral: { complete: (request) => Effect.sync(() => {
+        expect(request.toolChoice).toBe("auto");
+        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).sort());
+        expect(request.tools).toHaveLength(16);
+        return request.messages.at(-1)?.role === "tool" ? result([], "The consent result is recorded.") : result([{ id: "consent", name: "checkConsent", arguments: { orderId: "BB-1076" } }]);
+      }) }, jev });
       const sent: Array<ServerMessage> = [];
       expect(yield* Effect.promise(() => coordinator.runExploreScenario({
         repository, hub, identity, generation: 1, turnId: "turn_12345678-explore-cancel", requestId: "request-explore-cancel", scenario: "consent", connectionId: "connection-explore-cancel", send: async (message) => { sent.push(message); },
@@ -157,17 +259,17 @@ describe("agent runtime", () => {
       yield* Effect.promise(async () => {
         const deadline = Date.now() + 2_000;
         while (Date.now() < deadline) {
-          if ((await Effect.runPromise(repository.providerAttempts(identity, 10, { turnId: "turn_12345678-explore-cancel" }))).length === 1) return;
+          if ((await Effect.runPromise(repository.providerAttempts(identity, 10, { turnId: "turn_12345678-explore-cancel" }))).some((attempt) => attempt.kind === "decisions")) return;
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
-        throw new Error("Timed out waiting for the direct Jev attempt.");
+        throw new Error("Timed out waiting for the selected Jev attempt.");
       });
       expect(yield* Effect.promise(() => coordinator.cancelGeneration(identity, 1))).toBe(true);
       const cancellation = yield* Effect.promise(() => waitForMessage(sent, (message) => message.type === "error" && message.requestId === "request-explore-cancel"));
       expect(cancellation).toMatchObject({ type: "error", code: "explore_scenario_cancelled" });
       const attempts = yield* repository.providerAttempts(identity, 10, { turnId: "turn_12345678-explore-cancel" });
-      expect(attempts).toHaveLength(1);
-      expect(attempts[0]).toMatchObject({ outcome: "interrupted" });
+      expect(attempts).toHaveLength(2);
+      expect(attempts.find((attempt) => attempt.kind === "decisions")).toMatchObject({ outcome: "interrupted" });
       yield* Effect.promise(async () => {
         await expect(coordinator.runExploreScenario({
           repository, hub, identity, generation: 2, turnId: "turn_12345678-explore-stale", requestId: "request-explore-stale", scenario: "consent", connectionId: "connection-explore-stale", send: async () => {},
@@ -263,7 +365,7 @@ describe("agent runtime", () => {
     }));
   });
 
-  it("keeps ordinary list and batch results useful in the next model request and stored history", async () => {
+  it("persists list and batch results and acknowledges the displayed proposal without narration", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");
     let round = 0;
@@ -272,6 +374,8 @@ describe("agent runtime", () => {
       if (round++ === 0) return result([
         { id: "call_all", name: "listOrders", arguments: {} },
         { id: "call_ready", name: "listOrders", arguments: { status: "ready" } },
+        { id: "call_null", name: "listOrders", arguments: { status: null, family: null, query: null } },
+        { id: "call_review", name: "listOrders", arguments: { status: "review", family: null } },
         { id: "call_batch", name: "prepareBatch", arguments: {} },
       ]);
       nextRequest = request;
@@ -285,15 +389,21 @@ describe("agent runtime", () => {
         if (message.type === "agent_ui_operation") queueMicrotask(() => coordinator.acknowledgeUi(identity, 1, turnId, message.operation.id, "connection-useful", "applied"));
       } }));
       const terminal = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
-      const modelResults = toolPayloads(nextRequest?.messages ?? []);
+      expect(round).toBe(1);
+      expect(nextRequest).toBeNull();
+      expect(terminal.history.at(-1)).toMatchObject({ role: "assistant", content: "The proposal is ready for your review. Nothing changes until you accept it." });
       const storedResults = toolPayloads(terminal.history);
-      for (const results of [modelResults, storedResults]) {
-        expect(results).toHaveLength(3);
+      for (const results of [storedResults]) {
+        expect(results).toHaveLength(5);
         const all = results.find((entry) => entry.id === "call_all")?.payload;
         expect(all).toMatchObject({ ok: true, result: { count: 24 } });
         expect(all?.truncated).toBeUndefined();
         expect(all?.result?.orders).toHaveLength(24);
         expect(all?.result?.orders?.map((order) => order.id)).toContain("BB-1072");
+        expect(results.find((entry) => entry.id === "call_null")?.payload).toEqual(all);
+        const review = results.find((entry) => entry.id === "call_review")?.payload;
+        expect(review).toMatchObject({ ok: true, result: { count: 14 } });
+        expect(review?.result?.orders?.every((order) => order.status === "review")).toBe(true);
         const ready = results.find((entry) => entry.id === "call_ready")?.payload;
         expect(ready).toMatchObject({ ok: true, result: { count: 6 } });
         expect(ready?.result?.orders).toHaveLength(6);
@@ -621,7 +731,7 @@ describe("agent runtime", () => {
     }));
   });
 
-  it("stops after three tool rounds and retains completed tool outcomes when a later provider request fails", async () => {
+  it("stops after eight model requests and retains completed tool outcomes when a later provider request fails", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");
     let rounds = 0;
@@ -631,10 +741,11 @@ describe("agent runtime", () => {
       const coordinator = makeAgentCoordinator(config, { ministral: endless, jev: unusedJev });
       yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: "turn_12345678-rounds", requestId: "request-rounds", message: "Keep calling tools forever.", viewContext: { view: "work", focus: null }, connectionId: "connection-rounds", send: async () => undefined }));
       const failed = yield* Effect.promise(() => waitForTurn(repository, "turn_12345678-rounds", ["failed"]));
-      expect(rounds).toBe(3);
-      expect(failed.history.filter((message) => message.role === "tool")).toHaveLength(3);
+      expect(rounds).toBe(8);
+      expect(failed.history.filter((message) => message.role === "tool").at(-1)).toMatchObject({ toolCallId: "call_8" });
+      expect(jsonBytes(failed.history)).toBeLessThanOrEqual(32 * 1024);
       const attempts = yield* repository.providerAttempts(identity, 10);
-      expect(attempts.filter((attempt) => attempt.turnId === "turn_12345678-rounds")).toHaveLength(3);
+      expect(attempts.filter((attempt) => attempt.turnId === "turn_12345678-rounds")).toHaveLength(8);
     }));
 
     rounds = 0;

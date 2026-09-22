@@ -34,7 +34,7 @@ test("filters and inspects the validated registry catalogue", async ({ page, con
   await expect(page.getByText("3 of 16 tools", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Read", exact: true }).click();
   await expect(page.getByText("2 of 16 tools", { exact: true })).toBeVisible();
-  await page.getByRole("searchbox", { name: "Filter tools" }).fill("fulfilment orders");
+  await page.getByRole("searchbox", { name: "Filter tools" }).fill("omit filters");
   await expect(page.getByText("1 of 16 tools", { exact: true })).toBeVisible();
   await expect(page.locator(".tool-row")).toHaveCount(1);
 
@@ -62,6 +62,11 @@ test("launches the orientation, tutorial, and batch scenarios through working fl
   await openExplore(page);
   await page.getByRole("button", { name: "Try in Work: Get your bearings" }).click();
   await expect(page.getByRole("heading", { name: "Decisions" })).toBeVisible();
+  const overview = page.locator('[data-chat-role="assistant"]').last();
+  await expect(overview).toContainText("Ready: 6");
+  await expect(overview).toContainText("Review: 14");
+  await expect(overview).toContainText("Waiting: 4");
+  await expect(overview).toContainText("BB-1042: review, address. Street number needs checking.");
   await expect(page.getByPlaceholder("Message...")).toBeEnabled();
   await pause(page);
 
@@ -75,7 +80,7 @@ test("launches the orientation, tutorial, and batch scenarios through working fl
   await page.getByRole("button", { name: "Explore", exact: true }).click();
   await page.getByRole("button", { name: "Try in Work: Make a batch decision" }).click();
   await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
-  await expect(page.getByText("Nothing changes until you accept the batch.")).toBeVisible();
+  await expect(page.getByText("Nothing changes until you accept it.")).toBeVisible();
   await expect(page.getByText("Accepted by you")).toHaveCount(0);
   await pause(page);
   await page.getByRole("button", { name: "Cancel" }).click();

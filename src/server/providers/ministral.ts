@@ -4,6 +4,7 @@ import {
   MINISTRAL_MODEL,
   ProviderError,
   providerBounds,
+  chatBounds,
   type ChatToolCall,
   type FetchLike,
   type MinistralAdapter,
@@ -123,7 +124,7 @@ export const parseSseData = (bytes: Uint8Array): ReadonlyArray<string> => {
 
 const validateRequest = (request: MinistralRequest, maximumContextBytes: number): void => {
   if (request.messages.length === 0 || request.messages.length > 32) throw invalidRequest("Chat requests require between 1 and 32 messages.");
-  const maxOutputTokens = request.maxOutputTokens ?? 256;
+  const maxOutputTokens = request.maxOutputTokens ?? providerBounds.maximumOutputTokens;
   if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > providerBounds.maximumOutputTokens) {
     throw invalidRequest(`Chat output is limited to ${providerBounds.maximumOutputTokens} tokens.`);
   }
@@ -346,7 +347,11 @@ export const parseMinistralStream = (
         providerRequestId: safeIdentifier(providerRequestId),
         generationId: safeIdentifier(generationId),
         content: content.join(""),
-        toolCalls: [...toolFragments.values()].map((call) => ({ id: call.id, name: call.name })),
+        toolCalls: [...toolFragments.values()].map((call) => {
+          let argumentsValue: unknown = null;
+          try { argumentsValue = JSON.parse(call.arguments); } catch { /* Incomplete JSON is not retained as an unstructured secret-bearing string. */ }
+          return { id: call.id, name: call.name, arguments: argumentsValue };
+        }),
         finishReason,
         usage,
       },
@@ -359,9 +364,9 @@ export const makeMinistralAdapter = (config: OpenRouterAdapterConfig, fetcher: F
     const candidate = value === undefined || !Number.isFinite(value) ? fallback : value;
     return Math.max(1, Math.min(maximum, Math.floor(candidate)));
   };
-  const timeoutMs = bounded(config.timeoutMs, providerBounds.timeoutMs, 60_000);
+  const timeoutMs = bounded(config.timeoutMs, chatBounds.timeoutMs, chatBounds.timeoutMs);
   const maximumContextBytes = bounded(config.maximumContextBytes, providerBounds.maximumContextBytes, 64 * 1024);
-  const maximumResponseBytes = bounded(config.maximumResponseBytes, providerBounds.maximumResponseBytes, 512 * 1024);
+  const maximumResponseBytes = bounded(config.maximumResponseBytes, chatBounds.maximumResponseBytes, chatBounds.maximumResponseBytes);
   const semaphore = Semaphore.makeUnsafe(bounded(config.maximumConcurrency, providerBounds.maximumConcurrency, 4));
   const baseUrl = config.baseUrl ?? "https://openrouter.ai";
 

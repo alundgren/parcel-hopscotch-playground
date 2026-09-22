@@ -27,7 +27,8 @@ const findOrder = async (context: ToolContext, orderId: string) => {
 };
 
 const present = async (context: ToolContext, proposal: ReviewedProposal) => {
-  await context.requestUi({ kind: "present_proposal", proposalId: proposal.id });
+  const shown = await context.requestUi({ kind: "present_proposal", proposalId: proposal.id });
+  if (!shown.applied) throw new ToolExecutionError("tool_failed", "The proposal was saved but could not be displayed. Open the saved proposal in Work to review it.");
   return proposal;
 };
 
@@ -46,12 +47,12 @@ const probabilityEntries = (probabilities: Readonly<Record<string, number>>) =>
 
 export const toolHandlers: ToolHandlers = {
   listOrders: async (context, input) => {
-    const args = input as { status?: OrderSummary["status"]; family?: OrderSummary["family"]; query?: string };
+    const args = input as { status?: OrderSummary["status"] | null; family?: OrderSummary["family"] | null; query?: string | null };
     const state = await snapshot(context);
     const query = args.query?.trim().toLowerCase();
     const orders = state.orders
-      .filter((order) => args.status === undefined || order.status === args.status)
-      .filter((order) => args.family === undefined || order.family === args.family)
+      .filter((order) => args.status == null || order.status === args.status)
+      .filter((order) => args.family == null || order.family === args.family)
       .filter((order) => query === undefined || [order.id, order.item, order.issue].some((value) => value.toLowerCase().includes(query)))
       .slice(0, 24)
       .map(({ id, item, issue, status, family }) => ({ id, item, issue, status, family }));

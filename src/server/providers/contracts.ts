@@ -6,12 +6,18 @@ export const JEV_MODEL = "typesafe/jev-1.13";
 export const providerBounds = {
   maximumContextBytes: 32 * 1024,
   maximumResponseBytes: 256 * 1024,
-  maximumOutputTokens: 512,
+  maximumOutputTokens: 4_096,
   maximumTools: 16,
   maximumToolCalls: 16,
   maximumQuestions: 16,
   timeoutMs: 20_000,
   maximumConcurrency: 2,
+} as const;
+
+// Streaming includes an SSE envelope per fragment, beyond the generated text.
+export const chatBounds = {
+  maximumResponseBytes: 2 * 1024 * 1024,
+  timeoutMs: 120_000,
 } as const;
 
 export type ProviderErrorCode =

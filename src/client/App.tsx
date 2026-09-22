@@ -244,9 +244,10 @@ const outcomeText: Record<AuditAttemptSummary["outcome"], string> = {
 type AuditTab = "request" | "response" | "application";
 const consentResultText = (bodyText: string): string | null => {
   try {
-    const body = JSON.parse(bodyText) as { result?: { consent?: unknown; needsReview?: unknown } };
-    if (typeof body.result?.consent !== "string" || typeof body.result.needsReview !== "boolean") return null;
-    return `Consent: ${body.result.consent}. ${body.result.needsReview ? "Human review required." : "No further consent review required."}`;
+    const body = JSON.parse(bodyText) as { result?: { ok?: boolean; result?: { consent?: unknown; needsReview?: unknown }; consent?: unknown; needsReview?: unknown } };
+    const result = body.result?.ok === true ? body.result.result : body.result;
+    if (typeof result?.consent !== "string" || typeof result.needsReview !== "boolean") return null;
+    return `Consent: ${result.consent}. ${result.needsReview ? "Human review required." : "No further consent review required."}`;
   } catch {
     return null;
   }
@@ -456,7 +457,7 @@ export default function App() {
       setScenarioNotice({ scenario: scenarioId, message: "There are no ready orders left to review. Prepare a reset to restore the example queue.", offerReset: true });
       return;
     }
-    setScenarioNotice({ scenario: scenarioId, message: scenarioId === "consent" ? "Jev is checking the selected customer evidence…" : "Opening this scenario in Work…", offerReset: false });
+    setScenarioNotice({ scenario: scenarioId, message: scenarioId === "consent" ? "Checking the selected customer evidence…" : "Opening this scenario in Work…", offerReset: false });
     if (scenarioId === "consent") {
       const result = await perform(runExploreScenario);
       if (result?.kind !== "explore") {
