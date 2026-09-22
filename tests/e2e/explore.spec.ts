@@ -85,12 +85,19 @@ test("opens the exact Jev trace and recovers completed examples through review",
   await page.addInitScript(() => {
     const nativeAddEventListener = WebSocket.prototype.addEventListener as (this: WebSocket, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) => void;
     const nativeSend = WebSocket.prototype.send;
-    const testWindow = window as unknown as { __agentCompleteAcks: number };
+    const testWindow = window as unknown as { __agentCompleteAcks: number; __ackSawVisibleConsent: boolean };
     testWindow.__agentCompleteAcks = 0;
+    testWindow.__ackSawVisibleConsent = false;
     WebSocket.prototype.send = function (data: string | ArrayBufferLike | Blob | ArrayBufferView) {
       try {
         const message = JSON.parse(String(data)) as { type?: string };
-        if (message.type === "agent_complete_ack") testWindow.__agentCompleteAcks += 1;
+        if (message.type === "agent_complete_ack") {
+          testWindow.__agentCompleteAcks += 1;
+          const result = document.querySelector('[data-focused-consent-result="true"]');
+          testWindow.__ackSawVisibleConsent = result instanceof HTMLElement
+            && result.getClientRects().length > 0
+            && result.textContent?.includes("Consent: conditional") === true;
+        }
       } catch {
         // Non-JSON frames are not application acknowledgements.
       }
@@ -136,7 +143,14 @@ test("opens the exact Jev trace and recovers completed examples through review",
   await expect(page.locator(`#audit-detail-${attemptId}`)).toContainText("Check replacement consent");
   await expect(page.locator(`#audit-detail-${attemptId}`)).toContainText("Fixture run");
   await expect(page.locator(`#audit-detail-${attemptId}`)).toContainText("Browser send to completed work");
+  const focusedResult = page.locator(`#audit-detail-${attemptId} details[data-focused-application-result="true"]`);
+  await expect(focusedResult).toHaveAttribute("open", "");
+  await expect(focusedResult.locator("pre")).toBeVisible();
+  await expect(focusedResult.locator("pre")).toContainText('"consent": "conditional"');
+  await expect(focusedResult.locator('[data-focused-consent-result="true"]')).toBeVisible();
+  await expect(focusedResult.locator('[data-focused-consent-result="true"]')).toHaveText("Consent: conditional. Human review required.");
   await expect.poll(() => page.evaluate(() => (window as unknown as { __agentCompleteAcks: number }).__agentCompleteAcks)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __ackSawVisibleConsent: boolean }).__ackSawVisibleConsent)).toBe(true);
   await expect(expanded).toHaveCount(0);
   await pause(page);
 

@@ -281,6 +281,7 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
 .audit-results details:last-child { border-bottom: 0; }
 .audit-results summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; cursor: pointer; font-size: 13.5px; }
 .audit-results summary span { color: var(--muted); }
+.audit-focused-result { margin: 10px 0 6px; padding: 10px 12px; border-left: 3px solid var(--blue); background: var(--blue-soft); color: var(--text); font-weight: 700; }
 .audit-result-refs { display: flex; flex-wrap: wrap; gap: 5px 16px; margin: 8px 0; color: var(--muted); font: 400 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 .audit-results details pre { margin-top: 9px; }
 .audit-no-result, .audit-empty { color: var(--muted); }
