@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { tutorialIds } from "./tutorials.js";
+import { exploreScenarioIds } from "./explore.js";
 
 export const OrderStatus = Schema.Literals(["ready", "review", "waiting"]);
 export type OrderStatus = typeof OrderStatus.Type;
@@ -87,6 +88,7 @@ export const PrepareUndoMessage = Schema.Struct({ type: Schema.Literal("prepare_
 export const PrepareResetMessage = Schema.Struct({ type: Schema.Literal("prepare_reset"), requestId: Schema.String, generation: Schema.Int });
 export const AcceptProposalMessage = Schema.Struct({ type: Schema.Literal("accept_proposal"), requestId: Schema.String, generation: Schema.Int, proposalId: Schema.String, idempotencyKey: Schema.String });
 export const AdvanceScenarioMessage = Schema.Struct({ type: Schema.Literal("advance_scenario"), requestId: Schema.String, generation: Schema.Int, scenario: Schema.Literal("stock_change") });
+export const RunExploreScenarioMessage = Schema.Struct({ type: Schema.Literal("run_explore_scenario"), requestId: Schema.String, generation: Schema.Int, turnId: Schema.String, scenario: Schema.Literal("consent") });
 export const StopTutorialMessage = Schema.Struct({ type: Schema.Literal("stop_tutorial"), requestId: Schema.String, generation: Schema.Int });
 const TutorialActionRevision = { tutorialId: TutorialId, tutorialInstanceId: Schema.String, expectedStep: Schema.Int };
 export const TutorialActionMessage = Schema.Union([
@@ -94,7 +96,7 @@ export const TutorialActionMessage = Schema.Union([
   Schema.Struct({ type: Schema.Literal("tutorial_action"), requestId: Schema.String, generation: Schema.Int, ...TutorialActionRevision, action: Schema.Literal("ready_filter_selected") }),
   Schema.Struct({ type: Schema.Literal("tutorial_action"), requestId: Schema.String, generation: Schema.Int, ...TutorialActionRevision, action: Schema.Literal("receipt_confirmed"), receiptId: Schema.String }),
 ]);
-export type WorkspaceCommand = typeof PrepareResolutionMessage.Type | typeof PrepareBatchMessage.Type | typeof PrepareUndoMessage.Type | typeof PrepareResetMessage.Type | typeof AcceptProposalMessage.Type | typeof AdvanceScenarioMessage.Type | typeof StopTutorialMessage.Type | typeof TutorialActionMessage.Type;
+export type WorkspaceCommand = typeof PrepareResolutionMessage.Type | typeof PrepareBatchMessage.Type | typeof PrepareUndoMessage.Type | typeof PrepareResetMessage.Type | typeof AcceptProposalMessage.Type | typeof AdvanceScenarioMessage.Type | typeof RunExploreScenarioMessage.Type | typeof StopTutorialMessage.Type | typeof TutorialActionMessage.Type;
 
 export const HelloMessage = Schema.Struct({ type: Schema.Literal("hello"), requestId: Schema.String, clientId: Schema.String, knownGeneration: Schema.Int, knownSequence: Schema.Int });
 export const SnapshotRequest = Schema.Struct({ type: Schema.Literal("request_snapshot"), requestId: Schema.String });
@@ -146,7 +148,7 @@ export const AuditDetailRequest = Schema.Struct({
 export const ClientMessage = Schema.Union([
   HelloMessage, SnapshotRequest, PingRequest, PrepareResolutionMessage,
   PrepareBatchMessage, PrepareUndoMessage, PrepareResetMessage,
-  AcceptProposalMessage, AdvanceScenarioMessage, SendAgentTurnMessage,
+  AcceptProposalMessage, AdvanceScenarioMessage, RunExploreScenarioMessage, SendAgentTurnMessage,
   StopTutorialMessage, TutorialActionMessage,
   CancelAgentTurnMessage, AgentUiAcknowledgementMessage,
   AgentCompleteAcknowledgementMessage, CommandVisibleAcknowledgementMessage,
@@ -158,11 +160,13 @@ export type CommandResult =
   | { readonly kind: "proposal"; readonly proposal: ReviewedProposal }
   | { readonly kind: "receipt"; readonly receipt: CommandReceipt }
   | { readonly kind: "scenario"; readonly message: string }
+  | { readonly kind: "explore"; readonly scenario: "consent"; readonly attemptId: string; readonly turnId: string; readonly outcome: "completed" | "failed"; readonly message: string }
   | { readonly kind: "tutorial"; readonly message: string; readonly advanced: boolean };
 export const CommandResultSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("proposal"), proposal: ReviewedProposal }),
   Schema.Struct({ kind: Schema.Literal("receipt"), receipt: CommandReceipt }),
   Schema.Struct({ kind: Schema.Literal("scenario"), message: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("explore"), scenario: Schema.Literal("consent"), attemptId: Schema.String, turnId: Schema.String, outcome: Schema.Literals(["completed", "failed"]), message: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("tutorial"), message: Schema.String, advanced: Schema.Boolean }),
 ]);
 export const AgentUiOperationSchema = Schema.Union([
@@ -221,6 +225,7 @@ export type ServerMessage =
   | { readonly type: "audit_event"; readonly event: "audit.attempt.completed"; readonly payload: unknown }
   | { readonly type: "audit_page"; readonly requestId: string; readonly page: AuditPage }
   | { readonly type: "audit_detail"; readonly requestId: string; readonly detail: AuditAttemptDetail | null }
+  | { readonly type: "tool_catalogue"; readonly entries: ReadonlyArray<ToolCatalogueEntry> }
   | { readonly type: "agent_state"; readonly state: WorkspaceSnapshot }
   | { readonly type: "agent_ui_operation"; readonly operation: AgentUiOperation }
   | { readonly type: "pong"; readonly requestId: string }
@@ -232,8 +237,32 @@ export const ServerMessageSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("audit_event"), event: Schema.Literal("audit.attempt.completed"), payload: Schema.Unknown }),
   Schema.Struct({ type: Schema.Literal("audit_page"), requestId: Schema.String, page: AuditPage }),
   Schema.Struct({ type: Schema.Literal("audit_detail"), requestId: Schema.String, detail: Schema.NullOr(AuditAttemptDetail) }),
+  Schema.Struct({ type: Schema.Literal("tool_catalogue"), entries: Schema.Array(Schema.Struct({
+    id: Schema.String,
+    purpose: Schema.String,
+    category: Schema.Literals(["Read", "Guide", "Prepare", "Classify"]),
+    description: Schema.String,
+    allowedEffects: Schema.Array(Schema.String),
+    example: Schema.Struct({ arguments: Schema.Unknown, result: Schema.Unknown }),
+    inputSchema: Schema.Record(Schema.String, Schema.Unknown),
+    outputSchema: Schema.Record(Schema.String, Schema.Unknown),
+  })) }),
   Schema.Struct({ type: Schema.Literal("agent_state"), state: WorkspaceSnapshot }),
   Schema.Struct({ type: Schema.Literal("agent_ui_operation"), operation: AgentUiOperationSchema }),
   Schema.Struct({ type: Schema.Literal("pong"), requestId: Schema.String }),
   Schema.Struct({ type: Schema.Literal("error"), requestId: Schema.NullOr(Schema.String), code: Schema.String, message: Schema.String }),
 ]);
+
+export type ToolCategory = "Read" | "Guide" | "Prepare" | "Classify";
+export interface ToolCatalogueEntry {
+  readonly id: string;
+  readonly purpose: string;
+  readonly category: ToolCategory;
+  readonly description: string;
+  readonly allowedEffects: ReadonlyArray<string>;
+  readonly example: { readonly arguments: unknown; readonly result: unknown };
+  readonly inputSchema: Readonly<Record<string, unknown>>;
+  readonly outputSchema: Readonly<Record<string, unknown>>;
+}
+export const ExploreScenarioId = Schema.Literals(exploreScenarioIds);
+export type ExploreScenarioId = typeof ExploreScenarioId.Type;
