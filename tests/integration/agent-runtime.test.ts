@@ -77,7 +77,7 @@ describe("agent runtime", () => {
       const repository = yield* WorkspaceRepository;
       expect(yield* repository.recoverAgentTurns()).toBe(1);
       const turn = yield* repository.agentTurn(identity, 1, "turn_12345678-restart");
-      expect(turn).toMatchObject({ status: "interrupted", measurement: "incomplete" });
+      expect(turn).toMatchObject({ status: "interrupted", measurement: "incomplete", serverDurationMs: null, serverMeasurement: "incomplete" });
       expect(turn?.history.at(-1)).toMatchObject({ role: "assistant", content: expect.stringContaining("server restarted") });
       expect((yield* repository.snapshot(identity)).chat.filter((message) => message.turnId === "turn_12345678-restart" && message.role === "assistant").map((message) => message.content)).toEqual([
         "The server restarted before this turn completed. You can send the request again.",
@@ -227,6 +227,13 @@ describe("agent runtime", () => {
       }
       expect(coordinator.acknowledgeComplete(identity, 1, firstTurn, "connection-size")).toBe(true);
       yield* repository.completeAgentMeasurement(identity, 1, firstTurn, 75);
+      const attempts = yield* repository.providerAttempts(identity, 10, { turnId: firstTurn });
+      const detail = yield* repository.auditDetail(identity, attempts[0]!.id);
+      expect(detail).toMatchObject({
+        serverTurnDurationMs: expect.any(Number), serverTurnMeasurement: "complete",
+        browserDurationMs: 75, browserMeasurement: "complete",
+      });
+      expect(detail!.serverTurnDurationMs).toBeGreaterThanOrEqual(0);
 
       const next = yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: "turn_12345678-after-size", requestId: "request-after-size", message: "Continue.", viewContext: workView, connectionId: "connection-after-size", send: async () => undefined }));
       expect(next.started).toBe(true);
@@ -494,7 +501,10 @@ describe("agent runtime", () => {
       const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev }, { finalAcknowledgementMs: 40 });
       yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: "turn_12345678-no-ack", requestId: "request-no-ack", message: "Finish without a browser acknowledgement.", viewContext: workView, connectionId: "connection-no-ack", send: async () => undefined }));
       const expired = yield* Effect.promise(() => waitForTurn(repository, "turn_12345678-no-ack", ["complete"]));
-      expect(expired).toMatchObject({ status: "complete", phase: "Complete with missing UI", measurement: "incomplete" });
+      expect(expired).toMatchObject({ status: "complete", phase: "Complete with missing UI", measurement: "incomplete", serverMeasurement: "complete" });
+      const attempts = yield* repository.providerAttempts(identity, 10, { turnId: expired.id });
+      const detail = yield* repository.auditDetail(identity, attempts[0]!.id);
+      expect(detail).toMatchObject({ serverTurnMeasurement: "complete", browserDurationMs: null, browserMeasurement: "incomplete" });
       const next = yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: "turn_12345678-after-no-ack", requestId: "request-after-no-ack", message: "Try again.", viewContext: workView, connectionId: "connection-after-no-ack", send: async () => undefined }));
       expect(next.started).toBe(true);
     }));

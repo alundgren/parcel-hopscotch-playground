@@ -1,4 +1,5 @@
 import { Effect } from "effect";
+import type { AuditAttemptMode } from "../../shared/contracts.js";
 import type { RequestIdentity } from "../identity.js";
 import type { WorkspaceRepositoryService } from "../persistence.js";
 import type {
@@ -32,6 +33,7 @@ export interface ProviderAttemptStart {
   readonly requestId: string;
   readonly turnId: string;
   readonly kind: ProviderAttemptKind;
+  readonly mode?: AuditAttemptMode;
   readonly provider: "OpenRouter";
   readonly model: string;
   readonly request: unknown;
@@ -63,6 +65,7 @@ export interface ProviderAttemptRecord {
   readonly requestId: string;
   readonly turnId: string;
   readonly kind: ProviderAttemptKind;
+  readonly mode: AuditAttemptMode;
   readonly provider: string;
   readonly requestedModel: string;
   readonly actualModel: string | null;
@@ -89,6 +92,10 @@ export type ProviderAttemptSummary = Omit<
   ProviderAttemptRecord,
   "request" | "response"
 >;
+export interface ProviderAttemptFilter {
+  readonly requestId?: string;
+  readonly turnId?: string;
+}
 
 export type ProviderAuditNotification = (
   userId: string,
@@ -97,6 +104,7 @@ export type ProviderAuditNotification = (
     | "id"
     | "generation"
     | "kind"
+    | "mode"
     | "provider"
     | "requestedModel"
     | "actualModel"
@@ -120,6 +128,7 @@ export interface ProviderAttemptRepository {
   readonly providerAttempts: (
     identity: RequestIdentity,
     limit?: number,
+    filter?: ProviderAttemptFilter,
   ) => Effect.Effect<ReadonlyArray<ProviderAttemptSummary>>;
   readonly providerAttempt: (
     identity: RequestIdentity,
@@ -134,6 +143,7 @@ export interface AuditedProviderContext {
   readonly generation: number;
   readonly requestId: string;
   readonly turnId: string;
+  readonly mode?: AuditAttemptMode;
   readonly notify?: ProviderAuditNotification;
   readonly monotonicNow?: () => number;
 }
@@ -203,7 +213,7 @@ const interruptedFinish: ProviderAttemptFinish = {
 
 const audit = <A extends MinistralResult | JevResult>(
   context: AuditedProviderContext,
-  start: Omit<ProviderAttemptStart, "identity" | "generation" | "requestId" | "turnId">,
+  start: Omit<ProviderAttemptStart, "identity" | "generation" | "requestId" | "turnId" | "mode">,
   effect: Effect.Effect<A, ProviderError>,
 ) =>
   Effect.gen(function* () {
@@ -213,6 +223,7 @@ const audit = <A extends MinistralResult | JevResult>(
       generation: context.generation,
       requestId: context.requestId,
       turnId: context.turnId,
+      mode: context.mode ?? "unavailable",
     });
     const monotonicNow = context.monotonicNow ?? (() => performance.now());
     const started = monotonicNow();
@@ -237,6 +248,7 @@ const audit = <A extends MinistralResult | JevResult>(
               id: record.id,
               generation: record.generation,
               kind: record.kind,
+              mode: record.mode,
               provider: record.provider,
               requestedModel: record.requestedModel,
               actualModel: record.actualModel,

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
-import type { AgentViewContext, CommandReceipt, OrderStatus, ReviewedProposal, TutorialId, TutorialState, WorkspaceSnapshot } from "../shared/contracts.js";
+import type { AgentViewContext, AuditApplicationRecord, AuditAttemptDetail, AuditAttemptMode, AuditAttemptSummary, AuditPage, CommandReceipt, OrderStatus, ReviewedProposal, TutorialId, TutorialState, WorkspaceSnapshot } from "../shared/contracts.js";
 import type { ChatMessage } from "./providers/contracts.js";
 import { targets } from "../shared/targets.js";
 import { tutorialBatchOrderIds, tutorialPublicState, tutorialRequiredOrderIds, tutorialStepMatches, type TutorialProgressEvent } from "../shared/tutorials.js";
@@ -42,6 +42,8 @@ export interface AgentTurnRecord {
   readonly finishedAt: string | null;
   readonly completeDurationMs: number | null;
   readonly measurement: NonNullable<WorkspaceSnapshot["activeTurn"]>["measurement"];
+  readonly serverDurationMs: number | null;
+  readonly serverMeasurement: "pending" | "complete" | "incomplete";
 }
 export interface AgentTurnUpdate {
   readonly status: AgentTurnRecord["status"];
@@ -51,6 +53,20 @@ export interface AgentTurnUpdate {
   readonly proposalId?: string | null;
   readonly finishedAt?: string | null;
   readonly measurement?: AgentTurnRecord["measurement"];
+  readonly serverDurationMs?: number;
+  readonly serverMeasurement?: AgentTurnRecord["serverMeasurement"];
+}
+export type ApplicationAuditKind = AuditApplicationRecord["kind"];
+export interface ApplicationAuditInput {
+  readonly kind: ApplicationAuditKind;
+  readonly label: string;
+  readonly outcome: string;
+  readonly requestId?: string | null;
+  readonly turnId?: string | null;
+  readonly attemptId?: string | null;
+  readonly proposalId?: string | null;
+  readonly receiptId?: string | null;
+  readonly body: unknown;
 }
 export type ResolvedAgentViewContext =
   | { readonly view: "work" | "explore" | "audit"; readonly focus: null }
@@ -67,7 +83,7 @@ export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly startTutorial: (identity: RequestIdentity, generation: number, tutorialId: TutorialId) => Effect.Effect<TutorialState, WorkspaceCommandError>;
   readonly stopTutorial: (identity: RequestIdentity, generation: number) => Effect.Effect<void, WorkspaceCommandError>;
   readonly recordTutorialAction: (identity: RequestIdentity, generation: number, action: TutorialClientAction) => Effect.Effect<TutorialCommit, WorkspaceCommandError | WorkspaceStoreError>;
-  readonly accept: (identity: RequestIdentity, generation: number, proposalId: string, idempotencyKey: string) => Effect.Effect<CommandCommit, WorkspaceCommandError | WorkspaceStoreError>;
+  readonly accept: (identity: RequestIdentity, generation: number, proposalId: string, idempotencyKey: string, requestId?: string) => Effect.Effect<CommandCommit, WorkspaceCommandError | WorkspaceStoreError>;
   readonly advanceScenario: (identity: RequestIdentity, generation: number) => Effect.Effect<ScenarioCommit, WorkspaceCommandError | WorkspaceStoreError>;
   readonly createAgentTurn: (identity: RequestIdentity, generation: number, turnId: string, requestId: string, connectionId: string, message: string) => Effect.Effect<{ readonly created: boolean; readonly turn: AgentTurnRecord }, WorkspaceCommandError>;
   readonly updateAgentTurn: (identity: RequestIdentity, generation: number, turnId: string, update: AgentTurnUpdate) => Effect.Effect<AgentTurnRecord, WorkspaceCommandError>;
@@ -76,6 +92,9 @@ export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly resolveAgentViewContext: (identity: RequestIdentity, generation: number, context: AgentViewContext) => Effect.Effect<ResolvedAgentViewContext, WorkspaceCommandError>;
   readonly completeAgentMeasurement: (identity: RequestIdentity, generation: number, turnId: string, durationMs: number) => Effect.Effect<void, WorkspaceCommandError>;
   readonly recordCommandMeasurement: (identity: RequestIdentity, generation: number, receiptId: string, durationMs: number) => Effect.Effect<void, WorkspaceCommandError>;
+  readonly recordApplicationAudit: (identity: RequestIdentity, generation: number, input: ApplicationAuditInput) => Effect.Effect<void, WorkspaceCommandError>;
+  readonly auditPage: (identity: RequestIdentity, query: string, cursor?: string | null, limit?: number, markerCursor?: string | null) => Effect.Effect<AuditPage, WorkspaceCommandError>;
+  readonly auditDetail: (identity: RequestIdentity, attemptId: string, applicationCursor?: string | null) => Effect.Effect<AuditAttemptDetail | null, WorkspaceCommandError>;
   readonly markAgentConnectionIncomplete: (identity: RequestIdentity, connectionId: string) => Effect.Effect<void>;
   readonly recoverAgentTurns: () => Effect.Effect<number>;
 }
@@ -135,12 +154,19 @@ const migrate = (database: DatabaseSync) => {
       finished_at TEXT,
       complete_duration_ms REAL,
       measurement TEXT NOT NULL,
+      server_duration_ms REAL,
+      server_measurement TEXT NOT NULL DEFAULT 'pending',
       PRIMARY KEY (user_id, generation, id),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS agent_turns_user_started ON agent_turns (user_id, generation, started_at DESC);
     CREATE TABLE IF NOT EXISTS tutorial_state (user_id TEXT NOT NULL, generation INTEGER NOT NULL, tutorial_id TEXT NOT NULL, instance_id TEXT NOT NULL, step INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, proposal_id TEXT, receipt_id TEXT, PRIMARY KEY (user_id, generation, tutorial_id), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS audit_records (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, body_json TEXT NOT NULL, completed_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS audit_records (
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL,
+      label TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '', request_id TEXT, turn_id TEXT,
+      attempt_id TEXT, proposal_id TEXT, receipt_id TEXT, body_json TEXT NOT NULL, completed_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
     CREATE TABLE IF NOT EXISTS provider_attempts (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -148,6 +174,7 @@ const migrate = (database: DatabaseSync) => {
       request_id TEXT NOT NULL,
       turn_id TEXT NOT NULL,
       kind TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'unavailable',
       provider TEXT NOT NULL,
       requested_model TEXT NOT NULL,
       actual_model TEXT,
@@ -186,6 +213,21 @@ const migrate = (database: DatabaseSync) => {
   const missingInstances = database.prepare("SELECT rowid FROM tutorial_state WHERE instance_id IS NULL OR instance_id = ''").all() as Array<{ rowid: number }>;
   const setInstance = database.prepare("UPDATE tutorial_state SET instance_id = ? WHERE rowid = ?");
   for (const row of missingInstances) setInstance.run(`tutorial_${randomUUID()}`, row.rowid);
+  const attemptColumns = database.prepare("PRAGMA table_info(provider_attempts)").all() as Array<{ name: string }>;
+  if (!attemptColumns.some((column) => column.name === "mode")) database.exec("ALTER TABLE provider_attempts ADD COLUMN mode TEXT NOT NULL DEFAULT 'unavailable'");
+  const turnColumns = database.prepare("PRAGMA table_info(agent_turns)").all() as Array<{ name: string }>;
+  if (!turnColumns.some((column) => column.name === "server_duration_ms")) database.exec("ALTER TABLE agent_turns ADD COLUMN server_duration_ms REAL");
+  if (!turnColumns.some((column) => column.name === "server_measurement")) database.exec("ALTER TABLE agent_turns ADD COLUMN server_measurement TEXT NOT NULL DEFAULT 'pending'");
+  const auditColumns = database.prepare("PRAGMA table_info(audit_records)").all() as Array<{ name: string }>;
+  for (const [name, definition] of [
+    ["label", "TEXT NOT NULL DEFAULT ''"], ["outcome", "TEXT NOT NULL DEFAULT ''"],
+    ["request_id", "TEXT"], ["turn_id", "TEXT"], ["attempt_id", "TEXT"],
+    ["proposal_id", "TEXT"], ["receipt_id", "TEXT"],
+  ] as const) {
+    if (!auditColumns.some((column) => column.name === name)) database.exec(`ALTER TABLE audit_records ADD COLUMN ${name} ${definition}`);
+  }
+  database.exec("CREATE INDEX IF NOT EXISTS audit_records_user_turn ON audit_records (user_id, turn_id, completed_at)");
+  database.exec("CREATE INDEX IF NOT EXISTS audit_records_user_proposal ON audit_records (user_id, proposal_id, completed_at)");
 };
 
 const seedUser = (database: DatabaseSync, userId: string) => {
@@ -255,7 +297,7 @@ const advanceTutorial = (
 
 type AttemptRow = {
   id: string; user_id: string; generation: number; request_id: string; turn_id: string;
-  kind: ProviderAttemptRecord["kind"]; provider: string; requested_model: string;
+  kind: ProviderAttemptRecord["kind"]; mode: AuditAttemptMode; provider: string; requested_model: string;
   actual_model: string | null; provider_request_id: string | null; generation_id: string | null;
   request_json: string; response_json: string | null; request_bytes: number; response_bytes: number | null;
   started_at: string; completed_at: string | null; duration_ms: number | null;
@@ -271,6 +313,7 @@ const attemptRecord = (row: AttemptRow): ProviderAttemptRecord => ({
   requestId: row.request_id,
   turnId: row.turn_id,
   kind: row.kind,
+  mode: row.mode,
   provider: row.provider,
   requestedModel: row.requested_model,
   actualModel: row.actual_model,
@@ -300,6 +343,7 @@ const attemptSummary = (row: Omit<AttemptRow, "request_json" | "response_json">)
   requestId: row.request_id,
   turnId: row.turn_id,
   kind: row.kind,
+  mode: row.mode,
   provider: row.provider,
   requestedModel: row.requested_model,
   actualModel: row.actual_model,
@@ -326,6 +370,7 @@ type AgentTurnRow = {
   error_message: string | null; proposal_id: string | null; started_at: string;
   finished_at: string | null; complete_duration_ms: number | null;
   measurement: AgentTurnRecord["measurement"];
+  server_duration_ms: number | null; server_measurement: AgentTurnRecord["serverMeasurement"];
 };
 const agentTurnRecord = (row: AgentTurnRow): AgentTurnRecord => ({
   id: row.id,
@@ -341,6 +386,8 @@ const agentTurnRecord = (row: AgentTurnRow): AgentTurnRecord => ({
   finishedAt: row.finished_at,
   completeDurationMs: row.complete_duration_ms === null ? null : Number(row.complete_duration_ms),
   measurement: row.measurement,
+  serverDurationMs: row.server_duration_ms === null ? null : Number(row.server_duration_ms),
+  serverMeasurement: row.server_measurement,
 });
 
 const maximumStoredHistoryBytes = 28 * 1024;
@@ -386,6 +433,59 @@ const boundStoredHistory = (history: ReadonlyArray<ChatMessage>): ReadonlyArray<
   }
   return omitted.length === 0 ? [...first, ...selected.flat()] : [...first, summary, ...selected.flat()];
 };
+
+const truncateUtf8 = (value: string, maximumBytes: number): { readonly text: string; readonly truncated: boolean } => {
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).byteLength <= maximumBytes) return { text: value, truncated: false };
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (encoder.encode(value.slice(0, middle)).byteLength <= maximumBytes) low = middle;
+    else high = middle - 1;
+  }
+  return { text: `${value.slice(0, low)}\n[detail truncated for realtime delivery]`, truncated: true };
+};
+const auditJson = (value: unknown, maximumBytes = 3 * 1024) =>
+  truncateUtf8(JSON.stringify(redactProviderAudit(value), null, 2), maximumBytes);
+const auditRequestLabel = (request: unknown, requestId: string, kind: ProviderAttemptRecord["kind"]): string => {
+  if (typeof request === "object" && request !== null) {
+    const record = request as { messages?: unknown; state?: unknown };
+    if (Array.isArray(record.messages)) {
+      const user = [...record.messages].reverse().find((message) => typeof message === "object" && message !== null && (message as { role?: unknown }).role === "user") as { content?: unknown } | undefined;
+      if (typeof user?.content === "string" && user.content.trim().length > 0) return truncateUtf8(user.content.replace(/\s+/g, " ").trim(), 220).text;
+    }
+    if (typeof record.state === "object" && record.state !== null) {
+      const state = record.state as { note?: unknown; evidence?: unknown; order?: { id?: unknown } };
+      const source = typeof state.note === "string" ? state.note : typeof state.evidence === "string" ? state.evidence : null;
+      if (source !== null && source.trim().length > 0) return `${kind === "decisions" ? "Classify" : "Request"} · ${truncateUtf8(source.replace(/\s+/g, " ").trim(), 180).text}`;
+      if (typeof state.order?.id === "string") return `Decision · ${state.order.id}`;
+    }
+  }
+  return requestId;
+};
+const publicAttemptSummary = (row: AttemptRow): AuditAttemptSummary => ({
+  id: row.id,
+  generation: Number(row.generation),
+  requestId: row.request_id,
+  turnId: row.turn_id,
+  kind: row.kind,
+  mode: row.mode,
+  provider: row.provider,
+  requestedModel: row.requested_model,
+  actualModel: row.actual_model,
+  requestLabel: auditRequestLabel(JSON.parse(row.request_json), row.request_id, row.kind),
+  startedAt: row.started_at,
+  completedAt: row.completed_at,
+  durationMs: row.duration_ms === null ? null : Number(row.duration_ms),
+  inputTokens: row.input_tokens === null ? null : Number(row.input_tokens),
+  outputTokens: row.output_tokens === null ? null : Number(row.output_tokens),
+  totalTokens: row.total_tokens === null ? null : Number(row.total_tokens),
+  costUsd: row.cost_usd === null ? null : Number(row.cost_usd),
+  outcome: row.outcome,
+  errorCode: row.error_code,
+  retryCount: Number(row.retry_count),
+});
 
 const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMode: WorkspaceSnapshot["agentMode"], now = Date.now()): WorkspaceSnapshot => {
   const user = ensureUser(database, identity);
@@ -480,6 +580,35 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
   (database) => Effect.sync(() => database.close()),
 ).pipe(Effect.map((database) => {
   const command = <A>(run: () => A) => Effect.try({ try: run, catch: (error) => error instanceof WorkspaceCommandError ? error : fail("command_failed", String(error)) });
+  const insertAudit = (userId: string, generation: number, input: ApplicationAuditInput, completedAt = new Date().toISOString(), id = `audit_${randomUUID()}`) => {
+    const safeBody = redactProviderAudit(input.body);
+    const bodyJson = JSON.stringify(safeBody);
+    const retained = new TextEncoder().encode(bodyJson).byteLength <= 12 * 1024
+      ? bodyJson
+      : JSON.stringify({ truncated: true, preview: truncateUtf8(JSON.stringify(safeBody, null, 2), 10 * 1024).text });
+    database.prepare(`INSERT INTO audit_records (
+      id, user_id, generation, kind, label, outcome, request_id, turn_id,
+      attempt_id, proposal_id, receipt_id, body_json, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET label = excluded.label, outcome = excluded.outcome,
+      request_id = excluded.request_id, turn_id = excluded.turn_id, attempt_id = excluded.attempt_id,
+      proposal_id = excluded.proposal_id, receipt_id = excluded.receipt_id,
+      body_json = excluded.body_json, completed_at = excluded.completed_at`).run(
+      id,
+      userId,
+      generation,
+      input.kind,
+      redactProviderString(input.label, 160),
+      redactProviderString(input.outcome, 80),
+      input.requestId === undefined || input.requestId === null ? null : redactProviderString(input.requestId, 128),
+      input.turnId === undefined || input.turnId === null ? null : redactProviderString(input.turnId, 128),
+      input.attemptId === undefined || input.attemptId === null ? null : redactProviderString(input.attemptId, 128),
+      input.proposalId === undefined || input.proposalId === null ? null : redactProviderString(input.proposalId, 128),
+      input.receiptId === undefined || input.receiptId === null ? null : redactProviderString(input.receiptId, 128),
+      retained,
+      completedAt,
+    );
+  };
   const snapshot: WorkspaceRepositoryService["snapshot"] = (identity, now) => Effect.try({ try: () => readSnapshot(database, identity, agentMode, now), catch: (error) => new WorkspaceStoreError({ message: `Could not read the workspace: ${String(error)}` }) });
   const orderIds: WorkspaceRepositoryService["orderIds"] = (identity) => snapshot(identity).pipe(Effect.map((state) => state.orders.map((order) => order.id)));
   const startTutorial: WorkspaceRepositoryService["startTutorial"] = (identity, generation, tutorialId) => command(() => transact(database, () => {
@@ -592,7 +721,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     return storeProposal(database, user.id, { public: publicProposal, policies: [] });
   }));
 
-  const accept: WorkspaceRepositoryService["accept"] = (identity, generation, proposalId, idempotencyKey) => command(() => transact(database, () => {
+  const accept: WorkspaceRepositoryService["accept"] = (identity, generation, proposalId, idempotencyKey, requestId) => command(() => transact(database, () => {
     if (idempotencyKey.trim().length < 8) throw fail("invalid_idempotency_key", "The acceptance key is invalid.");
     const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
     const proposalRow = database.prepare("SELECT status, payload_json FROM proposals WHERE id = ? AND user_id = ? AND generation = ?").get(proposalId, user.id, generation) as { status: string; payload_json: string } | undefined;
@@ -627,7 +756,11 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
       const publicReceipt: CommandReceipt = { id: `receipt_${randomUUID()}`, proposalId, generation: nextGeneration, kind: "reset", title: "Demo reset", changes: [], committedAt: new Date().toISOString(), undoable: false };
       const payload: StoredReceipt = { public: publicReceipt, applied: [] };
       database.prepare("INSERT INTO receipts (id, user_id, generation, proposal_id, idempotency_key, payload_json, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(publicReceipt.id, user.id, nextGeneration, proposalId, idempotencyKey, JSON.stringify(payload), publicReceipt.committedAt);
-      database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, ?, 'reset', ?, ?)").run(`audit_${randomUUID()}`, user.id, nextGeneration, JSON.stringify({ fromGeneration: generation, receiptId: publicReceipt.id }), publicReceipt.committedAt);
+      insertAudit(user.id, nextGeneration, {
+        kind: "reset", label: "Demo reset accepted", outcome: "accepted", requestId,
+        proposalId, receiptId: publicReceipt.id,
+        body: { state: "accepted", fromGeneration: generation, proposal: stored.public, receipt: publicReceipt },
+      }, publicReceipt.committedAt);
       return { receipt: publicReceipt, snapshot: readSnapshot(database, identity, agentMode), generationChanged: true };
     }
     const inventoryNeeds = new Map<string, { quantity: number; expectedVersion: number }>();
@@ -658,7 +791,11 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     if (stored.public.kind === "resolution" || stored.public.kind === "batch") {
       advanceTutorial(database, user.id, generation, { kind: "proposal_accepted", proposalKind: stored.public.kind, orderIds: stored.public.changes.map((change) => change.orderId) }, { receiptId: publicReceipt.id });
     }
-    database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, ?, 'command', ?, ?)").run(`audit_${randomUUID()}`, user.id, generation, JSON.stringify({ proposalId, receiptId: publicReceipt.id, sequence }), publicReceipt.committedAt);
+    insertAudit(user.id, generation, {
+      kind: "receipt", label: publicReceipt.title, outcome: "accepted", requestId,
+      proposalId, receiptId: publicReceipt.id,
+      body: { state: "accepted", sequence, proposal: stored.public, receipt: publicReceipt },
+    }, publicReceipt.committedAt);
     return { receipt: publicReceipt, snapshot: readSnapshot(database, identity, agentMode), generationChanged: false };
   }));
 
@@ -678,15 +815,16 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     const id = `attempt_${randomUUID()}`;
     const startedAt = new Date().toISOString();
     database.prepare(`INSERT INTO provider_attempts (
-      id, user_id, generation, request_id, turn_id, kind, provider, requested_model,
+      id, user_id, generation, request_id, turn_id, kind, mode, provider, requested_model,
       request_json, request_bytes, started_at, outcome, retry_count
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0)`).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0)`).run(
       id,
       user.id,
       input.generation,
       redactProviderString(input.requestId, 128),
       redactProviderString(input.turnId, 128),
       input.kind,
+      input.mode ?? agentMode,
       redactProviderString(input.provider, 128),
       redactProviderString(input.model, 256),
       JSON.stringify(redactProviderAudit(input.request)),
@@ -734,10 +872,17 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     );
     const completed = database.prepare("SELECT * FROM provider_attempts WHERE id = ? AND user_id = ?").get(attemptId, owner.id) as AttemptRow;
     const summary = attemptRecord(completed);
-    database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, ?, 'provider', ?, ?)").run(
+    database.prepare(`INSERT INTO audit_records (
+      id, user_id, generation, kind, label, outcome, request_id, turn_id, attempt_id, body_json, completed_at
+    ) VALUES (?, ?, ?, 'provider', ?, ?, ?, ?, ?, ?, ?)` ).run(
       `audit_${randomUUID()}`,
       owner.id,
       row.generation,
+      redactProviderString(summary.requestId, 160),
+      summary.outcome,
+      summary.requestId,
+      summary.turnId,
+      summary.id,
       JSON.stringify({
         attemptId: summary.id,
         requestId: summary.requestId,
@@ -756,16 +901,26 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     );
     return summary;
   }));
-  const providerAttempts: WorkspaceRepositoryService["providerAttempts"] = (identity, requestedLimit = 50) => Effect.sync(() => {
+  const providerAttempts: WorkspaceRepositoryService["providerAttempts"] = (identity, requestedLimit = 50, filter = {}) => Effect.sync(() => {
     const limit = Math.max(1, Math.min(100, Math.floor(requestedLimit)));
     const owner = database.prepare("SELECT id FROM users WHERE id = ? AND identity_digest = ?").get(identity.id, identity.digest) as { id: string } | undefined;
     if (owner === undefined) return [];
     return (database.prepare(`SELECT
-      id, user_id, generation, request_id, turn_id, kind, provider, requested_model,
+      id, user_id, generation, request_id, turn_id, kind, mode, provider, requested_model,
       actual_model, provider_request_id, generation_id, request_bytes, response_bytes,
       started_at, completed_at, duration_ms, input_tokens, output_tokens, total_tokens,
       cost_usd, outcome, error_code, error_message, retry_count
-      FROM provider_attempts WHERE user_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?`).all(owner.id, limit) as Array<Omit<AttemptRow, "request_json" | "response_json">>).map(attemptSummary);
+      FROM provider_attempts WHERE user_id = ?
+      AND (? IS NULL OR request_id = ?)
+      AND (? IS NULL OR turn_id = ?)
+      ORDER BY started_at DESC, rowid DESC LIMIT ?`).all(
+        owner.id,
+        filter.requestId ?? null,
+        filter.requestId ?? null,
+        filter.turnId ?? null,
+        filter.turnId ?? null,
+        limit,
+      ) as Array<Omit<AttemptRow, "request_json" | "response_json">>).map(attemptSummary);
   });
   const providerAttempt: WorkspaceRepositoryService["providerAttempt"] = (identity, attemptId) => Effect.sync(() => {
     const row = database.prepare("SELECT pa.* FROM provider_attempts pa JOIN users u ON u.id = pa.user_id WHERE pa.id = ? AND u.id = ? AND u.identity_digest = ?").get(attemptId, identity.id, identity.digest) as AttemptRow | undefined;
@@ -808,7 +963,8 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     if (new TextEncoder().encode(historyJson).byteLength > 32 * 1024) throw fail("history_too_large", "The conversation history exceeded its limit.");
     const measurement = current.measurement === "incomplete" ? "incomplete" : (update.measurement ?? current.measurement);
     database.prepare(`UPDATE agent_turns SET status = ?, phase = ?, history_json = ?,
-      error_message = ?, proposal_id = COALESCE(?, proposal_id), finished_at = ?, measurement = ?
+      error_message = ?, proposal_id = COALESCE(?, proposal_id), finished_at = ?, measurement = ?,
+      server_duration_ms = COALESCE(?, server_duration_ms), server_measurement = COALESCE(?, server_measurement)
       WHERE user_id = ? AND generation = ? AND id = ?`).run(
       update.status,
       update.phase.slice(0, 128),
@@ -817,6 +973,8 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
       update.proposalId ?? null,
       update.finishedAt === undefined ? current.finished_at : update.finishedAt,
       measurement,
+      update.serverDurationMs ?? null,
+      update.serverMeasurement ?? null,
       user.id,
       generation,
       turnId,
@@ -831,6 +989,29 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
           chatMessageId(user.id, generation, turnId, "assistant"), user.id, generation, assistant.content.slice(0, 8_000), new Date().toISOString(),
         );
       }
+      const updated = agentTurnRecord(turnRow(user.id, generation, turnId)!);
+      insertAudit(user.id, generation, {
+        kind: "turn",
+        label: "Completed agent turn",
+        outcome: updated.status === "waiting_for_ui" ? "awaiting_browser" : updated.status,
+        requestId: updated.requestId,
+        turnId,
+        proposalId: updated.proposalId,
+        body: {
+          status: updated.status,
+          phase: updated.phase,
+          error: updated.error,
+          finalResponse: assistant?.role === "assistant" ? assistant.content : null,
+          completeDurationMs: updated.completeDurationMs,
+          measurement: updated.measurement,
+          browserClock: "browser_monotonic",
+          browserMetric: "send_to_completed_work",
+          serverDurationMs: updated.serverDurationMs,
+          serverMeasurement: updated.serverMeasurement,
+          serverClock: "server_monotonic",
+          serverMetric: "turn_start_to_server_complete",
+        },
+      }, updated.finishedAt ?? new Date().toISOString(), `audit_turn_${createHash("sha256").update(`${user.id}\0${generation}\0${turnId}`).digest("hex").slice(0, 32)}`);
     }
     return agentTurnRecord(turnRow(user.id, generation, turnId)!);
   }));
@@ -880,6 +1061,20 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     database.prepare("UPDATE agent_turns SET status = 'complete', phase = 'Complete', complete_duration_ms = ?, measurement = 'complete', finished_at = COALESCE(finished_at, ?) WHERE user_id = ? AND generation = ? AND id = ?").run(
       durationMs, new Date().toISOString(), user.id, generation, turnId,
     );
+    const updated = agentTurnRecord(turnRow(user.id, generation, turnId)!);
+    const assistant = [...updated.history].reverse().find((entry) => entry.role === "assistant" && entry.content !== null && entry.content.trim().length > 0);
+    insertAudit(user.id, generation, {
+      kind: "turn", label: "Completed agent turn", outcome: "complete",
+      requestId: updated.requestId, turnId, proposalId: updated.proposalId,
+      body: {
+        status: updated.status, phase: updated.phase, error: updated.error,
+        finalResponse: assistant?.role === "assistant" ? assistant.content : null,
+        completeDurationMs: durationMs, measurement: "complete",
+        browserClock: "browser_monotonic", browserMetric: "send_to_completed_work",
+        serverDurationMs: updated.serverDurationMs, serverMeasurement: updated.serverMeasurement,
+        serverClock: "server_monotonic", serverMetric: "turn_start_to_server_complete",
+      },
+    }, updated.finishedAt ?? new Date().toISOString(), `audit_turn_${createHash("sha256").update(`${user.id}\0${generation}\0${turnId}`).digest("hex").slice(0, 32)}`);
   }));
   const recordCommandMeasurement: WorkspaceRepositoryService["recordCommandMeasurement"] = (identity, generation, receiptId, durationMs) => command(() => transact(database, () => {
     if (!Number.isFinite(durationMs) || durationMs < 0 || durationMs > 10 * 60_000) throw fail("invalid_duration", "The committed-command duration is invalid.");
@@ -887,20 +1082,260 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     expectGeneration(user.generation, generation);
     const receipt = database.prepare("SELECT id FROM receipts WHERE id = ? AND user_id = ? AND generation = ?").get(receiptId, user.id, generation) as { id: string } | undefined;
     if (receipt === undefined) throw fail("receipt_not_found", "That receipt is not available in this workspace.");
-    database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, ?, 'command_visible', ?, ?)").run(
-      `audit_${randomUUID()}`, user.id, generation, JSON.stringify({ receiptId, durationMs, clock: "browser_monotonic" }), new Date().toISOString(),
-    );
+    insertAudit(user.id, generation, {
+      kind: "command_visible", label: `Accept to visible · ${Math.round(durationMs * 10) / 10} ms`, outcome: "complete", receiptId,
+      body: { receiptId, durationMs, clock: "browser_monotonic", metric: "accept_to_visible_commit" },
+    });
   }));
-  const markAgentConnectionIncomplete: WorkspaceRepositoryService["markAgentConnectionIncomplete"] = (identity, connectionId) => Effect.sync(() => {
-    database.prepare("UPDATE agent_turns SET measurement = 'incomplete', status = CASE WHEN phase = 'Rendering answer' THEN 'complete' ELSE status END WHERE user_id = ? AND connection_id = ? AND status IN ('running', 'waiting_for_ui')").run(identity.id, connectionId);
+  const recordApplicationAudit: WorkspaceRepositoryService["recordApplicationAudit"] = (identity, generation, input) => command(() => transact(database, () => {
+    const owner = database.prepare("SELECT id FROM users WHERE id = ? AND identity_digest = ?").get(identity.id, identity.digest) as { id: string } | undefined;
+    if (owner === undefined) throw fail("audit_owner_missing", "The audit owner is unavailable.");
+    insertAudit(owner.id, generation, input);
+  }));
+  const auditPage: WorkspaceRepositoryService["auditPage"] = (identity, rawQuery, rawCursor = null, requestedLimit = 12, rawMarkerCursor = null) => command(() => {
+    const owner = database.prepare("SELECT id FROM users WHERE id = ? AND identity_digest = ?").get(identity.id, identity.digest) as { id: string } | undefined;
+    if (owner === undefined) return { query: rawQuery.trim(), attempts: [], total: 0, nextCursor: null, markers: [], markerNextCursor: null };
+    const query = rawQuery.trim().replace(/\s+/g, " ").slice(0, 160);
+    const terms = [...new Set(query.toLocaleLowerCase("en").split(/\s+/).filter(Boolean))];
+    const where: Array<string> = ["pa.user_id = ?"];
+    const parameters: Array<string | number> = [owner.id];
+    const escapeLike = (term: string) => term.replace(/[\\%_]/g, (value) => `\\${value}`);
+    for (const term of terms) {
+      where.push(`lower(
+        pa.id || ' generation ' || CAST(pa.generation AS TEXT) || ' ' || pa.request_id || ' ' || pa.turn_id || ' ' || pa.kind || ' ' || pa.mode || ' ' ||
+        CASE pa.mode WHEN 'scripted' THEN 'fixture fixture run' WHEN 'live' THEN 'live run' ELSE 'provider unavailable' END || ' ' ||
+        pa.provider || ' ' || pa.requested_model || ' ' || coalesce(pa.actual_model, '') || ' ' ||
+        coalesce(pa.provider_request_id, '') || ' ' || coalesce(pa.generation_id, '') || ' ' ||
+        pa.started_at || ' ' || coalesce(pa.completed_at, '') || ' ' ||
+        CASE
+          WHEN json_type(pa.request_json, '$.state.note') = 'text' OR json_type(pa.request_json, '$.state.evidence') = 'text'
+            THEN CASE pa.kind WHEN 'decisions' THEN 'classify' ELSE 'request' END
+          WHEN json_type(pa.request_json, '$.state.order.id') = 'text' THEN 'decision'
+          ELSE ''
+        END || ' ' ||
+        pa.outcome || ' ' || CASE pa.outcome WHEN 'success' THEN 'completed' WHEN 'credits_exhausted' THEN 'credits exhausted' WHEN 'timeout' THEN 'timed out' WHEN 'cancelled' THEN 'cancelled' WHEN 'interrupted' THEN 'interrupted' ELSE pa.outcome END || ' ' ||
+        CASE WHEN pa.duration_ms IS NULL THEN 'unknown'
+          WHEN pa.duration_ms < 1000 THEN CAST(pa.duration_ms AS TEXT) || ' ms ' || printf('%.0f ms', pa.duration_ms)
+          WHEN pa.duration_ms < 10000 THEN CAST(pa.duration_ms AS TEXT) || ' ms ' || printf('%.2f s', pa.duration_ms / 1000.0)
+          ELSE CAST(pa.duration_ms AS TEXT) || ' ms ' || printf('%.1f s', pa.duration_ms / 1000.0)
+        END || ' ' ||
+        'input ' || coalesce(CAST(pa.input_tokens AS TEXT) || ' ' || printf('%,d', pa.input_tokens), 'unknown') || ' tokens ' ||
+        'output ' || coalesce(CAST(pa.output_tokens AS TEXT) || ' ' || printf('%,d', pa.output_tokens), 'unknown') || ' tokens ' ||
+        'total ' || coalesce(CAST(pa.total_tokens AS TEXT) || ' ' || printf('%,d', pa.total_tokens), 'unknown') || ' tokens ' ||
+        'request ' || CAST(pa.request_bytes AS TEXT) || ' ' || printf('%,d', pa.request_bytes) || ' utf-8 b ' ||
+        'response ' || coalesce(CAST(pa.response_bytes AS TEXT) || ' ' || printf('%,d', pa.response_bytes), 'unknown') || ' utf-8 b ' ||
+        CASE WHEN pa.mode = 'scripted' THEN 'fixture' WHEN pa.cost_usd IS NULL THEN 'unknown' WHEN pa.cost_usd = 0 THEN '$0' ELSE '$' || rtrim(rtrim(printf('%.9f', pa.cost_usd), '0'), '.') END || ' ' ||
+        'retries ' || CAST(pa.retry_count AS TEXT) || ' ' ||
+        coalesce(pa.error_code, '') || ' ' || coalesce(pa.error_message, '') || ' ' ||
+        pa.request_json || ' ' || coalesce(pa.response_json, '') || ' ' ||
+        coalesce((SELECT group_concat(ar.id || ' ' || ar.kind || ' ' || ar.label || ' ' || ar.outcome || ' ' || ar.completed_at || ' ' ||
+          coalesce(ar.request_id, '') || ' ' || coalesce(ar.turn_id, '') || ' ' ||
+          coalesce(ar.proposal_id, '') || ' ' || coalesce(ar.receipt_id, '') || ' ' || ar.body_json, ' ')
+          FROM audit_records ar WHERE ar.user_id = pa.user_id AND ar.kind <> 'provider' AND (
+            ar.turn_id = pa.turn_id OR ar.attempt_id = pa.id OR
+            ar.proposal_id IN (SELECT linked.proposal_id FROM audit_records linked
+              WHERE linked.user_id = pa.user_id AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL) OR
+            ar.receipt_id IN (
+              SELECT accepted.receipt_id FROM audit_records accepted
+              WHERE accepted.user_id = pa.user_id AND accepted.proposal_id IN (
+                SELECT linked.proposal_id FROM audit_records linked
+                WHERE linked.user_id = pa.user_id AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL
+              ) AND accepted.receipt_id IS NOT NULL
+            )
+          )), '')
+      ) LIKE ? ESCAPE '\\'`);
+      parameters.push(`%${escapeLike(term)}%`);
+    }
+    const count = database.prepare(`SELECT COUNT(*) AS count FROM provider_attempts pa WHERE ${where.join(" AND ")}`).get(...parameters) as { count: number };
+    let cursor: { readonly startedAt: string; readonly id: string } | null = null;
+    if (rawCursor !== null) {
+      try {
+        const decoded = JSON.parse(Buffer.from(rawCursor, "base64url").toString("utf8")) as { startedAt?: unknown; id?: unknown };
+        if (typeof decoded.startedAt === "string" && typeof decoded.id === "string") cursor = { startedAt: decoded.startedAt, id: decoded.id };
+      } catch {
+        throw fail("invalid_audit_cursor", "That audit page is no longer available. Reload the first page.");
+      }
+      if (cursor === null) throw fail("invalid_audit_cursor", "That audit page is no longer available. Reload the first page.");
+    }
+    const pageWhere = [...where];
+    const pageParameters = [...parameters];
+    if (cursor !== null) {
+      pageWhere.push("(pa.started_at < ? OR (pa.started_at = ? AND pa.id < ?))");
+      pageParameters.push(cursor.startedAt, cursor.startedAt, cursor.id);
+    }
+    const limit = Math.max(1, Math.min(20, Math.floor(requestedLimit)));
+    const rows = database.prepare(`SELECT pa.* FROM provider_attempts pa
+      WHERE ${pageWhere.join(" AND ")}
+      ORDER BY pa.started_at DESC, pa.id DESC LIMIT ?`).all(...pageParameters, limit + 1) as Array<AttemptRow>;
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const last = selected.at(-1);
+    const markerWhere = ["user_id = ?", "kind = 'reset'"];
+    const markerParameters: Array<string> = [owner.id];
+    for (const term of terms) {
+      markerWhere.push("lower('workspace reset ' || id || ' ' || kind || ' ' || label || ' ' || outcome || ' ' || completed_at || ' ' || coalesce(request_id, '') || ' ' || coalesce(turn_id, '') || ' ' || coalesce(proposal_id, '') || ' ' || coalesce(receipt_id, '') || ' ' || body_json) LIKE ? ESCAPE '\\'");
+      markerParameters.push(`%${escapeLike(term)}%`);
+    }
+    let markerCursor: { readonly completedAt: string; readonly id: string } | null = null;
+    if (rawMarkerCursor !== null) {
+      try {
+        const decoded = JSON.parse(Buffer.from(rawMarkerCursor, "base64url").toString("utf8")) as { completedAt?: unknown; id?: unknown };
+        if (typeof decoded.completedAt === "string" && typeof decoded.id === "string") markerCursor = { completedAt: decoded.completedAt, id: decoded.id };
+      } catch {
+        throw fail("invalid_audit_cursor", "That reset-history page is no longer available. Reload Audit.");
+      }
+      if (markerCursor === null) throw fail("invalid_audit_cursor", "That reset-history page is no longer available. Reload Audit.");
+      markerWhere.push("(completed_at < ? OR (completed_at = ? AND id < ?))");
+      markerParameters.push(markerCursor.completedAt, markerCursor.completedAt, markerCursor.id);
+    }
+    const markerLimit = 8;
+    const markerRows = database.prepare(`SELECT id, kind, label, outcome, request_id, turn_id, proposal_id, receipt_id, body_json, completed_at
+      FROM audit_records WHERE ${markerWhere.join(" AND ")} ORDER BY completed_at DESC, id DESC LIMIT ?`).all(...markerParameters, markerLimit + 1) as Array<{
+        id: string; kind: "reset"; label: string; outcome: string; request_id: string | null;
+        turn_id: string | null; proposal_id: string | null; receipt_id: string | null;
+        body_json: string; completed_at: string;
+      }>;
+    const hasMoreMarkers = markerRows.length > markerLimit;
+    const selectedMarkers = markerRows.slice(0, markerLimit);
+    const lastMarker = selectedMarkers.at(-1);
+    return {
+      query,
+      attempts: selected.map(publicAttemptSummary),
+      total: Number(count.count),
+      nextCursor: hasMore && last !== undefined
+        ? Buffer.from(JSON.stringify({ startedAt: last.started_at, id: last.id }), "utf8").toString("base64url")
+        : null,
+      markers: selectedMarkers.map((record) => ({
+        id: record.id, kind: record.kind, label: record.label, outcome: record.outcome,
+        occurredAt: record.completed_at, requestId: record.request_id, turnId: record.turn_id,
+        proposalId: record.proposal_id, receiptId: record.receipt_id,
+        bodyText: auditJson(JSON.parse(record.body_json), 640).text,
+      })),
+      markerNextCursor: hasMoreMarkers && lastMarker !== undefined
+        ? Buffer.from(JSON.stringify({ completedAt: lastMarker.completed_at, id: lastMarker.id }), "utf8").toString("base64url")
+        : null,
+    };
   });
+  const auditDetail: WorkspaceRepositoryService["auditDetail"] = (identity, attemptId, rawApplicationCursor = null) => command(() => {
+    const row = database.prepare(`SELECT pa.* FROM provider_attempts pa
+      JOIN users u ON u.id = pa.user_id
+      WHERE pa.id = ? AND u.id = ? AND u.identity_digest = ?`).get(attemptId, identity.id, identity.digest) as AttemptRow | undefined;
+    if (row === undefined) return null;
+    let applicationCursor: { readonly completedAt: string; readonly id: string } | null = null;
+    if (rawApplicationCursor !== null) {
+      try {
+        const decoded = JSON.parse(Buffer.from(rawApplicationCursor, "base64url").toString("utf8")) as { completedAt?: unknown; id?: unknown };
+        if (typeof decoded.completedAt === "string" && typeof decoded.id === "string") applicationCursor = { completedAt: decoded.completedAt, id: decoded.id };
+      } catch {
+        throw fail("invalid_audit_cursor", "That application-result page is no longer available. Reload the request detail.");
+      }
+      if (applicationCursor === null) throw fail("invalid_audit_cursor", "That application-result page is no longer available. Reload the request detail.");
+    }
+    const applicationParameters: Array<string> = [
+      row.user_id, row.turn_id, row.id, row.user_id, row.turn_id,
+      row.user_id, row.user_id, row.turn_id,
+    ];
+    if (applicationCursor !== null) {
+      applicationParameters.push(applicationCursor.completedAt, applicationCursor.completedAt, applicationCursor.id);
+    }
+    const applicationLimit = 8;
+    const records = database.prepare(`SELECT ar.* FROM audit_records ar
+      WHERE ar.user_id = ? AND ar.kind IN ('tool', 'ui', 'turn', 'proposal', 'receipt', 'reset', 'command_visible')
+      AND (
+        ar.turn_id = ? OR ar.attempt_id = ? OR
+        ar.proposal_id IN (SELECT linked.proposal_id FROM audit_records linked WHERE linked.user_id = ? AND linked.turn_id = ? AND linked.proposal_id IS NOT NULL) OR
+        ar.receipt_id IN (
+          SELECT accepted.receipt_id FROM audit_records accepted
+          WHERE accepted.user_id = ? AND accepted.proposal_id IN (
+            SELECT linked.proposal_id FROM audit_records linked WHERE linked.user_id = ? AND linked.turn_id = ? AND linked.proposal_id IS NOT NULL
+          ) AND accepted.receipt_id IS NOT NULL
+        )
+      ) ${applicationCursor === null ? "" : "AND (ar.completed_at < ? OR (ar.completed_at = ? AND ar.id < ?))"}
+      ORDER BY ar.completed_at DESC, ar.id DESC LIMIT ?`).all(...applicationParameters, applicationLimit + 1) as Array<{
+        id: string; kind: AuditApplicationRecord["kind"]; label: string; outcome: string;
+        request_id: string | null; turn_id: string | null; proposal_id: string | null;
+        receipt_id: string | null; body_json: string; completed_at: string;
+      }>;
+    const hasMoreApplication = records.length > applicationLimit;
+    const selectedRecords = records.slice(0, applicationLimit);
+    const lastApplication = selectedRecords.at(-1);
+    const turnRecord = database.prepare(`SELECT body_json FROM audit_records
+      WHERE user_id = ? AND kind = 'turn' AND turn_id = ?
+      ORDER BY completed_at DESC, id DESC LIMIT 1`).get(row.user_id, row.turn_id) as { body_json: string } | undefined;
+    let serverTurnDurationMs: number | null = null;
+    let serverTurnMeasurement: "pending" | "complete" | "incomplete" | null = null;
+    let browserDurationMs: number | null = null;
+    let browserMeasurement: "pending" | "complete" | "incomplete" | null = null;
+    if (turnRecord !== undefined) {
+      const body = JSON.parse(turnRecord.body_json) as { completeDurationMs?: unknown; measurement?: unknown; serverDurationMs?: unknown; serverMeasurement?: unknown };
+      if (typeof body.completeDurationMs === "number" && Number.isFinite(body.completeDurationMs)) browserDurationMs = body.completeDurationMs;
+      if (body.measurement === "pending" || body.measurement === "complete" || body.measurement === "incomplete") browserMeasurement = body.measurement;
+      if (typeof body.serverDurationMs === "number" && Number.isFinite(body.serverDurationMs)) serverTurnDurationMs = body.serverDurationMs;
+      if (body.serverMeasurement === "pending" || body.serverMeasurement === "complete" || body.serverMeasurement === "incomplete") serverTurnMeasurement = body.serverMeasurement;
+    }
+    const request = auditJson(JSON.parse(row.request_json));
+    const response = row.response_json === null ? null : auditJson(JSON.parse(row.response_json));
+    return {
+      attempt: publicAttemptSummary(row),
+      providerRequestId: row.provider_request_id,
+      generationId: row.generation_id,
+      requestBytes: Number(row.request_bytes),
+      responseBytes: row.response_bytes === null ? null : Number(row.response_bytes),
+      errorMessage: row.error_message,
+      requestText: request.text,
+      responseText: response?.text ?? null,
+      requestTruncated: request.truncated,
+      responseTruncated: response?.truncated ?? false,
+      serverTurnDurationMs,
+      serverTurnMeasurement,
+      browserDurationMs,
+      browserMeasurement,
+      application: selectedRecords.map((record) => ({
+        id: record.id,
+        kind: record.kind,
+        label: record.label,
+        outcome: record.outcome,
+        occurredAt: record.completed_at,
+        requestId: record.request_id,
+        turnId: record.turn_id,
+        proposalId: record.proposal_id,
+        receiptId: record.receipt_id,
+        bodyText: auditJson(JSON.parse(record.body_json), 640).text,
+      })),
+      applicationNextCursor: hasMoreApplication && lastApplication !== undefined
+        ? Buffer.from(JSON.stringify({ completedAt: lastApplication.completed_at, id: lastApplication.id }), "utf8").toString("base64url")
+        : null,
+    };
+  });
+  const markAgentConnectionIncomplete: WorkspaceRepositoryService["markAgentConnectionIncomplete"] = (identity, connectionId) => Effect.sync(() => transact(database, () => {
+    const rows = database.prepare("SELECT generation, id FROM agent_turns WHERE user_id = ? AND connection_id = ? AND status IN ('running', 'waiting_for_ui')").all(identity.id, connectionId) as Array<{ generation: number; id: string }>;
+    database.prepare("UPDATE agent_turns SET measurement = 'incomplete', status = CASE WHEN phase = 'Rendering answer' THEN 'complete' ELSE status END WHERE user_id = ? AND connection_id = ? AND status IN ('running', 'waiting_for_ui')").run(identity.id, connectionId);
+    for (const row of rows) {
+      const updatedRow = turnRow(identity.id, Number(row.generation), row.id);
+      if (updatedRow === undefined || updatedRow.status !== "complete") continue;
+      const updated = agentTurnRecord(updatedRow);
+      const assistant = [...updated.history].reverse().find((entry) => entry.role === "assistant" && entry.content !== null && entry.content.trim().length > 0);
+      insertAudit(identity.id, updated.generation, {
+        kind: "turn", label: "Completed agent turn", outcome: "complete",
+        requestId: updated.requestId, turnId: updated.id, proposalId: updated.proposalId,
+        body: {
+          status: updated.status, phase: updated.phase, error: updated.error,
+          finalResponse: assistant?.role === "assistant" ? assistant.content : null,
+          completeDurationMs: null, measurement: "incomplete",
+          browserClock: "browser_monotonic", browserMetric: "send_to_completed_work",
+          serverDurationMs: updated.serverDurationMs, serverMeasurement: updated.serverMeasurement,
+          serverClock: "server_monotonic", serverMetric: "turn_start_to_server_complete",
+        },
+      }, updated.finishedAt ?? new Date().toISOString(), `audit_turn_${createHash("sha256").update(`${identity.id}\0${updated.generation}\0${updated.id}`).digest("hex").slice(0, 32)}`);
+    }
+  }));
   const recoverAgentTurns: WorkspaceRepositoryService["recoverAgentTurns"] = () => Effect.sync(() => {
     const finishedAt = new Date().toISOString();
-    const rows = database.prepare("SELECT user_id, generation, id, history_json FROM agent_turns WHERE status IN ('running', 'waiting_for_ui')").all() as Array<{ user_id: string; generation: number; id: string; history_json: string }>;
+    const rows = database.prepare("SELECT user_id, generation, id, request_id, history_json FROM agent_turns WHERE status IN ('running', 'waiting_for_ui')").all() as Array<{ user_id: string; generation: number; id: string; request_id: string; history_json: string }>;
     for (const row of rows) {
       const terminal = "The server restarted before this turn completed. You can send the request again.";
       const history = boundStoredHistory([...(JSON.parse(row.history_json) as Array<ChatMessage>), { role: "assistant", content: terminal }]);
-      database.prepare("UPDATE agent_turns SET status = 'interrupted', phase = 'Interrupted', history_json = ?, error_message = 'The server restarted before this turn completed.', finished_at = ?, measurement = 'incomplete' WHERE user_id = ? AND generation = ? AND id = ?").run(
+      database.prepare("UPDATE agent_turns SET status = 'interrupted', phase = 'Interrupted', history_json = ?, error_message = 'The server restarted before this turn completed.', finished_at = ?, measurement = 'incomplete', server_measurement = 'incomplete' WHERE user_id = ? AND generation = ? AND id = ?").run(
         JSON.stringify(history), finishedAt, row.user_id, row.generation, row.id,
       );
       database.prepare(`INSERT INTO chat_messages (id, user_id, generation, role, body, created_at)
@@ -908,10 +1343,18 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
         ON CONFLICT(id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at`).run(
         chatMessageId(row.user_id, row.generation, row.id, "assistant"), row.user_id, row.generation, terminal, finishedAt,
       );
+      insertAudit(row.user_id, row.generation, {
+        kind: "turn", label: "Interrupted agent turn", outcome: "interrupted", requestId: row.request_id, turnId: row.id,
+        body: {
+          status: "interrupted", phase: "Interrupted", error: terminal, finalResponse: terminal,
+          completeDurationMs: null, measurement: "incomplete", browserClock: "browser_monotonic", browserMetric: "send_to_completed_work",
+          serverDurationMs: null, serverMeasurement: "incomplete", serverClock: "server_monotonic", serverMetric: "turn_start_to_server_complete",
+        },
+      }, finishedAt, `audit_turn_${createHash("sha256").update(`${row.user_id}\0${row.generation}\0${row.id}`).digest("hex").slice(0, 32)}`);
     }
     return rows.length;
   });
-  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, startTutorial, stopTutorial, recordTutorialAction, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, resolveAgentViewContext, completeAgentMeasurement, recordCommandMeasurement, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
+  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, startTutorial, stopTutorial, recordTutorialAction, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, resolveAgentViewContext, completeAgentMeasurement, recordCommandMeasurement, recordApplicationAudit, auditPage, auditDetail, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
 })));
 
 export const workspacePersistenceLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMode"] = "unavailable") => repositoryLayer(filename, agentMode);
