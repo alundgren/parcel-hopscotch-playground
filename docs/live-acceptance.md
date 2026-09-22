@@ -1,67 +1,65 @@
-# Human-run live acceptance
+# Live acceptance tests
 
-Issue #23 includes a local runner delivered separately from this checkout. Keep
-`run.mjs` and its local README in an external directory, such as
-`~/.local/share/parcel-hopscotch-live/pr24/`. The runner is not a package script,
-test-discovery target, or CI job. It does not run as part of agent validation.
-
-Build the desired revision with `vp run build`. From that checkout, check the
-external runner without inference:
+Run the paid suite explicitly from the checkout:
 
 ```bash
-vp env exec --node 24.19.0 node ~/.local/share/parcel-hopscotch-live/pr24/run.mjs \
-  --check --repo "$PWD" --output /tmp/parcel-live-preflight.json
+vp run test:live
 ```
 
-The separate `--self-test` option checks failure reporting, setup credit exhaustion,
-truncation, and the requested highlight target without a server or inference.
+Supply your own `PARCEL_LIVE_TEST_API_KEY` in the terminal environment first.
+The command requires that variable and does not fall back to
+`OPENROUTER_API_KEY` or load keys from `.env` or `.env.local`. Missing credentials
+produce a not-run report and a nonzero exit before building or starting the app.
+Anyone with the checkout and their own inference key can run it. Agents must not
+run the paid suite; ordinary tests, `check`, and CI never invoke it.
 
-This starts the built app over loopback with disposable SQLite data and unavailable
-providers. It checks Chromium, the 16-tool catalogue, and read-only evidence
-queries. A successful preflight reports live tests as **not run**.
+The command builds the current checkout, starts an isolated loopback server with
+fresh SQLite data, and runs headless Playwright. No visible browser, acceptance
+pauses, temporary-folder management, or separate runner installation is needed.
+Install the project's pinned Chromium once with `vp exec playwright install chromium`
+if it is not installed; Linux VMs may need `--with-deps`.
 
-For the paid suite, the owner supplies `PARCEL_LIVE_TEST_API_KEY` in the terminal
-environment and invokes the runner explicitly:
+All four Explore buttons and 16 directed natural-language cases run twice by
+default: 40 primary turns and four setup turns. Every model request keeps the full
+registry and automatic tool selection. `vp run test:live --samples 3` changes the
+repetitions (two to five). Each turn has a 180-second runner deadline and the
+application's finite request, output, tool-round, and retry limits. Exhausted
+credits stop the suite. This spends prepaid credit; there is no guaranteed dollar
+total.
+
+Each case uses a fresh local identity. For Undo setup, Playwright clicks **Accept
+1 change** on the disposable address proposal, waits for the receipt, then asks
+the live model to prepare Undo. The test driver performs that setup through the
+ordinary UI; the model still cannot commit changes. All measured agent turns
+must leave business state unchanged, including their pending Undo proposals.
+There is no production connection or scripted substitute for live inference.
+
+Every invocation prints its results path under `artifacts/live/<timestamp>/`.
+That directory is gitignored and retained for local debugging:
+
+- `report.json`: assertions, completed tools, provider errors and redacted
+  responses, tool/UI audit evidence, turn history, timings, tokens, bytes,
+  truncation, retries, and known/unknown costs.
+- `workspace.sqlite`: the isolated application's persisted data and audit.
+- `<sample>-<case>/final.png` and `trace.zip`: final screenshot and Playwright
+  browser trace for each case, including failures.
+
+Open a trace with `vp exec playwright show-trace <path-to-trace.zip>`, or ask your
+agent to inspect the report and database. Reports include failed and incomplete
+samples; latency percentiles use only completed browser measurements. Setup
+requests count toward costs. Missing repeated tool coverage fails the suite.
+The child server and browser stop automatically, while results stay on disk.
+
+Credential-free checks are available for agents and contributors:
 
 ```bash
-vp env exec --node 24.19.0 node ~/.local/share/parcel-hopscotch-live/pr24/run.mjs \
-  --confirm-live --samples 2 --repo "$PWD" --output /tmp/parcel-live-results.json
+vp run test:live --self-test
+vp run test:live --check
 ```
 
-The runner reads only that key. It never falls back to `OPENROUTER_API_KEY` and
-never loads `.env` or `.env.local`. It starts Node directly with a fresh,
-allowlisted environment, passing the dedicated test key to the server's existing
-configuration field. Missing credentials produce a not-run report before any
-server, browser, or provider starts. Do not put a key in a command argument or
-commit reports containing private annotations.
-
-The suite opens a visible Chromium browser and runs all four Explore buttons plus
-16 directed natural-language tool cases. Every model request keeps the complete
-registry and automatic tool selection. Each case uses a fresh local identity and
-seeded work. The default two repetitions run 40 primary turns and four setup
-turns. Two to five repetitions are supported. Each turn has a 180-second runner
-deadline and the application's finite provider and tool-call limits. This can
-spend prepaid credit; the runner does not estimate a guaranteed dollar total.
-
-For each Undo case, the runner opens an address proposal and pauses in the
-terminal. The person reviews it and clicks **Accept 1 change** in the browser,
-then presses Enter in the terminal. The runner never clicks an acceptance control.
-It asks the model to prepare Undo against that real receipt and leaves the Undo
-proposal pending. All other cases verify that orders, inventory, and receipts
-remain unchanged. There is no production connection and no scripted substitute
-for missing or unsuccessful live inference.
-
-The JSON report records each case's assertions and failures, actual completed tool
-coverage, provider outcomes, output truncation, stored-result truncation, request
-and response bytes, tokens, unknown and known costs, retries, server completion,
-and browser Send-to-completed-work duration. It reports p50 and p95 only from
-completed browser measurements and keeps failed or incomplete samples visible.
-Setup requests are included in cost totals. Missing tool coverage fails the suite.
-Unknown billing is counted separately from known cost. Closing the runner removes
-its temporary database and stops its child server.
-
-The delivered local runner and README are the executable artifact. This document
-alone does not install them on another machine. Copy the external directory there,
-install the repository's pinned Playwright Chromium, and run the preflight before
-paid acceptance. Live correctness remains pending until the owner runs the suite;
-credential-free regression tests do not establish model accuracy.
+The first checks reporting, credit exhaustion, truncation, highlight assertions,
+and SQLite read contention without starting the app. The second builds and starts
+the app with unavailable providers and verifies the browser, automated receipt
+setup, catalogue, and evidence queries. It records zero provider requests and
+reports live acceptance as **not run**, even if the dedicated key is present.
+These checks do not establish real-model accuracy.

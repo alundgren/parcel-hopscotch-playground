@@ -24,7 +24,8 @@
     "smoke:providers": "vp exec tsx src/server/provider-smoke.ts",
     "smoke:agent": "vp exec tsx src/server/provider-smoke.ts",
     "verify:container": "node scripts/verify-container.mjs",
-    "check": "vp run typecheck && vp test run && vp run build"
+    "check": "vp run typecheck && vp test run && vp run build",
+    "test:live": "node scripts/live-acceptance.mjs"
   },
   "dependencies": {
     "@effect/platform-node": "4.0.0-rc.117",

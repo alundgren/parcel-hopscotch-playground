@@ -28,7 +28,7 @@ the browser's final-render acknowledgement before recording completed work.
 | Bounded larger responses | Provider regression consumes 4,096 SSE fragments above the old byte limit and rejects token allowances above 4,096. Runtime permits eight requests, six tools per request, a 32 KiB request context and bounded stored history. Chat permits 2 MiB per response and 120 seconds per provider attempt. |
 | Failure handling | Tests cover missing UI, failed preparation, another failed tool beside a displayed proposal, cancellation, reset, exhausted credits, the eight-request stop, and missing final-render acknowledgement. |
 | Real Explore selection | Supplied-adapter tests verify Ministral chooses consent and that an answer without a consent tool call is not replaced with a direct Jev success. Browser tests retain the delayed visible-Audit acknowledgement check. |
-| External owner-run suite | Separate local runner covers four scenario buttons and 16 directed tool cases with two repetitions by default. It checks tool outputs, unchanged business state, proposal display, complete durations, cost and truncation. See [live acceptance](live-acceptance.md). |
+| Explicit paid suite | Repository script `vp run test:live` covers four scenario buttons and 16 directed tool cases with two repetitions by default. It checks tool outputs, unchanged business state, proposal display, complete durations, cost and truncation. See [live acceptance](live-acceptance.md). |
 | Dedicated credential and isolation | External preflight starts an unavailable-provider server with a temporary SQLite database and no environment-file loader. Missing `PARCEL_LIVE_TEST_API_KEY` reports not run even when the application-key variable is set. No live inference was run by the agent. |
 
 ## Local checks
@@ -39,7 +39,7 @@ Validation uses Node 24.19.0 and Playwright 1.62.1 through Vite Plus.
 - `vp run test:e2e`: 38 desktop and narrow browser cases passed.
 - Targeted runtime regressions passed again after the consent trace lookup was made independent of Audit pagination.
 - Final proof captures Work, Explore, Audit, proposal review, and the acknowledgement at 1440×1000 and 320×900. Playwright also records the proposal-to-acceptance flow and the model-selected consent flow.
-- External runner syntax, no-inference preflight, missing-dedicated-key behavior, and offline setup-failure, exhausted-credit, truncation, and highlight assertions passed. The preflight records zero provider attempts and explicitly reports live acceptance as not run.
+- Runner syntax, no-inference preflight, missing-dedicated-key behavior, and offline setup-failure, exhausted-credit, truncation, and highlight assertions passed. The preflight records zero provider attempts and explicitly reports live acceptance as not run.
 
 ## Visual comparison notes
 
@@ -58,3 +58,26 @@ Audit shows retained request IDs, actual recorded tool outcomes and completed-wo
 measurements instead of the prototype's illustrative timings and first-output
 metric. These differences preserve the approved colors, work/chat layout,
 review-before-acceptance behavior, and narrow-screen ordering.
+
+## Owner live run and runner corrections
+
+The first owner run returned 27 passes and 13 failures, with no reported output
+truncation. Five cases hit SQLite read locks, and both Undo cases timed out on an
+incorrect exact-text receipt assertion despite successful acceptance. The runner
+now waits for SQLite locks and matches the receipt state correctly. At the owner's
+request, the suite now lives in the repo, runs headlessly with automated disposable
+receipt setup, and retains its report, database, screenshots, and traces under
+`artifacts/live/`. This replaces the issue's original external-runner requirement.
+
+Three malformed provider responses, two highlight failures, and one missed batch
+preparation remain unproven. The old report discarded the evidence needed to
+identify their cause. The new runner retains provider error messages and redacted
+responses plus complete local audit data so the next owner-run suite can be
+diagnosed. No successful paid rerun is claimed.
+
+The repository runner's `--self-test` passed with a separate process holding an
+exclusive SQLite lock. Its `--check` built the application and completed the
+headless acceptance/receipt flow with zero provider requests. The final screenshot
+was inspected. Missing dedicated credentials returned exit code 1 even with the
+ordinary application key set to a dummy value. Retained databases and traces were
+confirmed gitignored. No application UI changed in this runner update.
