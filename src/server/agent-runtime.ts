@@ -216,8 +216,44 @@ const historyGroups = (messages: ReadonlyArray<ChatMessage>): Array<Array<ChatMe
   return groups;
 };
 
+const compactToolContent = (content: string): string => {
+  try {
+    const value = JSON.parse(content) as { ok?: unknown; error?: unknown; result?: unknown };
+    if (value.ok === false) {
+      const error = typeof value.error === "object" && value.error !== null ? value.error as { code?: unknown; message?: unknown } : {};
+      return JSON.stringify({
+        ok: false,
+        truncated: true,
+        error: {
+          code: typeof error.code === "string" ? error.code.slice(0, 64) : "tool_failed",
+          message: typeof error.message === "string" ? error.message.slice(0, 512) : "The tool failed.",
+        },
+      });
+    }
+    if (value.ok === true && typeof value.result === "object" && value.result !== null) {
+      const result = value.result as { ok?: unknown; message?: unknown };
+      if (result.ok === false) {
+        return JSON.stringify({
+          ok: true,
+          truncated: true,
+          result: {
+            ok: false,
+            message: typeof result.message === "string" ? result.message.slice(0, 512) : "The requested UI result was not available.",
+          },
+        });
+      }
+    }
+    if (value.ok === true) {
+      return JSON.stringify({ ok: true, truncated: true, result: { summary: "This tool completed, but its detailed result was compacted to keep the next bounded model request valid." } });
+    }
+  } catch {
+    // Stored tool messages are validated before this path. Never turn an unreadable result into success.
+  }
+  return JSON.stringify({ ok: false, truncated: true, error: { code: "invalid_tool_result", message: "The earlier tool result could not be read after context compaction." } });
+};
+
 const compactToolGroup = (group: ReadonlyArray<ChatMessage>): Array<ChatMessage> => group.map((message) => message.role === "tool"
-  ? { role: "tool" as const, toolCallId: message.toolCallId, content: JSON.stringify({ ok: true, truncated: true, result: { summary: "This completed tool result was compacted to keep the next bounded model request valid." } }) }
+  ? { role: "tool" as const, toolCallId: message.toolCallId, content: compactToolContent(message.content) }
   : message);
 
 const consentDisclosure = (output: unknown): string | null => {

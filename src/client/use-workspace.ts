@@ -27,7 +27,23 @@ type CommandInput =
   | { readonly type: "prepare_reset" }
   | { readonly type: "accept_proposal"; readonly proposalId: string; readonly idempotencyKey: string }
   | { readonly type: "advance_scenario"; readonly scenario: "stock_change" };
-interface PendingCommand { readonly resolve: (result: CommandResult) => void; readonly reject: (error: Error) => void }
+export interface PendingCommand { readonly resolve: (result: CommandResult) => void; readonly reject: (error: Error) => void }
+type CommandResultMessage = Extract<ServerMessage, { readonly type: "command_result" }>;
+export const settleCommandResult = (
+  current: WorkspaceSnapshot | null,
+  message: CommandResultMessage,
+  pending: Map<string, PendingCommand>,
+  applyState: (incoming: WorkspaceSnapshot) => boolean,
+): void => {
+  const waiter = pending.get(message.requestId);
+  pending.delete(message.requestId);
+  if (current !== null && message.state.generation < current.generation) {
+    waiter?.reject(new Error("The workspace was reset before this command reply arrived. Review the current work and try again."));
+    return;
+  }
+  applyState(message.state);
+  waiter?.resolve(message.result);
+};
 const requestId = () => crypto.randomUUID();
 const getClientId = (): string => { const key = "parcel-hopscotch-client-id"; const existing = sessionStorage.getItem(key); if (existing !== null) return existing; const value = crypto.randomUUID(); sessionStorage.setItem(key, value); return value; };
 const committedState = (message: WorkspaceEvent): WorkspaceSnapshot | null => {
@@ -83,9 +99,12 @@ export function useWorkspace() {
         setSnapshot(incoming);
         return true;
       };
-      if (message.type === "snapshot" || message.type === "command_result") {
-        if (!applyState(message.state)) return;
-        if (message.type === "command_result") { pendingRef.current.get(message.requestId)?.resolve(message.result); pendingRef.current.delete(message.requestId); }
+      if (message.type === "snapshot") {
+        applyState(message.state);
+        return;
+      }
+      if (message.type === "command_result") {
+        settleCommandResult(stateRef.current, message, pendingRef.current, applyState);
         return;
       }
       if (message.type === "agent_state") {

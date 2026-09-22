@@ -324,7 +324,7 @@ const boundStoredHistory = (history: ReadonlyArray<ChatMessage>): ReadonlyArray<
   const candidates = first.length === 0 ? groups : groups.slice(1);
   const selected: Array<Array<ChatMessage>> = [];
   const omitted: Array<Array<ChatMessage>> = [];
-  const summary: ChatMessage = { role: "assistant", content: "Earlier completed tool outcomes were omitted from stored context because this turn reached its history limit." };
+  const summary: ChatMessage = { role: "assistant", content: "Earlier tool outcomes were omitted from stored context because this turn reached its history limit." };
   let bytes = encodedBytes([...first, summary]);
   for (const group of [...candidates].reverse()) {
     const groupBytes = encodedBytes(group);

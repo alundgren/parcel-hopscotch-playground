@@ -233,6 +233,82 @@ describe("agent runtime", () => {
     }));
   });
 
+  it("preserves failed and recoverable UI outcomes when the newest tool group must be compacted", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const filename = join(directory, "workspace.sqlite");
+    let round = 0;
+    let compactedRequest: MinistralRequest | null = null;
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      if (round++ === 0) return result([
+        ...Array.from({ length: 5 }, (_, index) => ({ id: `call_compact_list_${index}`, name: "listOrders", arguments: {} })),
+        { id: "call_compact_missing", name: "getOrder", arguments: { orderId: "BB-9999" } },
+      ]);
+      compactedRequest = request;
+      return result([], "Done.");
+    }) };
+    await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const proposal = yield* repository.prepareBatch(identity, 1);
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev }, { finalAcknowledgementMs: 200 });
+      const turnId = "turn_12345678-compacted-outcomes";
+      yield* Effect.promise(() => coordinator.start({
+        repository,
+        hub,
+        identity,
+        generation: 1,
+        turnId,
+        requestId: "request-compacted-outcomes",
+        message: "查".repeat(2_000),
+        viewContext: { view: "work", focus: { kind: "proposal", proposalId: proposal.id } },
+        connectionId: "connection-compacted-outcomes",
+        send: async () => undefined,
+      }));
+      yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(compactedRequest).not.toBeNull();
+      expect(jsonBytes(buildMinistralWireRequest(compactedRequest!))).toBeLessThanOrEqual(32 * 1024);
+      const compacted = toolPayloads(compactedRequest!.messages);
+      expect(compacted).toHaveLength(6);
+      expect(compacted.filter(({ id }) => id.startsWith("call_compact_list_")).every(({ payload }) => payload.ok === true && payload.truncated === true)).toBe(true);
+      const missing = compacted.find(({ id }) => id === "call_compact_missing")?.payload as { ok?: boolean; truncated?: boolean; error?: { code?: string; message?: string } } | undefined;
+      expect(missing).toMatchObject({ ok: false, truncated: true, error: { message: expect.stringContaining("not in this workspace") } });
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "connection-compacted-outcomes")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 50);
+
+      let uiRound = 0;
+      let compactedUiRequest: MinistralRequest | null = null;
+      const uiMinistral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+        if (uiRound++ === 0) return result([
+          ...Array.from({ length: 5 }, (_, index) => ({ id: `call_compact_ui_list_${index}`, name: "listOrders", arguments: {} })),
+          { id: "call_compact_ui", name: "navigate", arguments: { view: "order", orderId: "BB-1042" } },
+        ]);
+        compactedUiRequest = request;
+        return result([], "Done.");
+      }) };
+      const uiCoordinator = makeAgentCoordinator(config, { ministral: uiMinistral, jev: unusedJev }, { finalAcknowledgementMs: 200 });
+      const uiTurnId = "turn_12345678-compacted-ui";
+      yield* Effect.promise(() => uiCoordinator.start({
+        repository,
+        hub,
+        identity,
+        generation: 1,
+        turnId: uiTurnId,
+        requestId: "request-compacted-ui",
+        message: "查".repeat(2_000),
+        viewContext: { view: "work", focus: { kind: "proposal", proposalId: proposal.id } },
+        connectionId: "connection-compacted-ui",
+        send: async (message) => {
+          if (message.type === "agent_ui_operation") uiCoordinator.acknowledgeUi(identity, 1, uiTurnId, message.operation.id, "connection-compacted-ui", "missing");
+        },
+      }));
+      const uiTerminal = yield* Effect.promise(() => waitForTurn(repository, uiTurnId, ["complete"]));
+      expect(uiTerminal.measurement).toBe("incomplete");
+      expect(compactedUiRequest).not.toBeNull();
+      expect(jsonBytes(buildMinistralWireRequest(compactedUiRequest!))).toBeLessThanOrEqual(32 * 1024);
+      const unavailableUi = toolPayloads(compactedUiRequest!.messages).find(({ id }) => id === "call_compact_ui")?.payload as { ok?: boolean; truncated?: boolean; result?: { ok?: boolean; message?: string } } | undefined;
+      expect(unavailableUi).toMatchObject({ ok: true, truncated: true, result: { ok: false, message: expect.stringContaining("not available") } });
+    }));
+  });
+
   it("stops before provider or UI dispatch when cancellation lands during a phase update", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");
