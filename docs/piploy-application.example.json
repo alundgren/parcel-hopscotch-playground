@@ -1,0 +1,17 @@
+{
+  "Name": "parcel-hopscotch-playground",
+  "GitRepositoryUrl": "https://github.com/alundgren/parcel-hopscotch-playground.git",
+  "DockerfilePath": "Dockerfile",
+  "PortMappings": ["8089:3000"],
+  "Volumes": ["parcel-hopscotch-playground-data:/data"],
+  "EnvironmentVariables": {
+    "NODE_ENV": "production",
+    "HOST": "0.0.0.0",
+    "PORT": "3000",
+    "PUBLIC_ORIGIN": "https://parcel.irudd.net",
+    "DATABASE_PATH": "/data/parcel.sqlite",
+    "ENABLE_DEV_IDENTITY": "false",
+    "AGENT_PROVIDER_MODE": "live",
+    "OPENROUTER_API_KEY": "${hostEnv:OPENROUTER_API_KEY}"
+  }
+}

@@ -9,10 +9,10 @@
   },
   "scripts": {
     "dev": "concurrently -k -n server,web -c blue,green \"pnpm dev:server\" \"pnpm dev:web\"",
-    "dev:server": "tsx watch src/server/main.ts",
+    "dev:server": "node --env-file-if-exists=.env.local --import tsx --watch src/server/main.ts",
     "dev:web": "vite",
     "build": "pnpm typecheck && vite build && tsc -p tsconfig.server.json",
-    "start": "node dist/server/server/main.js",
+    "start": "node --env-file-if-exists=.env.local dist/server/server/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
@@ -20,9 +20,10 @@
     "test:e2e": "playwright test",
     "proof:visual": "playwright test tests/e2e/visual-proof.spec.ts",
     "proof:video": "PROOF_DEMO=true playwright test tests/e2e/acceptance.spec.ts --grep 'rejects a stale batch|records server-turn'",
-    "benchmark:providers": "tsx src/server/provider-benchmark-cli.ts",
+    "benchmark:providers": "node --env-file-if-exists=.env.local --import tsx src/server/provider-benchmark-cli.ts",
     "smoke:providers": "tsx src/server/provider-smoke.ts",
     "smoke:agent": "tsx src/server/provider-smoke.ts",
+    "verify:container": "node scripts/verify-container.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
   "dependencies": {
