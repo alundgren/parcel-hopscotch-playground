@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 import { ClientMessage } from "../../src/shared/contracts";
+import { exploreScenarios } from "../../src/shared/explore";
 import { isRegisteredTarget, targets } from "../../src/shared/targets";
-import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, toolCatalogueMetadata } from "../../src/server/tool-registry";
+import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, toolCatalogueMetadata, validateToolCatalogueExamples } from "../../src/server/tool-registry";
 import { toolHandlers } from "../../src/server/tool-handlers";
 
 describe("agent tool registry", () => {
@@ -13,8 +14,12 @@ describe("agent tool registry", () => {
     expect(tools.map((tool) => tool.name)).toEqual(toolCatalogueMetadata.map((tool) => tool.id));
     expect(tools).toHaveLength(16);
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["startTutorial", "stopTutorial"]));
+    expect(tools.map((tool) => tool.name)).toContain("prepareReset");
     expect(tools.map((tool) => String(tool.name))).not.toContain("acceptProposal");
     expect(toolCatalogueMetadata.every((tool) => tool.allowedEffects.length > 0 && tool.example !== undefined)).toBe(true);
+    expect(() => validateToolCatalogueExamples()).not.toThrow();
+    const names = new Set(tools.map((tool) => tool.name));
+    expect(exploreScenarios.flatMap((scenario) => scenario.tools).every((name) => names.has(name as never))).toBe(true);
   });
 
   it("rejects injected identity, arbitrary selectors, extra fields, and inherited names", () => {

@@ -59,6 +59,24 @@ const nextMessage = (
     socket.on("message", listener);
   });
 
+const waitForProviderAttempt = async (turnId: string) => {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const database = new DatabaseSync(databasePath);
+    try {
+      database.exec("PRAGMA busy_timeout = 500");
+      const row = database.prepare("SELECT id FROM provider_attempts WHERE turn_id = ? LIMIT 1").get(turnId);
+      if (row !== undefined) return;
+    } catch (cause) {
+      if (!(cause instanceof Error) || !cause.message.includes("database is locked")) throw cause;
+    } finally {
+      database.close();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for the provider attempt.");
+};
+
 const connect = (
   email: string | null,
   requestOrigin = origin,
@@ -447,6 +465,31 @@ describe("realtime server", () => {
     connection.socket.close();
   });
 
+  it("cancels a delayed direct consent attempt through the same socket", async () => {
+    const connection = await connect("explore-cancel@example.test");
+    const turnId = "turn_12345678-direct-cancel";
+    const running = nextMessage(connection.socket, (message) => message.type === "agent_state" && message.state.activeTurn?.id === turnId);
+    connection.socket.send(JSON.stringify({ type: "run_explore_scenario", requestId: "start-cancel", generation: 1, turnId, scenario: "consent" }));
+    await running;
+    await waitForProviderAttempt(turnId);
+
+    const cancelled = nextMessage(connection.socket, (message) => message.type === "agent_state" && message.state.activeTurn === null && message.state.chat.some((item) => item.turnId === turnId && item.content.startsWith("Cancelled.")));
+    connection.socket.send(JSON.stringify({ type: "cancel_agent_turn", requestId: "cancel-running", generation: 1, turnId }));
+    await cancelled;
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    const current = nextMessage(connection.socket, (message) => message.type === "snapshot" && message.requestId === "after-cancel");
+    connection.socket.send(JSON.stringify({ type: "request_snapshot", requestId: "after-cancel" }));
+    await expect(current).resolves.toMatchObject({ type: "snapshot", state: { activeTurn: null } });
+    const database = new DatabaseSync(databasePath);
+    const attempt = database.prepare("SELECT outcome FROM provider_attempts WHERE turn_id = ? ORDER BY started_at DESC LIMIT 1").get(turnId) as { outcome: string };
+    const turn = database.prepare("SELECT status, measurement FROM agent_turns WHERE id = ?").get(turnId) as { status: string; measurement: string };
+    expect(attempt.outcome).not.toBe("running");
+    expect(turn).toEqual({ status: "cancelled", measurement: "incomplete" });
+    database.close();
+    connection.socket.close();
+  });
+
   it("cancels an old-generation provider turn on reset without restoring chat or losing its audit", async () => {
     const connection = await connect("agent-reset@example.test");
     const running = nextMessage(connection.socket, (message) => message.type === "agent_state" && message.state.activeTurn?.id === "turn_12345678-reset");
@@ -468,6 +511,40 @@ describe("realtime server", () => {
 
     const database = new DatabaseSync(databasePath);
     const attempt = database.prepare("SELECT generation, outcome, cost_usd FROM provider_attempts WHERE turn_id = ? ORDER BY started_at DESC LIMIT 1").get("turn_12345678-reset") as { generation: number; outcome: string; cost_usd: number | null };
+    expect(attempt.generation).toBe(1);
+    expect(attempt.outcome).not.toBe("running");
+    expect(attempt.cost_usd).toBeNull();
+    database.close();
+
+    const stale = nextMessage(connection.socket, (message) => message.type === "error" && message.requestId === "stale-turn");
+    connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "stale-turn", generation: 1, turnId: "turn_87654321-stale", message: "Show work", ...workContext }));
+    await expect(stale).resolves.toMatchObject({ type: "error", code: "agent_start_failed" });
+    connection.socket.close();
+  });
+
+  it("cancels a delayed direct consent attempt on reset without restoring chat or losing its audit", async () => {
+    const connection = await connect("explore-reset@example.test");
+    const directTurnId = "turn_12345678-direct-reset";
+    const running = nextMessage(connection.socket, (message) => message.type === "agent_state" && message.state.activeTurn?.id === directTurnId);
+    connection.socket.send(JSON.stringify({ type: "run_explore_scenario", requestId: "start-slow", generation: 1, turnId: directTurnId, scenario: "consent" }));
+    await running;
+    await waitForProviderAttempt(directTurnId);
+
+    const prepared = nextMessage(connection.socket, (message) => message.type === "command_result" && message.requestId === "prepare-reset-during-turn");
+    connection.socket.send(JSON.stringify({ type: "prepare_reset", requestId: "prepare-reset-during-turn", generation: 1 }));
+    const proposal = await prepared;
+    if (proposal.type !== "command_result" || proposal.result.kind !== "proposal") throw new Error("Reset proposal was not returned.");
+    const accepted = nextMessage(connection.socket, (message) => message.type === "command_result" && message.requestId === "accept-reset-during-turn");
+    connection.socket.send(JSON.stringify({ type: "accept_proposal", requestId: "accept-reset-during-turn", generation: 1, proposalId: proposal.result.proposal.id, idempotencyKey: "agent-reset-key" }));
+    await expect(accepted).resolves.toMatchObject({ type: "command_result", state: { generation: 2, chat: [], activeTurn: null } });
+
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const current = nextMessage(connection.socket, (message) => message.type === "snapshot" && message.requestId === "after-agent-reset");
+    connection.socket.send(JSON.stringify({ type: "request_snapshot", requestId: "after-agent-reset" }));
+    await expect(current).resolves.toMatchObject({ type: "snapshot", state: { generation: 2, chat: [], activeTurn: null } });
+
+    const database = new DatabaseSync(databasePath);
+    const attempt = database.prepare("SELECT generation, outcome, cost_usd FROM provider_attempts WHERE turn_id = ? ORDER BY started_at DESC LIMIT 1").get(directTurnId) as { generation: number; outcome: string; cost_usd: number | null };
     expect(attempt.generation).toBe(1);
     expect(attempt.outcome).not.toBe("running");
     expect(attempt.cost_usd).toBeNull();

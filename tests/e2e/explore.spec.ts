@@ -1,0 +1,125 @@
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
+
+const pause = (page: Page) => page.waitForTimeout(600);
+
+const resetWorkspace = async (page: Page) => {
+  await page.goto("/");
+  await expect(page.getByTestId("connection-status")).toContainText("Connected");
+  const cancel = page.getByRole("button", { name: "Cancel" });
+  if (await cancel.isVisible()) await cancel.click();
+  const back = page.getByRole("button", { name: /Back to (work|queue)/ });
+  if (await back.isVisible()) await back.click();
+  await page.getByRole("button", { name: "Reset my demo" }).click();
+  await expect(page.getByRole("heading", { name: "Reset my demo" })).toBeVisible();
+  await page.getByRole("button", { name: "Reset my demo" }).click();
+  await expect(page.getByText("Fresh workspace ready")).toBeVisible();
+  await page.getByRole("button", { name: "Back to work" }).click();
+};
+
+const openExplore = async (page: Page) => {
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Explore" })).toBeVisible();
+  await expect(page.locator(".tool-row")).toHaveCount(16);
+};
+
+test("filters and inspects the validated registry catalogue", async ({ page, context }, testInfo: TestInfo) => {
+  await resetWorkspace(page);
+  await openExplore(page);
+  await expect(page.locator(".scenario-card")).toHaveCount(4);
+  await expect(page.getByText("16 tools", { exact: true })).toBeVisible();
+  await pause(page);
+  await page.screenshot({ path: testInfo.outputPath(`actual-explore-default-${testInfo.project.name}.png`), fullPage: true });
+
+  await page.getByRole("button", { name: "Show tools for Get your bearings" }).click();
+  await expect(page.getByText("3 of 16 tools", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Read", exact: true }).click();
+  await expect(page.getByText("2 of 16 tools", { exact: true })).toBeVisible();
+  await page.getByRole("searchbox", { name: "Filter tools" }).fill("fulfilment orders");
+  await expect(page.getByText("1 of 16 tools", { exact: true })).toBeVisible();
+  await expect(page.locator(".tool-row")).toHaveCount(1);
+
+  await page.getByRole("searchbox", { name: "Filter tools" }).fill("does-not-exist");
+  await expect(page.getByText("No tools match these filters.")).toBeVisible();
+  await page.getByRole("button", { name: "Clear filters" }).click();
+  await expect(page.locator(".tool-row")).toHaveCount(16);
+
+  const resetRow = page.locator('[data-tool-id="prepareReset"]');
+  await resetRow.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(resetRow).toHaveAttribute("open", "");
+  await expect(resetRow.getByText("Illustrative examples validated against the runtime schemas.")).toBeVisible();
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
+  await resetRow.getByRole("button", { name: "Copy example call for prepareReset" }).click();
+  await expect(page.locator(".copy-status")).toContainText(/Copied the prepareReset example|example is selected/);
+
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await pause(page);
+  await page.screenshot({ path: testInfo.outputPath(`actual-explore-expanded-${testInfo.project.name}.png`), fullPage: true });
+});
+
+test("launches the orientation, tutorial, and batch scenarios through working flows", async ({ page }) => {
+  await resetWorkspace(page);
+  await openExplore(page);
+  await page.getByRole("button", { name: "Try in Work: Get your bearings" }).click();
+  await expect(page.getByRole("heading", { name: "Decisions" })).toBeVisible();
+  await expect(page.getByPlaceholder("Message...")).toBeEnabled();
+  await pause(page);
+
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  await page.getByRole("button", { name: "Try in Work: Learn a task" }).click();
+  await expect(page.getByLabel("Address correction tutorial")).toBeVisible();
+  await expect(page.getByPlaceholder("Message...")).toBeEnabled();
+  await pause(page);
+  await page.getByRole("button", { name: "Dismiss tutorial" }).click();
+
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  await page.getByRole("button", { name: "Try in Work: Make a batch decision" }).click();
+  await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
+  await expect(page.getByText("Nothing changes until you accept the batch.")).toBeVisible();
+  await expect(page.getByText("Accepted by you")).toHaveCount(0);
+  await pause(page);
+  await page.getByRole("button", { name: "Cancel" }).click();
+});
+
+test("opens the exact Jev trace and recovers completed examples through review", async ({ page }) => {
+  await resetWorkspace(page);
+  await openExplore(page);
+  await page.getByRole("button", { name: "View in Audit: Test a judgement" }).click();
+  await expect(page.getByRole("heading", { name: "Audit" })).toBeVisible();
+  const expanded = page.locator('.audit-summary[aria-hidden="false"]');
+  const row = page.locator(".audit-summary[data-attempt-id]").first();
+  await expect(row).toBeVisible();
+  const attemptId = await row.getAttribute("data-attempt-id");
+  expect(attemptId).not.toBeNull();
+  await expect(page.locator(".audit-filter input")).toHaveValue(attemptId!);
+  await expect(row.getByRole("button")).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(`#audit-detail-${attemptId}`)).toContainText("Check replacement consent");
+  await expect(page.locator(`#audit-detail-${attemptId}`)).toContainText("Fixture run");
+  await expect(page.locator(`#audit-detail-${attemptId}`)).toContainText("Browser send to completed work");
+  await expect(expanded).toHaveCount(0);
+  await pause(page);
+
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await page.locator("#target-order-BB-1042").click();
+  await page.getByRole("button", { name: "Review change" }).click();
+  await page.getByRole("button", { name: "Accept 1 change" }).click();
+  await expect(page.getByText("Accepted by you")).toBeVisible();
+  await page.getByRole("button", { name: "Back to work" }).click();
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  await page.getByRole("button", { name: "Try in Work: Learn a task" }).click();
+  await expect(page.getByText("BB-1042 has already moved past its address review.")).toBeVisible();
+  await pause(page);
+  await page.getByRole("button", { name: "Prepare reset for review" }).click();
+  await expect(page.getByRole("heading", { name: "Reset my demo" })).toBeVisible();
+  await expect(page.getByText("Fresh workspace ready")).toHaveCount(0);
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  await page.getByRole("button", { name: "Advance stock case" }).click();
+  await expect(page.getByText("Scenario advanced: sage mug stock changed.")).toBeVisible();
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await page.getByRole("button", { name: "Reset my demo" }).click();
+  await page.getByRole("button", { name: "Reset my demo" }).click();
+  await expect(page.getByText("Fresh workspace ready")).toBeVisible();
+  await page.getByRole("button", { name: "Back to work" }).click();
+});

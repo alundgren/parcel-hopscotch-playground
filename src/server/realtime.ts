@@ -11,6 +11,7 @@ import type { ServerConfig } from "./config.js";
 import type { AgentCoordinator } from "./agent-runtime.js";
 import type { RequestIdentity } from "./identity.js";
 import { WorkspaceRepository } from "./persistence.js";
+import { toolCatalogueMetadata } from "./tool-registry.js";
 
 const maximumMessageBytes = 16 * 1024;
 const maximumOutgoingBufferBytes = 256 * 1024;
@@ -278,6 +279,7 @@ export const runWorkspaceSocket = (
       return;
     }
     yield* send(snapshotMessage(initialSnapshot, null));
+    yield* send({ type: "tool_catalogue", entries: toolCatalogueMetadata });
 
     const seenRequestIds = new Set<string>();
     const remember = (requestId: string): boolean => {
@@ -371,6 +373,24 @@ export const runWorkspaceSocket = (
           })));
           if (result._tag === "Failure") {
             yield* send({ type: "error", requestId: agentMessage.requestId, code: "agent_start_failed", message: result.failure instanceof Error ? result.failure.message : "The agent turn could not start." });
+          }
+          return;
+        }
+        if (message.value.type === "run_explore_scenario") {
+          const scenarioMessage = message.value;
+          const result = yield* Effect.result(Effect.tryPromise(() => agentCoordinator.runExploreScenario({
+            repository,
+            hub,
+            identity,
+            generation: scenarioMessage.generation,
+            turnId: scenarioMessage.turnId,
+            requestId: scenarioMessage.requestId,
+            scenario: scenarioMessage.scenario,
+            connectionId,
+            send: (outgoing) => Effect.runPromise(send(outgoing)),
+          })));
+          if (result._tag === "Failure") {
+            yield* send({ type: "error", requestId: scenarioMessage.requestId, code: "explore_scenario_failed", message: result.failure instanceof Error ? result.failure.message : "The Explore scenario could not run." });
           }
           return;
         }
