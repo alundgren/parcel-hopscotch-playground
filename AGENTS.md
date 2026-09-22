@@ -16,7 +16,7 @@ Prove each acceptance criterion before completion review. Keep the reviewed targ
 
 ## Engineering
 
-Effect 4, TypeScript, React, Vite, pnpm, Node, SQLite, and shadcn are agreed. Pin compatible package versions. Use Effect for server resources, cancellation, failures, and typed validation.
+Effect 4, TypeScript, React, Vite Plus, pnpm, Node, SQLite, and shadcn are agreed. Pin compatible package versions. Use Effect for server resources, cancellation, failures, and typed validation.
 
 One typed registry defines tool schemas and catalogue metadata. Validate untrusted model arguments and realtime messages before dispatch. The server derives user identity; models and clients cannot choose another user's data. Model tools may query, guide, classify, or prepare a proposal. Only a human acceptance command commits a reviewed proposal.
 

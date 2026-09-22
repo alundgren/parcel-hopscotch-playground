@@ -14,33 +14,31 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
         with:
-          version: 12.5.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26.7.0
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
+          version: 0.3.0
+          node-version: 24.19.0
+          cache: true
+          run-install: false
+      - run: vp install --frozen-lockfile
+      - run: vp run typecheck
+      - run: vp test run
+      - run: vp run build
 
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
         with:
-          version: 12.5.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26.7.0
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
+          version: 0.3.0
+          node-version: 24.19.0
+          cache: true
+          run-install: false
+      - run: vp install --frozen-lockfile
+      - run: vp exec playwright install --with-deps chromium
+      - run: vp run test:e2e
         env:
           CI: true
       - name: Retain Playwright report, screenshots, videos, and traces

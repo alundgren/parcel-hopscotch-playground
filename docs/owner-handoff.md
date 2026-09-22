@@ -40,6 +40,12 @@ The accepted prototype remains `docs/design/approved-prototype.html` from bootst
 
 ## Packaging evidence
 
+Current development and validation use Vite Plus 0.3.0 with managed Node 24.19.0 and pnpm 12.5.0. Bootstrap and active commands are in the root [README](../README.md); the exact image choice and deferred production checks are in the [operator guide](operator-guide.md). The older commands and artifact identifiers below remain dated evidence for the earlier Node 26 packaging work. They are not instructions for rebuilding the current image.
+
+The Vite Plus migration's local AMD64 verifier built image `sha256:ea7bac75be27e17af84224f024608dfd5df3384f7f101f56047d37669d3d7d05`. It inspected 6,192 production dependency files and found no native addon, ELF package, Vite Plus, Vite, Vitest, Rolldown, esbuild or second managed Node installation. Both persistence modes passed with Node 24.19.0, UID/GID 1000, trusted-header checks, accepted work and four SIGTERM shutdowns from 236 to 295 milliseconds. A credential-free HTTPS request from the final image also passed.
+
+The migration's ARM64 OCI archive was 93,425,152 bytes with SHA-256 `a0bf36f1ead4d60a0e605efd25c3aca9a51106e247e0d21a1f6b66fbf4fcf2b9`. Its index declares `linux/arm64`, manifest `sha256:e85b496d99d5a18137553f4a9ffe8f7eba9784494683af798ee8bcbb7b8dd0b0` and config `sha256:d75b2530580e84dbb876b85565de9e504e3402b08b68e349eca5590d90116ba0`. Inspection found an ARM AArch64 Node executable, Node 24.19.0 in the image config, compiled client and server files, and the same production-only dependency checks. This host did not execute the ARM64 artifact.
+
 The container and application artifact inputs were tested at source revision `489139312fc1dddf91c0df0319ada27d5541e527` on a headless Linux x86_64 VM. Later review corrections only changed the verifier, its tests and this documentation; they did not change the Dockerfile, package manifests, client/server source or runtime configuration used to produce these images.
 
 `pnpm verify:container` built `linux/amd64` image `sha256:93d36163faa394ad9c879d0edb49630d314c9b532efdb7ba5a08911c0cd50f90`. The production process ran as UID/GID 1000, served the React build and real health endpoint, enforced the trusted email header on WebSocket connections, accepted the `BB-1042` update and retained it after container replacement. Both a Docker named volume and an owner-only mode-0700 bind directory passed. Four SIGTERM checks closed through Effect in 227 to 260 milliseconds with its expected interruption exit 130. The verifier also confirmed loopback-only publication, PID 1, license files and the absence of development dependencies and baked OpenRouter credentials.
@@ -96,7 +102,7 @@ Original repository code and tracked image assets use the root [MIT license](../
 ## Remaining owner work
 
 1. Audit the final reviewed source PR and keep the repository private until publication is approved.
-2. Run `pnpm verify:container` on the target architecture. The current VM cannot execute arm64.
+2. Run `vp run verify:container` on the target architecture. The current VM cannot execute ARM64 containers.
 3. Give Piploy access to clone the private repository and make its managed `/data` directory writable by UID 1000.
 4. Select an actual host port after checking current Piploy mappings and other host processes. The offline payload's 8089 is only an unallocated example.
 5. Put `OPENROUTER_API_KEY` in the Piploy daemon environment and review the exact registration payload.

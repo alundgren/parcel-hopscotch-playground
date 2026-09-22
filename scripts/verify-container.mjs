@@ -19,6 +19,71 @@ let localDockerVerified = false;
 let imageCreated = false;
 let permissionHelperSequence = 0;
 
+const runtimeInspectionScript = `
+const fs = require("node:fs");
+const path = require("node:path");
+
+if (process.version !== "v24.19.0") {
+  throw new Error("Expected Node v24.19.0, received " + process.version);
+}
+
+const requiredPaths = [
+  "/app/LICENSE",
+  "/app/node_modules/react/LICENSE",
+  "/app/node_modules/effect/LICENSE",
+];
+for (const requiredPath of requiredPaths) {
+  if (!fs.existsSync(requiredPath)) throw new Error("Missing " + requiredPath);
+}
+
+const forbiddenPaths = [
+  "/app/node_modules/vite",
+  "/app/node_modules/vite-plus",
+  "/app/node_modules/vitest",
+  "/app/node_modules/@vitejs/plugin-react",
+  "/app/node_modules/@voidzero-dev/vite-plus-core",
+  "/app/node_modules/@rolldown",
+  "/app/node_modules/rolldown",
+  "/app/node_modules/esbuild",
+  "/app/node_modules/.bin/vite",
+  "/app/node_modules/.bin/vp",
+  "/app/node_modules/.bin/vitest",
+  "/usr/local/bin/vp",
+  "/root/.vite-plus",
+  "/root/.local/share/vite-plus",
+  "/home/node/.vite-plus",
+  "/home/node/.local/share/vite-plus",
+];
+for (const forbiddenPath of forbiddenPaths) {
+  if (fs.existsSync(forbiddenPath)) throw new Error("Build tool or second managed runtime reached the image: " + forbiddenPath);
+}
+
+let inspectedFiles = 0;
+const pending = ["/app/node_modules"];
+while (pending.length > 0) {
+  const directory = pending.pop();
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      pending.push(entryPath);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    inspectedFiles += 1;
+    if (entry.name.endsWith(".node")) throw new Error("Native addon reached runtime: " + entryPath);
+    const descriptor = fs.openSync(entryPath, "r");
+    const header = Buffer.alloc(4);
+    const bytesRead = fs.readSync(descriptor, header, 0, header.length, 0);
+    fs.closeSync(descriptor);
+    if (bytesRead === 4 && header.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) {
+      throw new Error("ELF dependency reached runtime: " + entryPath);
+    }
+  }
+}
+
+process.stdout.write(JSON.stringify({ nodeVersion: process.version, inspectedFiles }));
+`;
+
 const docker = (args, options = {}) => {
   const output = execFileSync("docker", args, {
     cwd: repository,
@@ -260,7 +325,7 @@ const verifyMount = async (kind, mount) => {
   const dataAccess = docker(["exec", firstName, "node", "-e", "const fs=require('node:fs'); const p='/data/.write-check'; fs.writeFileSync(p,'ok'); fs.unlinkSync(p); const s=fs.statSync('/data'); process.stdout.write(`${process.getuid()}:${process.getgid()}:${s.uid}:${s.gid}`)"]);
   const [uid, gid] = dataAccess.split(":").map(Number);
   if (uid !== 1000 || gid !== 1000) throw new Error(`Container process is ${uid}:${gid}, expected 1000:1000.`);
-  docker(["exec", firstName, "node", "-e", "const fs=require('node:fs'); for (const p of ['/app/LICENSE','/app/node_modules/react/LICENSE','/app/node_modules/effect/LICENSE']) if (!fs.existsSync(p)) throw new Error(`Missing ${p}`); if (fs.existsSync('/app/node_modules/vitest')) throw new Error('Development dependencies reached runtime')"]);
+  const runtime = JSON.parse(docker(["exec", firstName, "node", "-e", runtimeInspectionScript]));
 
   const html = await (await fetch(origin)).text();
   if (!html.includes("Bracken &amp; Beam")) throw new Error("Built React application was not served.");
@@ -292,6 +357,7 @@ const verifyMount = async (kind, mount) => {
     secondStop,
     processUser: `${uid}:${gid}`,
     dataDirectoryOwner: dataAccess.split(":").slice(2).join(":"),
+    runtime,
     acceptedOrder: {
       id: acceptedOrder.id,
       status: acceptedOrder.status,

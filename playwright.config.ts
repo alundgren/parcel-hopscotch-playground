@@ -24,7 +24,7 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      "pnpm build && node scripts/clean-playwright-db.mjs && NODE_ENV=test ENABLE_DEV_IDENTITY=true DEV_USER_EMAIL=playwright@example.test PUBLIC_ORIGIN=http://127.0.0.1:4173 DATABASE_PATH=.tmp/playwright.sqlite HOST=127.0.0.1 PORT=4173 pnpm start",
+      "vp run build && node scripts/clean-playwright-db.mjs && NODE_ENV=test ENABLE_DEV_IDENTITY=true DEV_USER_EMAIL=playwright@example.test PUBLIC_ORIGIN=http://127.0.0.1:4173 DATABASE_PATH=.tmp/playwright.sqlite HOST=127.0.0.1 PORT=4173 vp run start",
     url: "http://127.0.0.1:4173/api/health",
     reuseExistingServer: false,
     timeout: 120_000,
