@@ -374,6 +374,8 @@ describe("agent runtime", () => {
       if (round++ === 0) return result([
         { id: "call_all", name: "listOrders", arguments: {} },
         { id: "call_ready", name: "listOrders", arguments: { status: "ready" } },
+        { id: "call_null", name: "listOrders", arguments: { status: null, family: null, query: null } },
+        { id: "call_review", name: "listOrders", arguments: { status: "review", family: null } },
         { id: "call_batch", name: "prepareBatch", arguments: {} },
       ]);
       nextRequest = request;
@@ -392,12 +394,16 @@ describe("agent runtime", () => {
       expect(terminal.history.at(-1)).toMatchObject({ role: "assistant", content: "The proposal is ready for your review. Nothing changes until you accept it." });
       const storedResults = toolPayloads(terminal.history);
       for (const results of [storedResults]) {
-        expect(results).toHaveLength(3);
+        expect(results).toHaveLength(5);
         const all = results.find((entry) => entry.id === "call_all")?.payload;
         expect(all).toMatchObject({ ok: true, result: { count: 24 } });
         expect(all?.truncated).toBeUndefined();
         expect(all?.result?.orders).toHaveLength(24);
         expect(all?.result?.orders?.map((order) => order.id)).toContain("BB-1072");
+        expect(results.find((entry) => entry.id === "call_null")?.payload).toEqual(all);
+        const review = results.find((entry) => entry.id === "call_review")?.payload;
+        expect(review).toMatchObject({ ok: true, result: { count: 14 } });
+        expect(review?.result?.orders?.every((order) => order.status === "review")).toBe(true);
         const ready = results.find((entry) => entry.id === "call_ready")?.payload;
         expect(ready).toMatchObject({ ok: true, result: { count: 6 } });
         expect(ready?.result?.orders).toHaveLength(6);

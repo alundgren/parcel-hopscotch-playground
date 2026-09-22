@@ -35,6 +35,11 @@ describe("agent tool registry", () => {
   it("rejects injected identity, arbitrary selectors, extra fields, and inherited names", () => {
     const tools = Object.fromEntries(modelToolsFromRegistry(registry).map((tool) => [tool.name, tool]));
     expect(tools.getOrder?.validateArguments({ orderId: "BB-1042" })).toBe(true);
+    expect(tools.listOrders?.validateArguments({ status: "review", family: null })).toBe(true);
+    expect(tools.listOrders?.validateArguments({ status: null, family: null, query: null })).toBe(true);
+    expect(tools.listOrders?.validateArguments({ status: "invented", family: null })).toBe(false);
+    expect(tools.listOrders?.validateArguments({ query: 12 })).toBe(false);
+    expect(tools.getOrder?.validateArguments({ orderId: null })).toBe(false);
     expect(tools.getOrder?.validateArguments({ orderId: "BB-1042", userId: "another-user" })).toBe(false);
     expect(tools.navigate?.validateArguments({ view: "work", url: "https://example.test" })).toBe(false);
     expect(tools.highlight?.validateArguments({ target: "#app", selector: "body" })).toBe(false);

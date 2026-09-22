@@ -62,6 +62,11 @@ test("launches the orientation, tutorial, and batch scenarios through working fl
   await openExplore(page);
   await page.getByRole("button", { name: "Try in Work: Get your bearings" }).click();
   await expect(page.getByRole("heading", { name: "Decisions" })).toBeVisible();
+  const overview = page.locator('[data-chat-role="assistant"]').last();
+  await expect(overview).toContainText("Ready: 6");
+  await expect(overview).toContainText("Review: 14");
+  await expect(overview).toContainText("Waiting: 4");
+  await expect(overview).toContainText("BB-1042: review, address. Street number needs checking.");
   await expect(page.getByPlaceholder("Message...")).toBeEnabled();
   await pause(page);
 

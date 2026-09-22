@@ -47,7 +47,15 @@ That directory is gitignored and retained for local debugging:
 Open a trace with `vp exec playwright show-trace <path-to-trace.zip>`, or ask your
 agent to inspect the report and database. Reports include failed and incomplete
 samples; latency percentiles use only completed browser measurements. Setup
-requests count toward costs. Missing repeated tool coverage fails the suite.
+requests count toward costs. Missing repeated tool coverage fails the suite. The overview accepts any successful
+queue-read sequence and checks the final answer against the pre-turn database.
+It verifies all three status counts and up to three distinct review orders,
+including each ID, status, family, and verbatim recorded issue. The overview
+uses a compact line format defined in the model instructions. The checker also
+accepts labeled ID/family and Issue blocks for review examples; when a block omits
+status, it must still describe an order whose database status is review. Unexpected
+lines fail as unsupported claims; formatting failures are reported separately
+from wrong counts or order facts. Dedicated cases still require their named tool.
 The child server and browser stop automatically, while results stay on disk.
 
 Credential-free checks are available for agents and contributors:

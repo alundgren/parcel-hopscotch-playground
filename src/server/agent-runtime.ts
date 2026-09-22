@@ -121,12 +121,20 @@ const scriptedMinistral = (): MinistralAdapter => ({
       const toolCallIndex = request.messages.findLastIndex((message) => message.role === "assistant" && message.toolCalls !== undefined);
       const toolMessages = request.messages.slice(toolCallIndex + 1).filter((message) => message.role === "tool");
       const failed = toolMessages.some((message) => message.role === "tool" && message.content.includes('"ok":false'));
+      const overviewOrders = toolMessages.map((message) => JSON.parse(message.content) as { result?: { orders?: Array<{ id: string; status: string; family: string; issue: string }> } })
+        .find((message) => message.result?.orders !== undefined)?.result?.orders ?? [];
+      const overviewText = [
+        ...["ready", "review", "waiting"].map((status) => `${status[0]!.toUpperCase()}${status.slice(1)}: ${overviewOrders.filter((order) => order.status === status).length}`),
+        ...overviewOrders.filter((order) => order.status === "review").slice(0, 3).map((order) => `${order.id}: ${order.status}, ${order.family}. ${order.issue}`),
+      ].join("\n");
       const content = failed
         ? "I could not finish every requested step. The completed results remain visible, and you can retry the missing step."
         : text.includes("tutorial") || text.includes("teach") || text.includes("learn")
           ? "The tutorial is ready. Your verified work advances it, and you can dismiss it at any time."
         : text.includes("reset")
           ? "The reset is ready for your review. Nothing changes until you accept it."
+          : text.includes("summarize the queue")
+            ? overviewText
           : text.includes("attention")
             ? "I grouped the current queue and opened Work so you can review what is ready and what still needs a decision."
           : text.includes("audit")
@@ -149,7 +157,7 @@ const scriptedMinistral = (): MinistralAdapter => ({
         ? [{ id: id(), name: "startTutorial", arguments: { tutorialId: text.includes("substitut") || text.includes("replacement") ? "substitution-review" : text.includes("batch") ? "batch-approval" : "address-correction" } }]
       : text.includes("reset")
       ? [{ id: id(), name: "prepareReset", arguments: {} }]
-      : text.includes("attention")
+      : (text.includes("attention") || text.includes("summarize the queue"))
         ? [
             { id: id(), name: "listOrders", arguments: {} },
             { id: id(), name: "groupOrders", arguments: { groupBy: "status" } },
@@ -469,7 +477,7 @@ export const makeAgentCoordinator = (
     let consentRequestId: string | null = null;
     try {
       const priorGroups = await Effect.runPromise(repository.agentHistories(active.identity, active.generation, active.turnId, 6));
-      const system: ChatMessage = { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Use only the registered tools. Never accept or commit a proposal. Prepare exact previews for the person to review. Application policy owns stock, arithmetic, permissions, and eligibility. For a queue overview, listOrders with no filters returns all orders; groupOrders by status gives the counts across the whole queue. Include exceptions needing a decision as well as ready orders. Omit unused listOrders filters rather than inventing filter values. Look up an order ID with getOrder before reasoning about its evidence; an order ID is not note text. getOrder only reads data; it does not open the order. To show or highlight order evidence, first navigate to the order view with its orderId, then highlight orderEvidence after navigation succeeds. Never claim a UI operation succeeded when its result says ok: false. Use classifyNote only for actual customer or operator note text, never for an ID or a request to find an order. Use checkConsent to assess an order's customer consent. For teaching requests, inspect the task and start the matching available tutorial: address-correction, substitution-review, or batch-approval. Prepare tools show the review automatically; the application acknowledges a displayed proposal, so do not request another narration step. Keep answers concise. A work item named in the latest user message overrides the selected application context. If a tool reports a missing UI target or another recoverable result, say what remains available. The application displays validated consent evidence and every returned alternative directly; do not repeat them unless the person asks." };
+      const system: ChatMessage = { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Use only the registered tools. Never accept or commit a proposal. Prepare exact previews for the person to review. Application policy owns stock, arithmetic, permissions, and eligibility. For queue overviews, report each status total on its own line as Ready: N, Review: N, Waiting: N. Then give one to three review orders, if any exist, each on its own line as ID: status, family. Exact recorded issue. Include only these lines, with no inferred urgency or other claims. Read individual order facts before describing issues. Independent status and family groups are not intersections; match order IDs to combine them. Omit unused filters rather than inventing filter values. Look up an order ID with getOrder before reasoning about its evidence; an order ID is not note text. getOrder only reads data; it does not open the order. To show or highlight order evidence, first navigate to the order view with its orderId, then highlight orderEvidence after navigation succeeds. Never claim a UI operation succeeded when its result says ok: false. Use classifyNote only for actual customer or operator note text, never for an ID or a request to find an order. Use checkConsent to assess an order's customer consent. For teaching requests, inspect the task and start the matching available tutorial: address-correction, substitution-review, or batch-approval. Prepare tools show the review automatically; the application acknowledges a displayed proposal, so do not request another narration step. Keep answers concise. A work item named in the latest user message overrides the selected application context. If a tool reports a missing UI target or another recoverable result, say what remains available. The application displays validated consent evidence and every returned alternative directly; do not repeat them unless the person asks." };
       const applicationContext: ChatMessage = { role: "system", content: `${contextPrefix}${JSON.stringify(viewContext)}` };
       for (let round = 0; round < maximumToolRounds; round += 1) {
         if (active.cancelled) throw new Error("cancelled");

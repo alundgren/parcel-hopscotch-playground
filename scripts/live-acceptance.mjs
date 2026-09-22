@@ -31,6 +31,49 @@ function assertSetupCompleted(turn, attempts) {
 function hasEvidenceHighlight(records) {
   return records.some((record) => record.kind === 'ui' && record.body?.operation?.kind === 'highlight' && record.body?.operation?.targetId === 'target-order-BB-1042-evidence' && record.body?.acknowledgement === 'applied');
 }
+function overviewFailures(content, orders) {
+  const failures = [];
+  const totals = new Map();
+  const mentioned = new Set();
+  const byId = new Map(orders.map((order) => [order.id, order]));
+  const lines = content.split('\n').map((line) => line.trim().replace(/^[-*]\s+/, '').replaceAll('**', '')).filter(Boolean);
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (/^-{3,}$/.test(line)) continue;
+    const total = /^(ready|review|waiting):\s*(0|[1-9]\d*)[.!]?$/i.exec(line);
+    if (total) {
+      const status = total[1].toLowerCase();
+      if (totals.has(status)) failures.push(`Overview repeats the ${status} total.`);
+      totals.set(status, Number(total[2]));
+      continue;
+    }
+    let detail = /^(BB-\d{4}):\s*(\w+),\s*(\w+)\.\s*(.+)$/i.exec(line);
+    const block = /^ID:\s*(BB-\d{4}),\s*(?:status:\s*(\w+),\s*)?family:\s*(\w+)$/i.exec(line);
+    if (block) {
+      const issue = /^Issue:\s*(.+)$/.exec(lines[index + 1] ?? '');
+      if (issue) {
+        index++;
+        detail = [line, block[1], block[2] ?? 'review', block[3], issue[1]];
+      }
+    }
+    if (!detail) { failures.push(`Overview contains an unsupported line: ${line}`); continue; }
+    const [, id, status, family, issue] = detail;
+    const order = byId.get(id.toUpperCase());
+    if (!order) { failures.push(`Overview names an unknown order: ${id}.`); continue; }
+    if (mentioned.has(order.id)) failures.push(`Overview repeats ${order.id}.`);
+    mentioned.add(order.id);
+    if (status.toLowerCase() !== order.status || order.status !== 'review') failures.push(`Overview gives the wrong review status for ${order.id}.`);
+    if (family.toLowerCase() !== order.family) failures.push(`Overview gives the wrong exception family for ${order.id}.`);
+    if (issue !== order.issue) failures.push(`Overview does not quote the recorded issue for ${order.id}.`);
+  }
+  for (const status of ['ready', 'review', 'waiting']) {
+    const expected = orders.filter((order) => order.status === status).length;
+    if (totals.get(status) !== expected) failures.push(`Overview ${status} total must be ${expected}.`);
+  }
+  const hasReviewOrders = orders.some((order) => order.status === 'review');
+  if (mentioned.size > 3 || (hasReviewOrders && mentioned.size === 0)) failures.push('Overview must give one to three distinct review orders when available.');
+  return failures;
+}
 function openEvidenceDatabase(path) {
   const database = new DatabaseSync(path, { readOnly: true });
   database.exec('PRAGMA busy_timeout = 5000');
@@ -61,6 +104,34 @@ if (args.includes('--self-test')) {
   const highlight = (targetId) => [{ kind: 'ui', body: { operation: { kind: 'highlight', targetId }, acknowledgement: 'applied' } }];
   assert.equal(hasEvidenceHighlight(highlight('target-work-queue')), false);
   assert.equal(hasEvidenceHighlight(highlight('target-order-BB-1042-evidence')), true);
+  const orders = [
+    { id: 'BB-1042', status: 'review', family: 'address', issue: 'Street number needs checking.' },
+    { id: 'BB-1076', status: 'review', family: 'substitution', issue: 'Customer consent is conditional.' },
+    { id: 'BB-1051', status: 'ready', family: 'substitution', issue: 'Sage replacement agreed.' },
+    { id: 'BB-1088', status: 'waiting', family: 'carrier', issue: 'Waiting for a scan.' },
+  ];
+  const overview = 'Ready: 1\nReview: 2\nWaiting: 1\nBB-1076: review, substitution. Customer consent is conditional.';
+  assert.deepEqual(overviewFailures(overview, orders), []);
+  assert.deepEqual(overviewFailures('- **Waiting: 1**\n- Review: 2\nReady: 1\nBB-1042: review, address. Street number needs checking.', orders), []);
+  for (const [answer, diagnostic] of [
+    [overview.replace('Ready: 1', 'Ready: 2'), /ready total/],
+    [overview.replace('review, substitution', 'ready, substitution'), /wrong review status/],
+    [overview.replace('review, substitution', 'review, address'), /wrong exception family/],
+    [overview.replace('Customer consent is conditional.', 'Ready for replacement.'), /recorded issue/],
+    [overview.replace('BB-1076', 'BB-9999'), /unknown order/],
+    [overview + '\nNo urgent exceptions.', /unsupported line/],
+    [overview + '\nReady: 1', /repeats the ready total/],
+    [overview + '\nBB-1076: review, substitution. Customer consent is conditional.', /repeats BB-1076/],
+    [overview.split('\n').slice(0, 3).join('\n'), /one to three/],
+    [overview.replace('Waiting: 1\n', ''), /waiting total/],
+  ]) assert.ok(overviewFailures(answer, orders).some((failure) => diagnostic.test(failure)));
+  const blockOverview = 'Ready: 1\nReview: 2\nWaiting: 1\n---\nID: BB-1076, family: substitution\nIssue: Customer consent is conditional.';
+  assert.deepEqual(overviewFailures(blockOverview, orders), []);
+  assert.ok(overviewFailures(blockOverview.replace('family: substitution', 'status: ready, family: substitution'), orders).some((failure) => /wrong review status/.test(failure)));
+  assert.ok(overviewFailures(blockOverview.replace('BB-1076', 'BB-1051'), orders).some((failure) => /wrong review status/.test(failure)));
+  assert.ok(overviewFailures(blockOverview.replace('substitution', 'address'), orders).some((failure) => /wrong exception family/.test(failure)));
+  assert.ok(overviewFailures(blockOverview + '\nNo urgent exceptions.', orders).some((failure) => /unsupported line/.test(failure)));
+  assert.deepEqual(overviewFailures('Ready: 0\nReview: 0\nWaiting: 0', []), []);
   const directory = await mkdtemp(join(tmpdir(), 'parcel-live-lock-test-'));
   let reader;
   try {
@@ -81,7 +152,7 @@ if (args.includes('--self-test')) {
     assert.equal(reader.prepare('SELECT value FROM evidence').get().value, 'saved');
     await exited;
   } finally { reader?.close(); await rm(directory, { recursive: true, force: true }); }
-  console.log('Offline reporting, setup-stop, truncation, highlight, and SQLite contention checks passed. No inference run.');
+  console.log('Offline reporting, setup-stop, truncation, highlight, overview facts, and SQLite contention checks passed. No inference run.');
   process.exit(0);
 }
 
@@ -112,7 +183,7 @@ const require = createRequire(join(repo, 'package.json'));
 const { chromium } = require('@playwright/test');
 const knownTools = ['listOrders', 'getOrder', 'groupOrders', 'getAuditTrace', 'navigate', 'highlight', 'startTutorial', 'stopTutorial', 'prepareAddressCorrection', 'prepareSubstitution', 'prepareResolution', 'prepareBatch', 'prepareUndo', 'classifyNote', 'checkConsent', 'prepareReset'];
 const cases = [
-  { id: 'explore-overview', button: 'Try in Work: Get your bearings', tools: ['listOrders', 'groupOrders'], kind: 'overview' },
+  { id: 'explore-overview', button: 'Try in Work: Get your bearings', tools: [], kind: 'overview' },
   { id: 'explore-learn', button: 'Try in Work: Learn a task', tools: ['getOrder', 'startTutorial'], kind: 'tutorial' },
   { id: 'explore-batch', button: 'Try in Work: Make a batch decision', tools: ['prepareBatch'], kind: 'batch' },
   { id: 'explore-consent', button: 'View in Audit: Test a judgement', tools: ['checkConsent'], kind: 'consent' },
@@ -167,7 +238,7 @@ const send = async (page, prompt) => {
 };
 const rows = (sql, ...parameters) => db.prepare(sql).all(...parameters);
 const business = (userId) => JSON.stringify({
-  orders: rows('SELECT order_id,status,family,version,completed,resolved,state_json FROM orders WHERE user_id=? ORDER BY order_id', userId),
+  orders: rows('SELECT order_id,status,family,issue,version,completed,resolved,state_json FROM orders WHERE user_id=? ORDER BY order_id', userId),
   inventory: rows('SELECT sku,quantity,version FROM inventory WHERE user_id=? ORDER BY sku', userId),
   receipts: rows('SELECT id,proposal_id,undone_by FROM receipts WHERE user_id=? ORDER BY id', userId),
 });
@@ -216,7 +287,12 @@ const assertResult = (testCase, evidence, snapshot, before, after) => {
   if (testCase.kind === 'classify') demand(outputFor('classifyNote')?.category === 'carrier', 'The carrier note was classified incorrectly.');
   if (testCase.kind === 'order') demand(outputFor('getOrder')?.order?.id === 'BB-1042' && outputFor('getOrder')?.order?.evidence?.length > 0, 'Order lookup did not return the requested evidence.');
   if (testCase.kind === 'list') demand(outputFor('listOrders')?.count === 6 && outputFor('listOrders')?.orders?.every((order) => order.status === 'ready'), 'Ready-order list was incorrect.');
-  if (testCase.kind === 'overview' || testCase.kind === 'group') demand(outputFor('groupOrders')?.groups?.reduce((sum, group) => sum + group.count, 0) === 24, 'Queue group counts did not cover all 24 orders.');
+  if (testCase.kind === 'overview') {
+    const expectedOrders = JSON.parse(before).orders.map((order) => ({ ...order, id: order.order_id }));
+    failures.push(...overviewFailures(parse(evidence.turn.history_json)?.at(-1)?.content ?? '', expectedOrders));
+    demand(successful.some((record) => ['listOrders', 'getOrder', 'groupOrders'].includes(record.body?.tool)), 'Overview did not read current queue data.');
+  }
+  if (testCase.kind === 'group') demand(outputFor('groupOrders')?.groups?.reduce((sum, group) => sum + group.count, 0) === 24, 'Queue group counts did not cover all 24 orders.');
   if (testCase.kind === 'tutorial') demand(snapshot?.tutorial?.id === 'address-correction', 'Address tutorial was not active.');
   if (testCase.kind === 'stop') demand(snapshot?.tutorial === null, 'Tutorial was not dismissed.');
   if (testCase.kind === 'trace') demand(outputFor('getAuditTrace')?.attempts?.some((attempt) => attempt.turnId === testCase.traceTurn), 'Requested trace was not returned.');
@@ -292,7 +368,7 @@ try {
         }
         if (testCase.setup === 'tutorial' || testCase.setup === 'trace') {
           observedTurn = undefined;
-          await send(page, testCase.setup === 'tutorial' ? 'Start the address-correction tutorial.' : 'Look up BB-1042.');
+          await send(page, testCase.setup === 'tutorial' ? 'Start the address-correction tutorial.' : 'Read the saved address for BB-1042 and answer with that address only. Do not navigate or highlight anything.');
           const setupTurn = await wait(() => observedTurn, 'setup turn admission');
           let setupResult;
           try { setupResult = await finish(setupTurn); }

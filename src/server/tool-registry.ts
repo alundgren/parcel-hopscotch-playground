@@ -107,10 +107,10 @@ interface ToolSpec {
 
 const specs = {
   listOrders: {
-    description: "Find the current user's fulfilment orders using bounded application filters.",
+    description: "Read each order's ID, status, exception family, and recorded issue together. Omit filters to list the whole queue; use status review for individual examples needing a decision.",
     category: "Read", purpose: "Find orders", allowedEffects: ["read_workspace"],
     example: { arguments: { status: "ready" }, result: { count: 1, orders: [{ id: "BB-1051", item: "Stoneware mug", issue: "Blue unavailable", status: "ready", family: "substitution" }] } },
-    input: Schema.Struct({ status: Schema.optionalKey(OrderStatus), family: Schema.optionalKey(ResolutionFamily), query: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(80))) }),
+    input: Schema.Struct({ status: Schema.optionalKey(Schema.NullOr(OrderStatus)), family: Schema.optionalKey(Schema.NullOr(ResolutionFamily)), query: Schema.optionalKey(Schema.NullOr(Schema.String.check(Schema.isMaxLength(80)))) }),
     output: Schema.Struct({ count: Schema.Int, orders: Schema.Array(orderListResult) }),
   },
   getOrder: {
@@ -124,7 +124,7 @@ const specs = {
     input: OrderIdInput, output: Schema.Struct({ order: orderResult }),
   },
   groupOrders: {
-    description: "Group the current queue by status or exception family.",
+    description: "Return whole-queue counts and order IDs for one dimension: status or exception family. Separate groupings are not intersections. Use listOrders or getOrder for each order's status, family, and recorded issue.",
     category: "Read", purpose: "Group the work", allowedEffects: ["read_workspace"],
     example: { arguments: { groupBy: "status" }, result: { groups: [{ name: "ready", count: 1, orderIds: ["BB-1051"] }] } },
     input: Schema.Struct({ groupBy: Schema.Literals(["status", "family"]) }),

@@ -105,3 +105,56 @@ no successful paid rerun is claimed. The full offline check passed 162 tests,
 typechecking, and production build.
 The existing scripted browser workflow for opening and highlighting evidence,
 preparing a batch, and preparing reset also passed at desktop and narrow widths.
+
+## Overview outcome checks and one authorized paid run
+
+The owner approved a follow-up to define the overview answer, clarify read-tool
+instructions, and verify facts rather than a required tool sequence. The overview
+now asks for status totals and up to three review examples with recorded issues.
+The runtime asks for compact count and order lines. `listOrders` descriptions
+explain that each row keeps status, family, and issue together; `groupOrders`
+descriptions explain that separate status and family groups are not intersections.
+All 16 tools remain available with automatic selection.
+
+The live checker compares final overview counts and each example's ID, review
+status, family, and exact issue against the pre-turn database. It permits compact
+lines and labeled ID/family/Issue blocks, ignores harmless Markdown styling and
+separators, and rejects unsupported extra claims. A successful queue read is
+required, with no fixed sequence. Dedicated cases still check every named tool.
+Offline regressions reject wrong totals, wrong status/family/issue, unknown or
+repeated IDs, missing facts, and invented urgency. This is a defined answer
+contract, not a general natural-language fact checker.
+
+The owner explicitly authorized one agent-run paid invocation, overriding the
+default human-only restriction for that invocation. It ran with two samples and
+retained evidence at `artifacts/live/2026-09-22T18-59-14.375Z/`. Original result:
+36 passed, 4 failed, 95 provider attempts, $0.00400660 known cost, zero unknown-cost
+attempts, and zero truncations. No retry was made under that authorization.
+
+The retained failures established:
+
+- Overview sample 1 sent `listOrders` with `status: review` and `family: null`.
+  Optional list filters now explicitly accept null as no filter. Invalid enum
+  values, unknown fields, and null required IDs remain rejected. Offline registry
+  and runtime regressions prove null and omitted filters behave alike.
+- Overview sample 2 returned correct counts and three correct recorded issues in
+  labeled blocks. The final checker accepts that format. An offline reassessment
+  of the unchanged saved answer passed, recorded in `overview-reassessment.json`.
+- Both audit-trace prerequisites read the order, then attempted an unrequested
+  highlight without navigation. The prerequisite prompt now explicitly asks for
+  the saved address only and no navigation or highlighting. That prompt change
+  has not had a paid verification run.
+
+The final offline check passed 163 tests, typechecking, and production build.
+Playwright captured the updated overview flow and prototype/application
+comparisons at 1440×1000 and 320×900; all four selected tests passed. The Explore
+comparisons and the recording were inspected. The longer overview card and read
+tool descriptions deliberately explain the task and returned facts while keeping
+the approved visual treatment. Files are under `artifacts/overview-proof/`.
+The owner then explicitly authorized one additional run. The final suite passed
+40/40 cases, including both overview fact checks and repeated coverage of all
+16 tools. Evidence is retained at `artifacts/live/2026-09-22T19-04-03.714Z/`.
+All 40 turns had completed browser measurements: p50 994.8 ms, p95 2232.1 ms.
+The run recorded 100 provider attempts, $0.00449172 known cost, zero unknown-cost
+attempts, and zero truncations. This establishes the two sampled repetitions;
+it does not guarantee every future model response.

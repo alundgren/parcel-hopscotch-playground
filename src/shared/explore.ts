@@ -14,8 +14,8 @@ export const exploreScenarios: ReadonlyArray<ExploreScenario> = [
   {
     id: "overview",
     title: "Get your bearings",
-    prompt: "What needs my attention?",
-    description: "Find the ready orders and the exceptions that need a decision.",
+    prompt: "Summarize the queue by status and show up to three orders needing review. Use their recorded issues; do not infer urgency.",
+    description: "See status totals and the facts behind individual exceptions.",
     actionLabel: "Try in Work",
     tools: ["listOrders", "groupOrders", "navigate"],
   },
