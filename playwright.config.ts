@@ -11,16 +11,15 @@ export default defineConfig({
     baseURL: "http://127.0.0.1:4173",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    video: "on",
   },
   projects: [
     {
       name: "desktop",
-      use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 1000 } },
+      use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 1000 }, video: { mode: "on", size: { width: 1440, height: 1000 } } },
     },
     {
       name: "narrow",
-      use: { ...devices["Desktop Chrome"], viewport: { width: 320, height: 900 } },
+      use: { ...devices["Desktop Chrome"], viewport: { width: 320, height: 900 }, video: { mode: "on", size: { width: 320, height: 900 } } },
     },
   ],
   webServer: {

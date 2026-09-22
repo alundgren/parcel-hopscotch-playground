@@ -11,7 +11,8 @@ describe("agent tool registry", () => {
   it("derives model tools and catalogue metadata from one strict registry", () => {
     const tools = modelToolsFromRegistry(registry);
     expect(tools.map((tool) => tool.name)).toEqual(toolCatalogueMetadata.map((tool) => tool.id));
-    expect(tools).toHaveLength(14);
+    expect(tools).toHaveLength(16);
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["startTutorial", "stopTutorial"]));
     expect(tools.map((tool) => String(tool.name))).not.toContain("acceptProposal");
     expect(toolCatalogueMetadata.every((tool) => tool.allowedEffects.length > 0 && tool.example !== undefined)).toBe(true);
   });
@@ -23,6 +24,8 @@ describe("agent tool registry", () => {
     expect(tools.navigate?.validateArguments({ view: "work", url: "https://example.test" })).toBe(false);
     expect(tools.highlight?.validateArguments({ target: "#app", selector: "body" })).toBe(false);
     expect(tools.prepareBatch?.validateArguments({ commit: true })).toBe(false);
+    expect(tools.startTutorial?.validateArguments({ tutorialId: "address-correction" })).toBe(true);
+    expect(tools.startTutorial?.validateArguments({ tutorialId: "invented-lesson", orderId: "BB-1042" })).toBe(false);
     expect(findRegisteredTool(registry, "constructor")).toBeNull();
     expect(findRegisteredTool(registry, "accept_proposal")).toBeNull();
   });
@@ -51,6 +54,14 @@ describe("agent tool registry", () => {
       generation: 1,
       turnId: "turn_12345678-missing-context",
       message: "Show this",
+    })).toThrow();
+    expect(() => Schema.decodeUnknownSync(ClientMessage, { onExcessProperty: "error" })({
+      type: "tutorial_action",
+      requestId: "tutorial-injection",
+      generation: 1,
+      action: "order_selected",
+      orderId: "BB-1042",
+      userId: "another-user",
     })).toThrow();
   });
 

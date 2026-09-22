@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import type { AgentViewContext, CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, WorkspaceSnapshot } from "../shared/contracts";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import type { AgentViewContext, CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, TutorialState, WorkspaceSnapshot } from "../shared/contracts";
 import { targets } from "../shared/targets";
 import { Button } from "./components/ui/button";
 import { useWorkspace, type ConnectionStatus } from "./use-workspace";
@@ -12,18 +12,51 @@ export const resolveSelectedOrder = (orders: ReadonlyArray<OrderSummary>, select
 
 interface ActionProps { readonly disabled: boolean; readonly run: () => void }
 
-function OrderDetail({ order, onBack, review }: { order: OrderSummary; onBack: () => void; review: ActionProps }) {
+function TutorialCoach({ tutorial, recoveryText, onDismiss, disabled }: { tutorial: TutorialState; recoveryText: string; onDismiss: () => void; disabled: boolean }) {
+  const [targetAvailable, setTargetAvailable] = useState(true);
+  useEffect(() => {
+    let frame = 0;
+    const inspect = () => {
+      const target = document.getElementById(tutorial.targetId);
+      const available = target instanceof HTMLElement && !target.hidden && target.getClientRects().length > 0;
+      setTargetAvailable(available);
+      if (!available || !(target instanceof HTMLElement)) return;
+      const rect = target.getBoundingClientRect();
+      const visible = rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+      if (!visible) {
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        target.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+        if (!target.matches(":focus, :focus-within")) target.focus({ preventScroll: true });
+      }
+    };
+    frame = requestAnimationFrame(() => requestAnimationFrame(inspect));
+    const observer = new MutationObserver(inspect);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "style", "class"] });
+    window.addEventListener("resize", inspect);
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener("resize", inspect); };
+  }, [tutorial.id, tutorial.step, tutorial.targetId]);
+  const fraction = `${Math.min(tutorial.step + 1, tutorial.totalSteps)} / ${tutorial.totalSteps}`;
+  const recovering = tutorial.phase !== "complete" && !targetAvailable;
+  return <aside className={`tutorial-coach${recovering ? " tutorial-recovery" : ""}`} id={targets.tutorialCoach} aria-label={`${tutorial.title} tutorial`} data-tutorial-id={tutorial.id} data-tutorial-phase={tutorial.phase} data-tutorial-step={tutorial.step}>
+    {recovering && <p className="tutorial-recovery-copy">{recoveryText}</p>}
+    <p>{tutorial.instruction}</p>
+    <div><span>{fraction}</span><Button variant="icon" onClick={onDismiss} disabled={disabled} aria-label="Dismiss tutorial"><span aria-hidden="true">×</span></Button></div>
+  </aside>;
+}
+
+function OrderDetail({ order, onBack, review, coach }: { order: OrderSummary; onBack: () => void; review: ActionProps; coach: ReactNode }) {
   return <section className="order-detail" aria-labelledby="detail-title">
     <Button variant="link" onClick={onBack} className="back-button"><span aria-hidden="true">←</span> Back to queue</Button>
     <div className="detail-heading"><div><span className="order-id">{order.id}</span><h1 id="detail-title">{order.family === "address" ? "Check address" : order.item}</h1></div><span className={`status status-${order.status}`}>{order.statusLabel}</span></div>
     <p className="detail-summary">{order.issue}</p>
     <div className="detail-current"><span>Current</span><p>{order.businessValue}</p></div>
-    <div className="evidence" id={targets.orderEvidence(order.id)}>{order.evidence.map((item) => <div className="evidence-row" key={`${item.label}-${item.occurredAt}`}><div><span className="evidence-label">{item.label}</span><span className="evidence-age">{item.age}</span></div><p>“{item.value}”</p></div>)}</div>
+    <div className="evidence" id={targets.orderEvidence(order.id)} tabIndex={-1}>{order.evidence.map((item) => <div className="evidence-row" key={`${item.label}-${item.occurredAt}`}><div><span className="evidence-label">{item.label}</span><span className="evidence-age">{item.age}</span></div><p>“{item.value}”</p></div>)}</div>
     <div className="detail-actions"><Button onClick={review.run} disabled={review.disabled}>Review change</Button></div>
+    {coach}
   </section>;
 }
 
-function ProposalView({ proposal, orders, busy, connected, onAccept, onCancel }: { proposal: ReviewedProposal; orders: ReadonlyArray<OrderSummary>; busy: boolean; connected: boolean; onAccept: () => void; onCancel: () => void }) {
+function ProposalView({ proposal, orders, busy, connected, onAccept, onCancel, coach }: { proposal: ReviewedProposal; orders: ReadonlyArray<OrderSummary>; busy: boolean; connected: boolean; onAccept: () => void; onCancel: () => void; coach: ReactNode }) {
   const reset = proposal.kind === "reset";
   const addressChange = proposal.kind === "resolution" && proposal.changes.length === 1 && proposal.changes[0]?.family === "address" ? proposal.changes[0] : null;
   const addressOrder = addressChange === null ? null : orders.find((order) => order.id === addressChange.orderId) ?? null;
@@ -31,39 +64,43 @@ function ProposalView({ proposal, orders, busy, connected, onAccept, onCancel }:
   if (addressChange !== null && addressOrder !== null) return <section className="order-detail proposal-screen address-review" aria-labelledby="proposal-title">
     <div className="detail-heading"><h1 id="proposal-title" tabIndex={-1}>Check address</h1><span className="order-id">{addressOrder.id}</span></div>
     <div className="address-evidence"><div><span>Order</span><p>{addressChange.before}</p></div><div><span>Customer</span><p>“{addressOrder.evidence[0]?.value}”</p></div></div>
-    <div className="address-proposal"><p><span aria-hidden="true">✧</span> <s>{addressChange.before.split(",")[0]}</s> <span aria-hidden="true">→</span> <strong>{addressChange.after}</strong></p><Button className="address-action" onClick={onAccept} disabled={busy || !connected || !proposal.ready}>{acceptLabel}</Button></div>
+    <div className="address-proposal" id={targets.proposalReview} tabIndex={-1}><p><span aria-hidden="true">✧</span> <s>{addressChange.before.split(",")[0]}</s> <span aria-hidden="true">→</span> <strong>{addressChange.after}</strong></p><Button id={targets.proposalAccept} className="address-action" onClick={onAccept} disabled={busy || !connected || !proposal.ready}>{acceptLabel}</Button></div>
+    {coach}
     <Button variant="link" onClick={onCancel} disabled={busy}>Cancel</Button>
   </section>;
-  return <section className="order-detail proposal-screen" aria-labelledby="proposal-title">
+  return <section className="order-detail proposal-screen" aria-labelledby="proposal-title" id={targets.proposalReview} tabIndex={-1}>
     <h1 id="proposal-title" tabIndex={-1}>{proposal.title}</h1>
     <p className={`proposal-state ${proposal.ready ? "ready" : ""}`}>{proposal.ready ? "✓ Ready" : "Needs review"}</p>
     {proposal.changes.length > 0 && <div className="change-list">{proposal.changes.map((change) => <article className="change-row" key={change.orderId}><span className="order-id">{change.orderId}</span><div><strong>{change.before} <span aria-hidden="true">→</span> {change.after}</strong><p>{change.effect}</p></div></article>)}</div>}
     {reset && proposal.effects.length > 0 && <ul className="effect-list">{proposal.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul>}
     {proposal.omissions.length > 0 && <div className="omissions" aria-label="Orders left out">{proposal.omissions.map((item) => <p key={item.orderId}><span className="order-id">{item.orderId}</span> excluded · {item.reason}</p>)}</div>}
-    <div className="proposal-actions"><Button className={reset ? "danger-action" : proposal.kind === "batch" ? "batch-action" : "accept-action"} onClick={onAccept} disabled={busy || !connected || !proposal.ready}>{acceptLabel}</Button><Button variant="quiet" onClick={onCancel} disabled={busy}>Cancel</Button></div>
+    {coach}
+    <div className="proposal-actions"><Button id={targets.proposalAccept} className={reset ? "danger-action" : proposal.kind === "batch" ? "batch-action" : "accept-action"} onClick={onAccept} disabled={busy || !connected || !proposal.ready}>{acceptLabel}</Button><Button variant="quiet" onClick={onCancel} disabled={busy}>Cancel</Button></div>
   </section>;
 }
 
-function ReceiptView({ receipt, busy, connected, onBack, onUndo }: { receipt: CommandReceipt; busy: boolean; connected: boolean; onBack: () => void; onUndo: () => void }) {
-  return <section className="order-detail receipt-screen" aria-labelledby="receipt-title">
+function ReceiptView({ receipt, busy, connected, onBack, onUndo, coach }: { receipt: CommandReceipt; busy: boolean; connected: boolean; onBack: () => void; onUndo: () => void; coach: ReactNode }) {
+  return <section className="order-detail receipt-screen" aria-labelledby="receipt-title" id={targets.receipt} tabIndex={-1}>
     <h1 id="receipt-title" tabIndex={-1}>{receipt.title}</h1>
     <p className="receipt-state">✓ {receipt.kind === "reset" ? "Fresh workspace ready" : receipt.kind === "undo" ? "Undone by you" : "Accepted by you"}</p>
     {receipt.changes.length > 0 && <div className="receipt-list">{receipt.changes.map((change) => <div className="receipt-row" key={change.orderId}><span className="order-id">{change.orderId}</span><span>{change.after}</span></div>)}</div>}
-    <div className="proposal-actions"><Button className="accept-action" onClick={onBack}>Back to work</Button>{receipt.undoable && <Button variant="quiet" onClick={onUndo} disabled={busy || !connected}>{!connected ? "Reconnect to undo" : busy ? "Checking…" : "Undo"}</Button>}</div>
+    {coach}
+    <div className="proposal-actions"><Button id={targets.receiptBack} className="accept-action" onClick={onBack}>Back to work</Button>{receipt.undoable && <Button variant="quiet" onClick={onUndo} disabled={busy || !connected}>{!connected ? "Reconnect to undo" : busy ? "Checking…" : "Undo"}</Button>}</div>
   </section>;
 }
 
-function WorkQueue({ orders, latestReceipt, savedProposal, connected, selectedOrderId, setSelectedOrderId, prepare, prepareBatch, prepareReset, advance, openReceipt, openSavedProposal }: { orders: ReadonlyArray<OrderSummary>; latestReceipt: CommandReceipt | null; savedProposal: ReviewedProposal | null; connected: boolean; selectedOrderId: string | null; setSelectedOrderId: (id: string | null) => void; prepare: (id: string) => void; prepareBatch: () => void; prepareReset: () => void; advance: () => void; openReceipt: () => void; openSavedProposal: () => void }) {
+function WorkQueue({ orders, latestReceipt, tutorialReceipt, savedProposal, tutorialProposal, connected, selectedOrderId, selectOrder, prepare, prepareBatch, prepareReset, advance, openReceipt, openTutorialReceipt, openSavedProposal, openTutorialProposal, selectReady, coach }: { orders: ReadonlyArray<OrderSummary>; latestReceipt: CommandReceipt | null; tutorialReceipt: CommandReceipt | null; savedProposal: ReviewedProposal | null; tutorialProposal: ReviewedProposal | null; connected: boolean; selectedOrderId: string | null; selectOrder: (id: string | null) => void; prepare: (id: string) => void; prepareBatch: () => void; prepareReset: () => void; advance: () => void; openReceipt: () => void; openTutorialReceipt: () => void; openSavedProposal: () => void; openTutorialProposal: () => void; selectReady: () => void; coach: ReactNode }) {
   const [filter, setFilter] = useState<Filter>("all");
   const selectedOrder = resolveSelectedOrder(orders, selectedOrderId);
   const readyCount = orders.filter((order) => order.status === "ready").length;
   const visibleOrders = useMemo(() => orders.filter((order) => filter === "all" || order.status === "ready"), [filter, orders]);
-  if (selectedOrder !== null) return <OrderDetail order={selectedOrder} onBack={() => setSelectedOrderId(null)} review={{ disabled: !connected, run: () => prepare(selectedOrder.id) }} />;
+  if (selectedOrder !== null) return <OrderDetail order={selectedOrder} onBack={() => selectOrder(null)} review={{ disabled: !connected, run: () => prepare(selectedOrder.id) }} coach={coach} />;
   return <section className="work-panel" aria-labelledby="work-title" id={targets.workQueue}>
     <h1 id="work-title">Decisions</h1>
-    <div className="queue-toolbar"><div className="filters" aria-label="Filter decisions"><Button variant="quiet" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>All {orders.length}</Button><Button variant="quiet" id={targets.readyFilter} aria-pressed={filter === "ready"} onClick={() => setFilter("ready")}>Ready {readyCount}</Button></div><span>{savedProposal !== null && <Button variant="link" onClick={openSavedProposal}>Review saved proposal</Button>}<Button variant="link" onClick={prepareBatch} disabled={!connected || readyCount === 0}>Review ready orders</Button></span></div>
-    <ul className="order-list" data-testid="order-list">{visibleOrders.map((order) => <li key={order.id}><button type="button" id={order.targetId} className="order-row" onClick={() => setSelectedOrderId(order.id)}><span className="order-id">{order.id}</span><span className="order-copy"><strong>{order.item}</strong><span>{order.issue}</span></span><span className={`status status-${order.status}`}>{order.statusLabel}</span></button></li>)}</ul>
-    <div className="workspace-controls"><span>{latestReceipt !== null && <Button variant="link" onClick={openReceipt}>View last receipt</Button>}<Button variant="link" onClick={advance} disabled={!connected}>Advance stock scenario</Button></span><Button variant="link" className="reset-link" onClick={prepareReset} disabled={!connected}>Reset my demo</Button></div>
+    <div className="queue-toolbar"><div className="filters" aria-label="Filter decisions"><Button variant="quiet" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>All {orders.length}</Button><Button variant="quiet" id={targets.readyFilter} aria-pressed={filter === "ready"} onClick={() => { setFilter("ready"); selectReady(); }}>Ready {readyCount}</Button></div><span>{savedProposal !== null && <Button variant="link" onClick={openSavedProposal}>Review saved proposal</Button>}{tutorialProposal !== null && tutorialProposal.id !== savedProposal?.id && <Button variant="link" onClick={openTutorialProposal}>Continue tutorial proposal</Button>}<Button variant="link" id={targets.batchReview} onClick={prepareBatch} disabled={!connected || readyCount === 0}>Review ready orders</Button></span></div>
+    {coach}
+    <ul className="order-list" data-testid="order-list">{visibleOrders.map((order) => <li key={order.id}><button type="button" id={order.targetId} className="order-row" onClick={() => selectOrder(order.id)}><span className="order-id">{order.id}</span><span className="order-copy"><strong>{order.item}</strong><span>{order.issue}</span></span><span className={`status status-${order.status}`}>{order.statusLabel}</span></button></li>)}</ul>
+    <div className="workspace-controls"><span>{latestReceipt !== null && <Button variant="link" id={targets.receiptLink} onClick={openReceipt}>View last receipt</Button>}{tutorialReceipt !== null && tutorialReceipt.id !== latestReceipt?.id && <Button variant="link" onClick={openTutorialReceipt}>Continue tutorial receipt</Button>}<Button variant="link" onClick={advance} disabled={!connected}>Advance stock scenario</Button></span><Button variant="link" className="reset-link" onClick={prepareReset} disabled={!connected}>Reset my demo</Button></div>
   </section>;
 }
 
@@ -181,8 +218,45 @@ export default function App() {
   const accept = async () => { if (proposal === null) return; acceptStarted.current = performance.now(); const result = await perform(() => runCommand({ type: "accept_proposal", proposalId: proposal.id, idempotencyKey: crypto.randomUUID() })); if (result?.kind === "receipt") { setProposal(null); setSelectedOrderId(null); setReceipt(result.receipt); } else { acceptStarted.current = null; } };
   const undo = async () => { if (receipt === null) return; await showProposal(() => runCommand({ type: "prepare_undo", receiptId: receipt.id })); };
   const advance = async () => { const result = await perform(() => runCommand({ type: "advance_scenario", scenario: "stock_change" })); if (result?.kind === "scenario") setError(result.message); };
+  type TutorialActionInput =
+    | { readonly action: "order_selected"; readonly orderId: string }
+    | { readonly action: "ready_filter_selected" }
+    | { readonly action: "receipt_confirmed"; readonly receiptId: string };
+  const reportTutorialAction = (input: TutorialActionInput) => {
+    const tutorial = snapshot?.tutorial;
+    if (tutorial === null || tutorial === undefined) return;
+    void runCommand({
+      type: "tutorial_action",
+      tutorialId: tutorial.id,
+      tutorialInstanceId: tutorial.instanceId,
+      expectedStep: tutorial.step,
+      ...input,
+    }).catch((cause) => {
+      setError(cause instanceof Error ? cause.message : "The tutorial action could not be recorded.");
+    });
+  };
+  const dismissTutorial = () => {
+    void perform(() => runCommand({ type: "stop_tutorial" }));
+  };
+  const confirmReceiptAndBack = async () => {
+    if (receipt === null) return;
+    const tutorial = snapshot?.tutorial;
+    const finalPracticeStep = tutorial !== null && tutorial !== undefined && tutorial.step === tutorial.totalSteps - 1;
+    let tutorialCompleted = false;
+    if (tutorial !== null && tutorial !== undefined) {
+      const result = await perform(() => runCommand({ type: "tutorial_action", tutorialId: tutorial.id, tutorialInstanceId: tutorial.instanceId, expectedStep: tutorial.step, action: "receipt_confirmed", receiptId: receipt.id }));
+      tutorialCompleted = finalPracticeStep && result?.kind === "tutorial" && result.advanced;
+    }
+    if (!tutorialCompleted) setReceipt(null);
+  };
+  const recoveryText = snapshot?.tutorialReceipt !== null && snapshot?.tutorialReceipt !== undefined
+    ? snapshot.tutorialReceipt.id === snapshot.latestReceipt?.id ? "The receipt for this step is saved. Return to Work and use View last receipt." : "The receipt for this step is saved. Return to Work and use Continue tutorial receipt."
+    : snapshot?.tutorialProposal !== null && snapshot?.tutorialProposal !== undefined
+      ? snapshot.tutorialProposal.id === snapshot.currentProposal?.id ? "The proposal for this step is saved. Return to Work and use Review saved proposal." : "The proposal for this step is saved. Return to Work and use Continue tutorial proposal."
+      : "The next step is not visible. Return to Work and open the requested order from the list.";
+  const coach = snapshot?.tutorial === null || snapshot?.tutorial === undefined ? null : <TutorialCoach tutorial={snapshot.tutorial} recoveryText={recoveryText} onDismiss={dismissTutorial} disabled={busy || status !== "connected"} />;
 
   return <div className="app-shell"><header className="topbar"><div className="brand"><BrandIcon /> <span>Bracken &amp; Beam</span></div><span className={`connection connection-${status}`} data-testid="connection-status"><span aria-hidden="true" />{connectionText[status]}</span><nav aria-label="Main navigation">{(["work", "explore", "audit"] as const).map((item) => <Button key={item} variant="quiet" aria-current={view === item ? "page" : undefined} onClick={() => setView(item)}>{item[0]!.toUpperCase() + item.slice(1)}</Button>)}</nav></header>
-    {view === "work" ? <main className="work-layout" data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => setReceipt(null)} onUndo={undo} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} savedProposal={snapshot.currentProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} setSelectedOrderId={setSelectedOrderId} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} onSend={(message) => { try { const context: AgentViewContext = proposal !== null ? { view: "work", focus: { kind: "proposal", proposalId: proposal.id } } : receipt !== null ? { view: "work", focus: { kind: "receipt", receiptId: receipt.id } } : selectedOrderId !== null ? { view: "work", focus: { kind: "order", orderId: selectedOrderId } } : { view, focus: null }; sendAgentMessage(message, context); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><EmptyRoute title="Explore" text="Scenario guides and the tool catalogue arrive with agent integration." /></div> : <div data-view="audit"><EmptyRoute title="Audit" text="Inference activity arrives with agent integration. Command audit is already retained by the server." /></div>}
+    {view === "work" ? <main className="work-layout" data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} coach={coach} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => void confirmReceiptAndBack()} onUndo={undo} coach={coach} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} tutorialReceipt={snapshot.tutorialReceipt} savedProposal={snapshot.currentProposal} tutorialProposal={snapshot.tutorialProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} selectOrder={(orderId) => { setSelectedOrderId(orderId); if (orderId !== null) void reportTutorialAction({ action: "order_selected", orderId }); }} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openTutorialReceipt={() => setReceipt(snapshot.tutorialReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} openTutorialProposal={() => setProposal(snapshot.tutorialProposal)} selectReady={() => { void reportTutorialAction({ action: "ready_filter_selected" }); }} coach={coach} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} onSend={(message) => { try { const context: AgentViewContext = proposal !== null ? { view: "work", focus: { kind: "proposal", proposalId: proposal.id } } : receipt !== null ? { view: "work", focus: { kind: "receipt", receiptId: receipt.id } } : selectedOrderId !== null ? { view: "work", focus: { kind: "order", orderId: selectedOrderId } } : { view, focus: null }; sendAgentMessage(message, context); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><EmptyRoute title="Explore" text="Scenario guides and the tool catalogue arrive with agent integration." />{coach}</div> : <div data-view="audit"><EmptyRoute title="Audit" text="Inference activity arrives with agent integration. Command audit is already retained by the server." />{coach}</div>}
   </div>;
 }

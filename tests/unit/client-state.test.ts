@@ -29,10 +29,13 @@ const snapshot = (sequence: number, generation = 1): WorkspaceSnapshot => ({
   sequence,
   orders: [order("Street number needs checking.")],
   latestReceipt: null,
+  tutorialReceipt: null,
   currentProposal: null,
+  tutorialProposal: null,
   chat: [],
   activeTurn: null,
   agentMode: "unavailable",
+  tutorial: null,
 });
 
 const event = (sequence: number, generation = 1) => ({
