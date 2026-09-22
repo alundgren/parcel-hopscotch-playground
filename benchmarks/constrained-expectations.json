@@ -1,0 +1,14 @@
+{
+  "c01": { "expected": "explicit" },
+  "c02": { "expected": "conditional" },
+  "c03": { "expected": "conditional" },
+  "c04": { "expected": "unclear", "semanticSubtype": "declined" },
+  "c05": { "expected": "unclear" },
+  "c06": { "expected": "unclear" },
+  "c07": { "expected": "address" },
+  "c08": { "expected": "substitution", "semanticSubtype": "stock" },
+  "c09": { "expected": "bundle" },
+  "c10": { "expected": "weight" },
+  "c11": { "expected": "carrier" },
+  "c12": { "expected": "duplicate" }
+}

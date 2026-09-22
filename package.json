@@ -18,6 +18,7 @@
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
     "test:e2e": "playwright test",
+    "benchmark:providers": "tsx src/server/provider-benchmark-cli.ts",
     "smoke:providers": "tsx src/server/provider-smoke.ts",
     "smoke:agent": "tsx src/server/provider-smoke.ts",
     "check": "pnpm typecheck && pnpm test && pnpm build"

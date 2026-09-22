@@ -1,0 +1,62 @@
+[
+  {
+    "caseId": "c01",
+    "task": "consent",
+    "note": "Yes, please send the sage mug instead of the blue one."
+  },
+  {
+    "caseId": "c02",
+    "task": "consent",
+    "note": "Sage might work, but send a picture first."
+  },
+  {
+    "caseId": "c03",
+    "task": "consent",
+    "note": "The sage one is fine if it costs the same. Please confirm the price first."
+  },
+  {
+    "caseId": "c04",
+    "task": "consent",
+    "note": "No, please keep the blue one on back order. I do not want sage."
+  },
+  {
+    "caseId": "c05",
+    "task": "consent",
+    "note": "How tall is the sage mug?"
+  },
+  {
+    "caseId": "c06",
+    "task": "consent",
+    "note": "I am not saying yes to the replacement yet."
+  },
+  {
+    "caseId": "c07",
+    "task": "exception",
+    "note": "The house number is 41, not 14. The street and postcode are right."
+  },
+  {
+    "caseId": "c08",
+    "task": "exception",
+    "note": "The blue mugs are sold out. There are six sage mugs in the stockroom."
+  },
+  {
+    "caseId": "c09",
+    "task": "exception",
+    "note": "The lamp bundle contains a base but no shade."
+  },
+  {
+    "caseId": "c10",
+    "task": "exception",
+    "note": "This parcel weighs 4.2 kg but the expected packed weight is 1.1 kg."
+  },
+  {
+    "caseId": "c11",
+    "task": "exception",
+    "note": "The parcel was collected two days ago, but the carrier has recorded no further scan."
+  },
+  {
+    "caseId": "c12",
+    "task": "exception",
+    "note": "Two orders arrived one minute apart with the same items and address. Please check whether both were intended."
+  }
+]
