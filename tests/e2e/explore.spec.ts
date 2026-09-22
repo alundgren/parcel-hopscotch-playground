@@ -34,7 +34,7 @@ test("filters and inspects the validated registry catalogue", async ({ page, con
   await expect(page.getByText("3 of 16 tools", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Read", exact: true }).click();
   await expect(page.getByText("2 of 16 tools", { exact: true })).toBeVisible();
-  await page.getByRole("searchbox", { name: "Filter tools" }).fill("fulfilment orders");
+  await page.getByRole("searchbox", { name: "Filter tools" }).fill("omit filters");
   await expect(page.getByText("1 of 16 tools", { exact: true })).toBeVisible();
   await expect(page.locator(".tool-row")).toHaveCount(1);
 
