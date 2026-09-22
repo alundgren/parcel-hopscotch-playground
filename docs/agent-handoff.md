@@ -1,5 +1,16 @@
 # Continue Parcel Hopscotch
 
+## Verified continuation on 2026-09-22
+
+The stopped-session account below remains as historical context. A later headless Linux VM session completed the pending review and continued the agreed sequence:
+
+- Tutorial PR [#15](https://github.com/alundgren/parcel-hopscotch-playground/pull/15) passed round 4 at `fd9dba2b03a98404573a53fd383d1ead9debe87a` and merged as `e025db2eb267dd1e8da07db9d8b51351a659265d`. All 130 unit/integration tests, 18 browser tests, PR CI and post-merge CI passed.
+- Audit PR [#17](https://github.com/alundgren/parcel-hopscotch-playground/pull/17) passed round 3 at `0e04e507dd678c447957b0d3ee721d19731aed30` and merged as `f5a5920b4e411b97296de39d6fea41b95b1d5e1d`. All 136 unit/integration tests, 20 browser tests, PR CI and post-merge CI passed.
+- Explore PR [#18](https://github.com/alundgren/parcel-hopscotch-playground/pull/18) passed round 3 at `0c6cc01de598bf312581fcce27459c52b3d77154` and merged as `58d62cfcbd76d01b576bed738cf767bef1fd88ee`. All 141 unit/integration tests, 26 browser tests, PR CI and post-merge CI passed.
+- Acceptance PR [#19](https://github.com/alundgren/parcel-hopscotch-playground/pull/19) passed round 2 at `1d54970d1ef38e46e15317909fe74979556234af` and merged as `71842a5dc4a25f3d9ef80bd773a34e6c974c9cb8`. All 148 unit/integration tests, 36 browser tests, review-fix acceptance, PR CI and post-merge CI passed. Its six comparisons and four videos were retained. The live benchmark made 28 requests for $0.000600186; one of two tool scenarios remained incomplete and is reported accurately.
+
+The current packaging work starts from merge `71842a5dc4a25f3d9ef80bd773a34e6c974c9cb8`. [The owner handoff](owner-handoff.md) and [operator guide](operator-guide.md) replace this historical file for current local operation and the post-audit deployment contract.
+
 Repository: https://github.com/alundgren/parcel-hopscotch-playground. The owner's final instruction was to stop the fix cycle, record remaining findings, and leave tutorial issue #6's PR open for a fresh session on another machine. This supersedes the earlier request to merge before stopping. Check out the open draft PR for branch `feat/06-tutorials`, rather than starting from `main`. No private files from the previous machine are required.
 
 The implementation is committed through `6a6d2f5b69168bee474580581287030e27e712de`, based on `341e7abe1506121ca9a62374f9aaec93bd1ba487`. Later handoff commits change documentation only. Two combined review rounds completed. Round 2's final-practice receipt finding has a tested correction, but its confirmation review was interrupted at the owner's stopping point. There is no final approval. Read [the portable review record](reviews/issue-6.md) for every finding, disposition, remaining check and the retained role settings. No further findings had arrived when that review stopped.

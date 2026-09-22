@@ -18,7 +18,7 @@ const program = Effect.gen(function* () {
     ),
   );
   yield* Effect.sync(() => {
-    console.log(`Bracken & Beam listening on http://${config.host}:${config.port}`);
+    console.log(`Starting Bracken & Beam on http://${config.host}:${config.port}`);
   });
   yield* Layer.launch(serverLayer(config));
 });

@@ -2,70 +2,89 @@
 
 # Parcel Hopscotch
 
-A playground for fast AI as an alternative to the UI. Run the fulfilment desk at Bracken & Beam, a fictional homewares shop, by clicking or by asking the agent to find work, teach a task, and prepare changes for your approval.
+Parcel Hopscotch is a private playground for completing synthetic fulfilment work through ordinary controls or a small embedded agent. Bracken & Beam, the fictional shop, has seeded address, stock, bundle, weight, carrier and duplicate-order exceptions. Every model-proposed business change waits for a human to review and accept it.
 
-The experiment compares Ministral conversation and tool use with Jev's constrained decisions through OpenRouter. Success means getting the work done quickly. Audit shows complete interaction timing, requests, responses, tokens, costs, and what happened in the app.
+The experiment compares Ministral conversation and tool use with Jev constrained decisions through OpenRouter. Audit records complete request and turn timing, actual model and provider data, tokens, costs, failures and resulting app activity. Each operator has isolated work. Reset restores seeded work while retaining inference audit and cost history.
 
-Implementation is in progress. The approved [interactive prototype](docs/design/approved-prototype.html), [build agreement](docs/build-agreement.md), [architecture](docs/architecture.md), and [visual guidance](ux.md) define the intended result.
+## Fresh local setup
 
-Each user has their own seeded work and can reset it. Reset preserves audit history. Cloudflare Access controls access at the tunnel, and the app trusts its authenticated email header.
-
-## Local workspace
-
-Use Node 22.18 or newer and pnpm 12.5. The development identity must be enabled explicitly:
+Install Node 22.18 or newer and pnpm 12.5.0. If pnpm is unavailable, install that exact version with `npm install --global pnpm@12.5.0`.
 
 ```bash
+git clone https://github.com/alundgren/parcel-hopscotch-playground.git
+cd parcel-hopscotch-playground
 cp .env.example .env.local
-set -a; source .env.local; set +a
-pnpm install
+pnpm install --frozen-lockfile
+pnpm exec playwright install --with-deps chromium
 pnpm dev
 ```
 
-Open `http://127.0.0.1:5173`. The Vite client proxies the Effect Node server on port 3000. Production ignores the development identity and requires exactly one valid `Cf-Access-Authenticated-User-Email` header.
+Open `http://127.0.0.1:5173`. The Vite client proxies the Effect Node server on port 3000. `pnpm dev:server` and `pnpm start` load the ignored `.env.local` file automatically. An exported process variable takes precedence over the same key in that file.
 
-Run the local checks with:
+The example configuration uses the deterministic scripted provider and an explicitly enabled development identity. It makes no paid requests. For a built-server check, set `PUBLIC_ORIGIN=http://127.0.0.1:3000`, then run:
 
 ```bash
-pnpm typecheck
-pnpm test
 pnpm build
+pnpm start
+```
+
+To run the deliberate live checks, set `AGENT_PROVIDER_MODE=live` and put `OPENROUTER_API_KEY` in `.env.local`. Do not pass the key in a command argument or add the file to Git. `pnpm smoke:providers` makes one bounded request to each agreed model. `pnpm benchmark:providers -- --mode live --confirm-live ...` is the separately bounded benchmark command. Ordinary development, tests, container verification and CI do not need or use the key.
+
+## Checks and evidence
+
+```bash
+pnpm check
 pnpm test:e2e
-```
-
-Create the six labeled approved-reference comparisons at 1440×1000 and 320×900 with:
-
-```bash
 pnpm proof:visual
-```
-
-Playwright writes the comparisons, raw screenshots, and videos to `test-results/`. The command waits for the real workspace and tool catalogue before capture.
-
-Create readable desktop and narrow demonstrations of completed batch work and stale-review recovery with:
-
-```bash
 pnpm proof:video
-```
-
-This adds pauses after completed states are visible. The pauses occur outside the Send-to-completed-work and Accept-to-visible measurement intervals.
-
-Exercise the complete bounded provider benchmark without paid requests with:
-
-```bash
 pnpm benchmark:providers -- --mode fixture --output-dir /tmp/parcel-provider-benchmark-fixture
 ```
 
-The fixture directory must be empty. Live mode additionally requires `--confirm-live`, a clean checkout, an output directory outside the repository, and `OPENROUTER_API_KEY` in the process environment. It is disabled in CI. The retained [single live run](docs/benchmarks/2026-09-22-live/README.md) records the fixed inputs, limits, outcomes, actual usage, and costs.
+Playwright uses the scripted providers through the real WebSocket transport and SQLite repository. It records videos in `test-results/`. The visual command creates six same-state comparisons against the unchanged approved prototype at 1440 by 1000 and 320 by 900. The video command records readable desktop and narrow demonstrations. Its pauses occur after the measured completion boundaries.
 
-Run the bounded live provider check explicitly with:
+The retained [acceptance report](docs/acceptance-report.md) documents 36 browser cases and separate server-turn, Send-to-completed-work and Accept-to-visible samples. The [live benchmark report](docs/benchmarks/2026-09-22-live/README.md) retains the single authorized 28-request run. Jev sent no token cap; its question, choice, request and response byte, and timeout bounds are recorded in the report correction. The 64-token cap applies only to Ministral constrained requests. Benchmark scenarios and ordinary agent turns request at most 256 tokens, while the provider adapter rejects values above 512. One of two live tool scenarios remained incomplete and is reported that way.
+
+## Local container review
+
+Build and open a local-only container with a development identity:
 
 ```bash
-pnpm smoke:providers
+docker build --platform linux/amd64 --tag parcel-hopscotch:local .
+docker volume create parcel-hopscotch-local-data
+docker run --rm --name parcel-hopscotch-local \
+  --publish 127.0.0.1:3000:3000 \
+  --mount type=volume,source=parcel-hopscotch-local-data,target=/data \
+  --env NODE_ENV=development \
+  --env HOST=0.0.0.0 \
+  --env PORT=3000 \
+  --env PUBLIC_ORIGIN=http://127.0.0.1:3000 \
+  --env DATABASE_PATH=/data/parcel.sqlite \
+  --env ENABLE_DEV_IDENTITY=true \
+  --env DEV_USER_EMAIL=demo@example.test \
+  --env AGENT_PROVIDER_MODE=scripted \
+  parcel-hopscotch:local
 ```
 
-It makes one Ministral request and one Jev request through the application adapters. It requires `OPENROUTER_API_KEY` in the environment or ignored `.env.local`, records sanitized attempts in `.tmp/provider-smoke.sqlite`, and prints only the result plus model, token, complete-duration, and cost metadata. Ordinary tests and CI never call paid providers.
+Open `http://127.0.0.1:3000`. This development identity example is only for direct local browser review. A production container rejects WebSocket requests without exactly one valid `Cf-Access-Authenticated-User-Email` header, so visiting it directly in a browser does not establish an identity. Cloudflare Access supplies that header in the intended deployment.
 
-Live validation passed on 2026-09-22. Ministral completed a forced `getOrder` call through Mistral in 532 ms for 114 tokens at USD 0.0000114. In the same bounded Jev request, TypeSafe model `typesafe/jev-1.13-20260917` returned a numeric Noul answer and classified conditional consent with the documented Choice label-description map in 411 ms for 477 tokens at USD 0.000017598. These are compatibility checks, not performance benchmarks.
+Run the complete local packaging check with:
 
-Playwright builds the app, starts the real server with an `example.test` identity, uses its WebSocket transport, and records video in `test-results/`.
+```bash
+pnpm verify:container
+```
 
-Licensed under [MIT](LICENSE).
+The command first refuses non-Unix Docker endpoints. It builds a temporary image for the local Docker engine's platform, publishes only on loopback, checks React, health, PID 1, UID/GID 1000, production identity rejection and acceptance, WebSocket operation, an accepted order change, SIGTERM shutdown, and named-volume plus bind-directory persistence after container replacement. It removes only its uniquely named containers, volume, bind directory and image.
+
+For the bind check, a short-lived root helper inside the local Docker engine changes only the verifier-created temporary directory to UID/GID 1000, then restores its original host ownership before cleanup. The application containers still run as the nonroot `node` user.
+
+The image uses the digest-pinned Node 26.7.0 Bookworm slim multi-platform index. Node 26 is supported through 2029-04-30 and is scheduled to become LTS on 2026-10-28. The Dockerfile compiles on the builder platform and prepares runtime dependencies for the target architecture. See the [owner handoff](docs/owner-handoff.md) for the exact arm64 build evidence and execution limit.
+
+## Operation and data
+
+The built image runs one nonroot Node process as UID/GID 1000. It serves the React build, `/api/health` and `/ws` on container port 3000. SQLite lives at `/data/parcel.sqlite`. An empty Docker named volume inherits the image directory ownership. A bind directory, including a Piploy-managed directory, must be writable by UID 1000. For a private local directory, `install -d -m 0700 -o 1000 -g 1000 /path/to/data` establishes that access.
+
+Use the in-app reset command to restore your own seeded workspace. It clears work, chat and tutorial progress, cancels active turns and invalidates proposals while retaining Audit and costs. To discard a local container database completely, stop the container and remove only the volume you created for it, such as `docker volume rm parcel-hopscotch-local-data`.
+
+Production binds the host port to loopback. Cloudflare Access and Tunnel protect that endpoint, and production has no development identity fallback. The owner configures repository access, host environment, managed directory permissions, port allocation, Cloudflare allowlist and tunnel, and deployment after the private audit. The [operator guide and offline Piploy payload](docs/operator-guide.md) list the exact contract without changing production.
+
+Original source and assets in this repository are licensed under [MIT](LICENSE). Runtime npm packages keep their own licenses and notices inside their package directories. The container includes the repository license and the production dependency files. See the [owner handoff](docs/owner-handoff.md) for reusable modules and license boundaries.
