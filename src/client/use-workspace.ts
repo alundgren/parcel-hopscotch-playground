@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Schema } from "effect";
-import { ServerMessageSchema, WorkspaceSnapshot as WorkspaceSnapshotSchema, type AgentUiOperation, type AgentViewContext, type CommandResult, type ServerMessage, type TutorialId, type WorkspaceCommand, type WorkspaceSnapshot } from "../shared/contracts";
+import { ServerMessageSchema, WorkspaceSnapshot as WorkspaceSnapshotSchema, type AgentUiOperation, type AgentViewContext, type AuditAttemptDetail, type AuditPage, type CommandResult, type ServerMessage, type TutorialId, type WorkspaceCommand, type WorkspaceSnapshot } from "../shared/contracts";
 
 export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline" | "retired";
 type WorkspaceEvent = Extract<ServerMessage, { readonly type: "event" }>;
@@ -61,6 +61,11 @@ export function useWorkspace() {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [agentOperation, setAgentOperation] = useState<AgentUiOperation | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [auditPage, setAuditPage] = useState<AuditPage | null>(null);
+  const [auditDetails, setAuditDetails] = useState<Readonly<Record<string, AuditAttemptDetail>>>({});
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditRevision, setAuditRevision] = useState(0);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | null>(null);
   const reconnectAttempt = useRef(0);
@@ -70,7 +75,11 @@ export function useWorkspace() {
   const retiredRef = useRef(false);
   const pendingRef = useRef(new Map<string, PendingCommand>());
   const turnStartedRef = useRef(new Map<string, number>());
+  const auditPageRef = useRef<AuditPage | null>(null);
+  const pendingAuditPagesRef = useRef(new Map<string, { readonly appendAttempts: boolean; readonly appendMarkers: boolean }>());
+  const pendingAuditDetailsRef = useRef(new Map<string, { readonly attemptId: string; readonly append: boolean }>());
   stateRef.current = snapshot;
+  auditPageRef.current = auditPage;
 
   const rejectPending = useCallback((message: string) => {
     for (const pending of pendingRef.current.values()) pending.reject(new Error(message));
@@ -109,23 +118,73 @@ export function useWorkspace() {
       }
       if (message.type === "command_result") {
         settleCommandResult(stateRef.current, message, pendingRef.current, applyState);
+        setAuditRevision((current) => current + 1);
         return;
       }
       if (message.type === "agent_state") {
-        applyState(message.state); return;
+        applyState(message.state);
+        setAuditRevision((current) => current + 1);
+        return;
       }
       if (message.type === "agent_ui_operation") {
         if (acceptsAgentOperation(stateRef.current, message.operation)) setAgentOperation(message.operation);
         return;
       }
+      if (message.type === "audit_page") {
+        const pending = pendingAuditPagesRef.current.get(message.requestId);
+        if (pending === undefined) return;
+        pendingAuditPagesRef.current.delete(message.requestId);
+        const current = auditPageRef.current;
+        const next = current !== null && current.query === message.page.query && pending.appendAttempts
+          ? {
+              ...message.page,
+              attempts: [...current.attempts, ...message.page.attempts.filter((attempt) => !current.attempts.some((existing) => existing.id === attempt.id))],
+              markers: current.markers,
+              markerNextCursor: current.markerNextCursor,
+            }
+          : current !== null && current.query === message.page.query && pending.appendMarkers
+            ? {
+                ...message.page,
+                attempts: current.attempts,
+                total: current.total,
+                nextCursor: current.nextCursor,
+                markers: [...current.markers, ...message.page.markers.filter((marker) => !current.markers.some((existing) => existing.id === marker.id))],
+              }
+            : message.page;
+        auditPageRef.current = next;
+        setAuditPage(next);
+        setAuditLoading(false);
+        setAuditError(null);
+        return;
+      }
+      if (message.type === "audit_detail") {
+        const pending = pendingAuditDetailsRef.current.get(message.requestId);
+        if (pending === undefined) return;
+        pendingAuditDetailsRef.current.delete(message.requestId);
+        if (message.detail !== null) setAuditDetails((current) => {
+          const previous = current[pending.attemptId];
+          const detail = pending.append && previous !== undefined
+            ? { ...message.detail!, application: [...previous.application, ...message.detail!.application.filter((record) => !previous.application.some((existing) => existing.id === record.id))] }
+            : message.detail!;
+          return { ...current, [pending.attemptId]: detail };
+        });
+        setAuditError(message.detail === null ? "That audit detail is unavailable." : null);
+        return;
+      }
+      if (message.type === "audit_event") {
+        setAuditRevision((current) => current + 1);
+        return;
+      }
       if (message.type === "error") {
         if (message.requestId !== null) { pendingRef.current.get(message.requestId)?.reject(new Error(message.message)); pendingRef.current.delete(message.requestId); }
+        if (message.requestId !== null && pendingAuditPagesRef.current.delete(message.requestId)) { setAuditLoading(false); setAuditError(message.message); }
+        if (message.requestId !== null && pendingAuditDetailsRef.current.delete(message.requestId)) setAuditError(message.message);
         if (message.code.startsWith("agent_") || message.code.includes("turn") || message.code.includes("acknowledgement")) setAgentError(message.message);
         return;
       }
       if (message.type !== "event") return;
       const pushed = committedState(message);
-      if (pushed !== null) { applyState(pushed); return; }
+      if (pushed !== null) { applyState(pushed); setAuditRevision((current) => current + 1); return; }
       const current = stateRef.current;
       if (current === null) return;
       const decision = decideWorkspaceEvent(current, message);
@@ -193,6 +252,25 @@ export function useWorkspace() {
     socket.send(JSON.stringify({ type: "command_visible_ack", requestId: requestId(), generation, receiptId, durationMs }));
   }, []);
 
+  const requestAudit = useCallback((query: string, cursor: string | null = null, appendAttempts = false, markerCursor: string | null = null, appendMarkers = false) => {
+    const socket = socketRef.current;
+    if (socket === null || socket.readyState !== WebSocket.OPEN) { setAuditError("Reconnect to load Audit."); return; }
+    const id = requestId();
+    pendingAuditPagesRef.current.set(id, { appendAttempts, appendMarkers });
+    setAuditLoading(true);
+    setAuditError(null);
+    socket.send(JSON.stringify({ type: "request_audit", requestId: id, query, cursor, markerCursor }));
+  }, []);
+
+  const requestAuditDetail = useCallback((attemptId: string, applicationCursor: string | null = null, append = false) => {
+    const socket = socketRef.current;
+    if (socket === null || socket.readyState !== WebSocket.OPEN) { setAuditError("Reconnect to load this request."); return; }
+    const id = requestId();
+    pendingAuditDetailsRef.current.set(id, { attemptId, append });
+    setAuditError(null);
+    socket.send(JSON.stringify({ type: "request_audit_detail", requestId: id, attemptId, applicationCursor }));
+  }, []);
+
   useEffect(() => {
     disposedRef.current = false; connect();
     const goOffline = () => { offlineRef.current = true; setStatus("offline"); socketRef.current?.close(1000, "Browser offline"); };
@@ -201,5 +279,5 @@ export function useWorkspace() {
     return () => { disposedRef.current = true; window.removeEventListener("offline", goOffline); window.removeEventListener("online", goOnline); if (reconnectTimer.current !== null) window.clearTimeout(reconnectTimer.current); rejectPending("Workspace unmounted."); socketRef.current?.close(1000, "Workspace unmounted"); socketRef.current = null; };
   }, [connect, rejectPending]);
 
-  return { snapshot, status, runCommand, sendAgentMessage, cancelAgentTurn, agentOperation, acknowledgeAgentOperation, acknowledgeAgentComplete, acknowledgeCommandVisible, agentError };
+  return { snapshot, status, runCommand, sendAgentMessage, cancelAgentTurn, agentOperation, acknowledgeAgentOperation, acknowledgeAgentComplete, acknowledgeCommandVisible, agentError, auditPage, auditDetails, auditLoading, auditError, auditRevision, requestAudit, requestAuditDetail };
 }

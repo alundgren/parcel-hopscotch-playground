@@ -40,6 +40,8 @@ interface ActiveTurn {
   providerFiber: RuntimeFiber | null;
   jevCount: number;
   uiMissing: boolean;
+  readonly startedMonotonicMs: number;
+  serverCompleted: boolean;
   readonly operations: Map<string, PendingOperation>;
 }
 interface Admission {
@@ -340,6 +342,8 @@ export const makeAgentCoordinator = (
   };
 
   const update = async (active: ActiveTurn, repository: WorkspaceRepositoryService, history: ReadonlyArray<ChatMessage>, status: AgentTurnRecord["status"], phase: string, options: { readonly error?: string | null; readonly proposalId?: string; readonly finished?: boolean; readonly measurement?: AgentTurnRecord["measurement"] } = {}) => {
+    const serverCompletedNow = options.finished === true && !active.serverCompleted;
+    if (serverCompletedNow) active.serverCompleted = true;
     await Effect.runPromise(repository.updateAgentTurn(active.identity, active.generation, active.turnId, {
       status,
       phase,
@@ -348,6 +352,8 @@ export const makeAgentCoordinator = (
       proposalId: options.proposalId,
       finishedAt: options.finished ? new Date().toISOString() : undefined,
       measurement: options.measurement,
+      serverDurationMs: serverCompletedNow ? Math.max(0, performance.now() - active.startedMonotonicMs) : undefined,
+      serverMeasurement: serverCompletedNow ? "complete" : undefined,
     }));
     await sendState(active, repository);
   };
@@ -387,6 +393,15 @@ export const makeAgentCoordinator = (
     if (active.cancelled) throw new Error("cancelled");
     await ensureCurrentGeneration(active, repository);
     active.uiMissing ||= outcome === "missing";
+    await Effect.runPromise(repository.recordApplicationAudit(active.identity, active.generation, {
+      kind: "ui",
+      label: operation.kind === "highlight" ? "Highlight target" : operation.kind === "navigate" ? "Open view" : "Show proposal",
+      outcome,
+      requestId: id,
+      turnId: active.turnId,
+      proposalId: operation.kind === "present_proposal" ? operation.proposalId : null,
+      body: { operation: full, acknowledgement: outcome },
+    }));
     await update(active, repository, history, "running", "Working");
     return outcome === "applied"
       ? { applied: true, message: operation.kind === "highlight" ? "The target is highlighted." : operation.kind === "navigate" ? "The view is open." : "The proposal is visible." }
@@ -442,6 +457,7 @@ export const makeAgentCoordinator = (
         const result = await providerResult(active, runAuditedMinistral({
           repository, identity: active.identity, generation: active.generation,
           requestId: `${active.turnId}:chat:${round + 1}`, turnId: active.turnId,
+          mode: config.agentMode,
           notify: (userId, attempt) => hub.publishAudit(userId, attempt),
         }, adapters.ministral, request));
         if (!result.ok) throw result.error;
@@ -474,12 +490,13 @@ export const makeAgentCoordinator = (
           if (active.cancelled) throw new Error("cancelled");
           const tool = findRegisteredTool(registry, call.name);
           let content: string;
+          let output: unknown = null;
           let providerError: ProviderError | null = null;
           if (tool === null) {
             content = safeToolFailure(new ToolExecutionError("unknown_tool", `Unknown tool: ${call.name}`));
           } else {
             try {
-              const output = await tool.execute({
+              output = await tool.execute({
                 repository, identity: active.identity, generation: active.generation,
                 turnId: active.turnId, requestId: call.id,
                 runJev: async (jevRequest: JevRequest) => {
@@ -490,6 +507,7 @@ export const makeAgentCoordinator = (
                   const jev = await providerResult(active, runAuditedJev({
                     repository, identity: active.identity, generation: active.generation,
                     requestId: `${active.turnId}:jev:${active.jevCount}`, turnId: active.turnId,
+                    mode: config.agentMode,
                     notify: (userId, attempt) => hub.publishAudit(userId, attempt),
                   }, adapters.jev, jevRequest));
                   if (!jev.ok) throw jev.error;
@@ -512,6 +530,20 @@ export const makeAgentCoordinator = (
             }
           }
           history.push({ role: "tool", content, toolCallId: call.id });
+          let auditedResult: unknown = content;
+          try { auditedResult = JSON.parse(content); } catch { /* The bounded text still records the terminal tool outcome. */ }
+          const proposalId = typeof output === "object" && output !== null && "id" in output && typeof (output as { id?: unknown }).id === "string" && (output as { id: string }).id.startsWith("proposal_")
+            ? (output as { id: string }).id
+            : null;
+          await Effect.runPromise(repository.recordApplicationAudit(active.identity, active.generation, {
+            kind: "tool",
+            label: tool === null ? call.name : tool.purpose,
+            outcome: providerError === null && typeof auditedResult === "object" && auditedResult !== null && (auditedResult as { ok?: unknown }).ok !== false ? "completed" : "failed",
+            requestId: call.id,
+            turnId: active.turnId,
+            proposalId,
+            body: { ...(proposalId === null ? {} : { state: "prepared" }), tool: call.name, arguments: call.arguments, result: auditedResult },
+          }));
           await update(active, repository, history, "running", "Working");
           if (providerError !== null) throw providerError;
         }
@@ -567,6 +599,7 @@ export const makeAgentCoordinator = (
         release: () => releaseAdmission(),
       };
       admissionsByUser.set(context.identity.id, admission);
+      const startedMonotonicMs = performance.now();
       let active: ActiveTurn | null = null;
       try {
         const existing = await Effect.runPromise(context.repository.agentTurn(context.identity, context.generation, context.turnId));
@@ -580,7 +613,7 @@ export const makeAgentCoordinator = (
           await context.send({ type: "agent_state", state: await Effect.runPromise(context.repository.snapshot(context.identity)) });
           return { started: false, turn: created.turn };
         }
-        active = { key: `${context.identity.id}:${context.generation}:${context.turnId}`, identity: context.identity, generation: context.generation, turnId: context.turnId, requestId: context.requestId, connectionId: context.connectionId, send: context.send, hub: context.hub, connected: true, cancelled: false, providerFiber: null, jevCount: 0, uiMissing: false, operations: new Map() };
+        active = { key: `${context.identity.id}:${context.generation}:${context.turnId}`, identity: context.identity, generation: context.generation, turnId: context.turnId, requestId: context.requestId, connectionId: context.connectionId, send: context.send, hub: context.hub, connected: true, cancelled: false, providerFiber: null, jevCount: 0, uiMissing: false, startedMonotonicMs, serverCompleted: false, operations: new Map() };
         activeByUser.set(context.identity.id, active);
         try {
           await context.send({ type: "agent_state", state: await Effect.runPromise(context.repository.snapshot(context.identity)) });

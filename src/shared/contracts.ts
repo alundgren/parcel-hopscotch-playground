@@ -133,6 +133,16 @@ export const CommandVisibleAcknowledgementMessage = Schema.Struct({
   type: Schema.Literal("command_visible_ack"), requestId: Schema.String,
   generation: Schema.Int, receiptId: Schema.String, durationMs: Schema.Number,
 });
+export const AuditListRequest = Schema.Struct({
+  type: Schema.Literal("request_audit"), requestId: Schema.String,
+  query: Schema.String.check(Schema.isMaxLength(160)), cursor: Schema.NullOr(Schema.String.check(Schema.isMaxLength(512))),
+  markerCursor: Schema.NullOr(Schema.String.check(Schema.isMaxLength(512))),
+});
+export const AuditDetailRequest = Schema.Struct({
+  type: Schema.Literal("request_audit_detail"), requestId: Schema.String,
+  attemptId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  applicationCursor: Schema.NullOr(Schema.String.check(Schema.isMaxLength(512))),
+});
 export const ClientMessage = Schema.Union([
   HelloMessage, SnapshotRequest, PingRequest, PrepareResolutionMessage,
   PrepareBatchMessage, PrepareUndoMessage, PrepareResetMessage,
@@ -140,6 +150,7 @@ export const ClientMessage = Schema.Union([
   StopTutorialMessage, TutorialActionMessage,
   CancelAgentTurnMessage, AgentUiAcknowledgementMessage,
   AgentCompleteAcknowledgementMessage, CommandVisibleAcknowledgementMessage,
+  AuditListRequest, AuditDetailRequest,
 ]);
 export type ClientMessage = typeof ClientMessage.Type;
 
@@ -160,11 +171,56 @@ export const AgentUiOperationSchema = Schema.Union([
   Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("present_proposal"), proposalId: Schema.String }),
 ]);
 export type AgentUiOperation = typeof AgentUiOperationSchema.Type;
+
+export const AuditAttemptMode = Schema.Literals(["live", "scripted", "unavailable"]);
+export type AuditAttemptMode = typeof AuditAttemptMode.Type;
+export const AuditAttemptOutcome = Schema.Literals(["running", "success", "error", "credits_exhausted", "timeout", "cancelled", "interrupted"]);
+export type AuditAttemptOutcome = typeof AuditAttemptOutcome.Type;
+export const AuditAttemptSummary = Schema.Struct({
+  id: Schema.String, generation: Schema.Int, requestId: Schema.String, turnId: Schema.String,
+  kind: Schema.Literals(["chat", "decisions"]), mode: AuditAttemptMode,
+  provider: Schema.String, requestedModel: Schema.String, actualModel: Schema.NullOr(Schema.String),
+  requestLabel: Schema.String, startedAt: Schema.String, completedAt: Schema.NullOr(Schema.String),
+  durationMs: Schema.NullOr(Schema.Number), inputTokens: Schema.NullOr(Schema.Number),
+  outputTokens: Schema.NullOr(Schema.Number), totalTokens: Schema.NullOr(Schema.Number),
+  costUsd: Schema.NullOr(Schema.Number), outcome: AuditAttemptOutcome,
+  errorCode: Schema.NullOr(Schema.String), retryCount: Schema.Int,
+});
+export type AuditAttemptSummary = typeof AuditAttemptSummary.Type;
+export const AuditApplicationRecord = Schema.Struct({
+  id: Schema.String, kind: Schema.Literals(["tool", "ui", "turn", "proposal", "receipt", "reset", "command_visible"]),
+  label: Schema.String, outcome: Schema.String, occurredAt: Schema.String,
+  requestId: Schema.NullOr(Schema.String), turnId: Schema.NullOr(Schema.String),
+  proposalId: Schema.NullOr(Schema.String), receiptId: Schema.NullOr(Schema.String),
+  bodyText: Schema.String,
+});
+export type AuditApplicationRecord = typeof AuditApplicationRecord.Type;
+export const AuditPage = Schema.Struct({
+  query: Schema.String, attempts: Schema.Array(AuditAttemptSummary), total: Schema.Int,
+  nextCursor: Schema.NullOr(Schema.String), markers: Schema.Array(AuditApplicationRecord),
+  markerNextCursor: Schema.NullOr(Schema.String),
+});
+export type AuditPage = typeof AuditPage.Type;
+export const AuditAttemptDetail = Schema.Struct({
+  attempt: AuditAttemptSummary, providerRequestId: Schema.NullOr(Schema.String), generationId: Schema.NullOr(Schema.String),
+  requestBytes: Schema.Int, responseBytes: Schema.NullOr(Schema.Int), errorMessage: Schema.NullOr(Schema.String),
+  requestText: Schema.String, responseText: Schema.NullOr(Schema.String),
+  requestTruncated: Schema.Boolean, responseTruncated: Schema.Boolean,
+  serverTurnDurationMs: Schema.NullOr(Schema.Number),
+  serverTurnMeasurement: Schema.NullOr(Schema.Literals(["pending", "complete", "incomplete"])),
+  browserDurationMs: Schema.NullOr(Schema.Number),
+  browserMeasurement: Schema.NullOr(Schema.Literals(["pending", "complete", "incomplete"])),
+  application: Schema.Array(AuditApplicationRecord),
+  applicationNextCursor: Schema.NullOr(Schema.String),
+});
+export type AuditAttemptDetail = typeof AuditAttemptDetail.Type;
 export type ServerMessage =
   | { readonly type: "snapshot"; readonly requestId: string | null; readonly generation: number; readonly sequence: number; readonly state: WorkspaceSnapshot }
   | { readonly type: "command_result"; readonly requestId: string; readonly result: CommandResult; readonly state: WorkspaceSnapshot }
   | { readonly type: "event"; readonly generation: number; readonly sequence: number; readonly event: string; readonly payload: unknown }
   | { readonly type: "audit_event"; readonly event: "audit.attempt.completed"; readonly payload: unknown }
+  | { readonly type: "audit_page"; readonly requestId: string; readonly page: AuditPage }
+  | { readonly type: "audit_detail"; readonly requestId: string; readonly detail: AuditAttemptDetail | null }
   | { readonly type: "agent_state"; readonly state: WorkspaceSnapshot }
   | { readonly type: "agent_ui_operation"; readonly operation: AgentUiOperation }
   | { readonly type: "pong"; readonly requestId: string }
@@ -174,6 +230,8 @@ export const ServerMessageSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("command_result"), requestId: Schema.String, result: CommandResultSchema, state: WorkspaceSnapshot }),
   Schema.Struct({ type: Schema.Literal("event"), generation: Schema.Int, sequence: Schema.Int, event: Schema.String, payload: Schema.Unknown }),
   Schema.Struct({ type: Schema.Literal("audit_event"), event: Schema.Literal("audit.attempt.completed"), payload: Schema.Unknown }),
+  Schema.Struct({ type: Schema.Literal("audit_page"), requestId: Schema.String, page: AuditPage }),
+  Schema.Struct({ type: Schema.Literal("audit_detail"), requestId: Schema.String, detail: Schema.NullOr(AuditAttemptDetail) }),
   Schema.Struct({ type: Schema.Literal("agent_state"), state: WorkspaceSnapshot }),
   Schema.Struct({ type: Schema.Literal("agent_ui_operation"), operation: AgentUiOperationSchema }),
   Schema.Struct({ type: Schema.Literal("pong"), requestId: Schema.String }),

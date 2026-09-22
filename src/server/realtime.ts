@@ -343,6 +343,18 @@ export const runWorkspaceSocket = (
         if (message.value.type === "hello") {
           yield* hub.bindClient(identity.id, connectionId, message.value.clientId);
         }
+        if (message.value.type === "request_audit") {
+          const page = yield* Effect.result(repository.auditPage(identity, message.value.query, message.value.cursor, 12, message.value.markerCursor));
+          if (page._tag === "Failure") yield* send({ type: "error", requestId: message.value.requestId, code: page.failure.code, message: page.failure.message });
+          else yield* send({ type: "audit_page", requestId: message.value.requestId, page: page.success });
+          return;
+        }
+        if (message.value.type === "request_audit_detail") {
+          const detail = yield* Effect.result(repository.auditDetail(identity, message.value.attemptId, message.value.applicationCursor));
+          if (detail._tag === "Failure") yield* send({ type: "error", requestId: message.value.requestId, code: detail.failure.code, message: detail.failure.message });
+          else yield* send({ type: "audit_detail", requestId: message.value.requestId, detail: detail.success });
+          return;
+        }
         if (message.value.type === "send_agent_turn") {
           const agentMessage = message.value;
           const result = yield* Effect.result(Effect.tryPromise(() => agentCoordinator.start({
@@ -390,6 +402,7 @@ export const runWorkspaceSocket = (
         if (message.value.type === "command_visible_ack") {
           const recorded = yield* Effect.result(repository.recordCommandMeasurement(identity, message.value.generation, message.value.receiptId, message.value.durationMs));
           if (recorded._tag === "Failure") yield* send({ type: "error", requestId: message.value.requestId, code: recorded.failure.code, message: recorded.failure.message });
+          else yield* hub.publishAudit(identity.id, { id: `receipt:${message.value.receiptId}:visible`, kind: "application" });
           return;
         }
         if (message.value.type === "stop_tutorial") {
@@ -433,6 +446,11 @@ export const runWorkspaceSocket = (
             return;
           }
           const state = yield* repository.snapshot(identity).pipe(Effect.orDie);
+          yield* repository.recordApplicationAudit(identity, message.value.generation, {
+            kind: "proposal", label: result.success.title, outcome: "prepared",
+            requestId: message.value.requestId, proposalId: result.success.id,
+            body: { state: "prepared", proposal: result.success },
+          });
           yield* send({ type: "command_result", requestId: message.value.requestId, result: { kind: "proposal", proposal: result.success }, state });
           return;
         }
@@ -448,12 +466,17 @@ export const runWorkspaceSocket = (
             return;
           }
           const state = yield* repository.snapshot(identity).pipe(Effect.orDie);
+          yield* repository.recordApplicationAudit(identity, message.value.generation, {
+            kind: "proposal", label: result.success.title, outcome: "prepared",
+            requestId: message.value.requestId, proposalId: result.success.id,
+            body: { state: "prepared", proposal: result.success },
+          });
           yield* send({ type: "command_result", requestId: message.value.requestId, result: { kind: "proposal", proposal: result.success }, state });
           return;
         }
         if (message.value.type === "accept_proposal") {
           const acceptMessage = message.value;
-          const result = yield* Effect.result(repository.accept(identity, acceptMessage.generation, acceptMessage.proposalId, acceptMessage.idempotencyKey));
+          const result = yield* Effect.result(repository.accept(identity, acceptMessage.generation, acceptMessage.proposalId, acceptMessage.idempotencyKey, acceptMessage.requestId));
           if (result._tag === "Failure") {
             const failure = result.failure;
             yield* send({ type: "error", requestId: acceptMessage.requestId, code: failure._tag === "WorkspaceCommandError" ? failure.code : "store_error", message: failure.message });

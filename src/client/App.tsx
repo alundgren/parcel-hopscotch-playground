@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { AgentViewContext, CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, TutorialState, WorkspaceSnapshot } from "../shared/contracts";
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import type { AgentViewContext, AuditAttemptDetail, AuditAttemptSummary, AuditPage, CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, TutorialState, WorkspaceSnapshot } from "../shared/contracts";
 import { targets } from "../shared/targets";
 import { Button } from "./components/ui/button";
 import { useWorkspace, type ConnectionStatus } from "./use-workspace";
@@ -131,6 +131,98 @@ function ChatPanel({ snapshot, connected, onSend, onCancel, error }: { snapshot:
 }
 function EmptyRoute({ title, text }: { title: string; text: string }) { return <main className="empty-route"><h1>{title}</h1><p>{text}</p></main>; }
 
+const durationText = (duration: number | null): string => duration === null ? "Unknown" : duration < 1_000 ? `${Math.round(duration)} ms` : `${(duration / 1_000).toFixed(duration < 10_000 ? 2 : 1)} s`;
+const tokenText = (attempt: AuditAttemptSummary): string => attempt.totalTokens === null ? "Unknown" : attempt.totalTokens.toLocaleString();
+const costText = (attempt: AuditAttemptSummary): string => {
+  if (attempt.mode === "scripted") return "Fixture";
+  if (attempt.costUsd === null) return "Unknown";
+  if (attempt.costUsd === 0) return "$0";
+  return `$${attempt.costUsd.toFixed(9).replace(/0+$/, "").replace(/\.$/, "")}`;
+};
+const modelText = (attempt: AuditAttemptSummary): string => {
+  const model = attempt.actualModel ?? attempt.requestedModel;
+  const normalized = model.replace("scripted/", "").replace("mistralai/", "").replace("typesafe/", "");
+  if (normalized === "ministral-3b-2512") return "Ministral 3B";
+  if (normalized.startsWith("jev-1.13")) return "Jev 1.13";
+  return normalized;
+};
+const outcomeText: Record<AuditAttemptSummary["outcome"], string> = {
+  running: "Running", success: "Completed", error: "Error", credits_exhausted: "Credits exhausted",
+  timeout: "Timed out", cancelled: "Cancelled", interrupted: "Interrupted",
+};
+type AuditTab = "request" | "response" | "application";
+
+function AuditDetails({ detail, tab, setTab, loadMore, filterTurn }: { detail: AuditAttemptDetail | null; tab: AuditTab; setTab: (tab: AuditTab) => void; loadMore: (attemptId: string, cursor: string) => void; filterTurn: (turnId: string) => void }) {
+  if (detail === null) return <div className="audit-detail-loading" role="status">Loading request details…</div>;
+  const panelId = `audit-panel-${detail.attempt.id}`;
+  const selectedText = tab === "request" ? detail.requestText : detail.responseText ?? "No response body was recorded.";
+  return <div className="audit-detail" id={`audit-detail-${detail.attempt.id}`}>
+    <div className="audit-meta">
+      <span className="audit-id">Attempt {detail.attempt.id}</span><span className="audit-id">Request {detail.attempt.requestId}</span><Button variant="link" className="audit-turn-filter" onClick={() => filterTurn(detail.attempt.turnId)}>Show all attempts for turn {detail.attempt.turnId}</Button><span>{detail.attempt.provider}</span><span className="audit-id">{detail.attempt.actualModel ?? detail.attempt.requestedModel}</span><span>{detail.attempt.mode === "scripted" ? "Fixture run" : detail.attempt.mode === "live" ? "Live run" : "Provider unavailable"}</span>
+    </div>
+    <div className="audit-meta">
+      <span>Provider request {durationText(detail.attempt.durationMs)}</span>
+      <span>Server turn {detail.serverTurnMeasurement === "complete" ? durationText(detail.serverTurnDurationMs) : detail.serverTurnMeasurement === "incomplete" ? "Incomplete" : "Unknown"}</span>
+      <span>Browser send to completed work {detail.browserMeasurement === "complete" ? durationText(detail.browserDurationMs) : detail.browserMeasurement === "incomplete" ? "Incomplete" : "Unknown"}</span>
+      <span>Input {detail.attempt.inputTokens === null ? "unknown tokens" : `${detail.attempt.inputTokens.toLocaleString()} tokens`} · {detail.requestBytes.toLocaleString()} UTF-8 B</span>
+      <span>Output {detail.attempt.outputTokens === null ? "unknown tokens" : `${detail.attempt.outputTokens.toLocaleString()} tokens`} · {detail.responseBytes === null ? "unknown bytes" : `${detail.responseBytes.toLocaleString()} UTF-8 B`}</span>
+      <span>Retries {detail.attempt.retryCount}</span>
+      <span>Cost {costText(detail.attempt)}</span>
+    </div>
+    {(detail.errorMessage !== null || detail.attempt.errorCode !== null) && <p className="audit-error">{detail.attempt.errorCode ?? "provider_error"}: {detail.errorMessage ?? "No error detail was recorded."}</p>}
+    <div className="audit-tabs" role="tablist" aria-label="Request details">
+      {(["request", "response", "application"] as const).map((name, index, tabs) => <button key={name} type="button" role="tab" tabIndex={tab === name ? 0 : -1} aria-selected={tab === name} aria-controls={panelId} id={`audit-tab-${detail.attempt.id}-${name}`} onClick={() => setTab(name)} onKeyDown={(event) => { let next = index; if (event.key === "ArrowRight") next = (index + 1) % tabs.length; else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length; else if (event.key === "Home") next = 0; else if (event.key === "End") next = tabs.length - 1; else return; event.preventDefault(); const nextTab = tabs[next]!; setTab(nextTab); document.getElementById(`audit-tab-${detail.attempt.id}-${nextTab}`)?.focus(); }}>{name === "application" ? "Application result" : name[0]!.toUpperCase() + name.slice(1)}</button>)}
+    </div>
+    <div role="tabpanel" id={panelId} aria-labelledby={`audit-tab-${detail.attempt.id}-${tab}`}>
+      {tab === "application" ? detail.application.length === 0 ? <p className="audit-no-result">No correlated application result was recorded.</p> : <div className="audit-results">{detail.application.map((record) => <details key={record.id}><summary><strong>{record.label}</strong><span>{record.outcome}</span><span>{new Date(record.occurredAt).toLocaleTimeString()}</span></summary><div className="audit-result-refs">{record.requestId !== null && <span>Request {record.requestId}</span>}{record.turnId !== null && <span>Turn {record.turnId}</span>}{record.proposalId !== null && <span>Proposal {record.proposalId}</span>}{record.receiptId !== null && <span>Receipt {record.receiptId}</span>}</div><pre>{record.bodyText}</pre></details>)}{detail.applicationNextCursor !== null && <Button variant="quiet" onClick={() => loadMore(detail.attempt.id, detail.applicationNextCursor!)}>Load earlier results</Button>}</div> : <pre>{selectedText}</pre>}
+    </div>
+  </div>;
+}
+
+function AuditView({ page, details, loading, error, revision, connected, requestPage, requestDetail }: {
+  page: AuditPage | null;
+  details: Readonly<Record<string, AuditAttemptDetail>>;
+  loading: boolean;
+  error: string | null;
+  revision: number;
+  connected: boolean;
+  requestPage: (query: string, cursor?: string | null, appendAttempts?: boolean, markerCursor?: string | null, appendMarkers?: boolean) => void;
+  requestDetail: (attemptId: string, applicationCursor?: string | null, append?: boolean) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [tab, setTab] = useState<AuditTab>("request");
+  useEffect(() => {
+    if (!connected) return;
+    const timer = window.setTimeout(() => requestPage(query), 180);
+    return () => window.clearTimeout(timer);
+  }, [query, revision, connected, requestPage]);
+  useEffect(() => {
+    if (connected && openId !== null) requestDetail(openId);
+  }, [revision, connected]);
+  const open = (attemptId: string) => {
+    if (openId === attemptId) { setOpenId(null); return; }
+    setOpenId(attemptId);
+    setTab("request");
+    if (details[attemptId] === undefined) requestDetail(attemptId);
+  };
+  const visible = page?.attempts ?? [];
+  return <main className="audit-view" aria-labelledby="audit-title" data-audit-query={page?.query ?? "loading"}>
+    <div className="audit-heading"><h1 id="audit-title">Audit</h1><span>Retained inference history</span></div>
+    <div className="audit-toolbar">
+      <label className="audit-filter"><span aria-hidden="true">⌕</span><span className="sr-only">Search audit history</span><input type="search" value={query} maxLength={160} onChange={(event) => setQuery(event.target.value)} placeholder="Filter requests..." autoComplete="off" />{query.length > 0 && <Button variant="icon" aria-label="Clear audit search" onClick={() => setQuery("")}>×</Button>}</label>
+      <span className="audit-count" aria-live="polite">{page === null ? "Loading requests" : query.trim().length > 0 ? `${page.total} matching ${page.total === 1 ? "request" : "requests"}` : `${page.total} ${page.total === 1 ? "request" : "requests"}`}</span>
+    </div>
+    {error !== null && <p className="audit-load-error" role="alert">{error}</p>}
+    {page !== null && page.markers.length > 0 && <div className="audit-markers" aria-label="Reset history">{page.markers.map((marker) => <details key={marker.id} data-reset-id={marker.id}><summary><span>Workspace reset</span><span>{new Date(marker.occurredAt).toLocaleString()}</span></summary><pre>{marker.bodyText}</pre></details>)}{page.markerNextCursor !== null && <div className="audit-more"><Button variant="quiet" disabled={loading} onClick={() => requestPage(query, null, false, page.markerNextCursor, true)}>{loading ? "Loading…" : "Load earlier resets"}</Button></div>}</div>}
+    {visible.length === 0 && !loading ? <div className="audit-empty">{query.trim().length > 0 ? <>No requests match this filter. <Button variant="link" onClick={() => setQuery("")}>Clear search</Button></> : "No inference attempts have been recorded yet."}</div> : <div className="audit-scroll"><table className="audit-table" aria-label="Inference requests"><colgroup><col className="audit-col-time" /><col /><col className="audit-col-model" /><col className="audit-col-outcome" /><col className="audit-col-duration" /><col className="audit-col-tokens" /><col className="audit-col-cost" /></colgroup><thead><tr><th scope="col">At</th><th scope="col">Request</th><th scope="col">Model</th><th scope="col">Outcome</th><th scope="col" className="audit-number">Duration</th><th scope="col" className="audit-number">Tokens</th><th scope="col" className="audit-number">Cost</th></tr></thead><tbody>{visible.map((attempt) => {
+      const expanded = openId === attempt.id;
+      return <Fragment key={attempt.id}><tr className={`audit-summary${expanded ? " audit-summary-open" : ""}`} data-attempt-id={attempt.id}><td>{new Date(attempt.startedAt).toLocaleTimeString([], { hour12: false })}</td><td><button type="button" className="audit-expand" aria-expanded={expanded} aria-controls={`audit-detail-${attempt.id}`} onClick={() => open(attempt.id)}><span aria-hidden="true">{expanded ? "⌄" : "›"}</span><span>{attempt.requestLabel}</span></button></td><td><span>{modelText(attempt)}</span>{attempt.mode === "scripted" && <small>Fixture</small>}</td><td className={`audit-outcome audit-outcome-${attempt.outcome}`}>{outcomeText[attempt.outcome]}</td><td className="audit-number">{durationText(attempt.durationMs)}</td><td className="audit-number">{tokenText(attempt)}</td><td className="audit-number">{costText(attempt)}</td></tr>{expanded && <tr><td colSpan={7} className="audit-detail-cell"><AuditDetails detail={details[attempt.id] ?? null} tab={tab} setTab={setTab} loadMore={(attemptId, cursor) => requestDetail(attemptId, cursor, true)} filterTurn={(turnId) => setQuery(turnId)} /></td></tr>}</Fragment>;
+    })}</tbody></table></div>}
+    {page?.nextCursor !== null && page?.nextCursor !== undefined && <div className="audit-more"><Button variant="quiet" disabled={loading} onClick={() => requestPage(query, page.nextCursor, true)}>{loading ? "Loading…" : "Load more"}</Button></div>}
+  </main>;
+}
+
 export default function App() {
   const [view, setView] = useState<View>("work");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
@@ -138,7 +230,7 @@ export default function App() {
   const [receipt, setReceipt] = useState<CommandReceipt | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { snapshot, status, runCommand, sendAgentMessage, cancelAgentTurn, agentOperation, acknowledgeAgentOperation, acknowledgeAgentComplete, acknowledgeCommandVisible, agentError } = useWorkspace();
+  const { snapshot, status, runCommand, sendAgentMessage, cancelAgentTurn, agentOperation, acknowledgeAgentOperation, acknowledgeAgentComplete, acknowledgeCommandVisible, agentError, auditPage, auditDetails, auditLoading, auditError, auditRevision, requestAudit, requestAuditDetail } = useWorkspace();
   const acceptStarted = useRef<number | null>(null);
   const priorGeneration = useRef<number | null>(null);
   useEffect(() => {
@@ -257,6 +349,6 @@ export default function App() {
   const coach = snapshot?.tutorial === null || snapshot?.tutorial === undefined ? null : <TutorialCoach tutorial={snapshot.tutorial} recoveryText={recoveryText} onDismiss={dismissTutorial} disabled={busy || status !== "connected"} />;
 
   return <div className="app-shell"><header className="topbar"><div className="brand"><BrandIcon /> <span>Bracken &amp; Beam</span></div><span className={`connection connection-${status}`} data-testid="connection-status"><span aria-hidden="true" />{connectionText[status]}</span><nav aria-label="Main navigation">{(["work", "explore", "audit"] as const).map((item) => <Button key={item} variant="quiet" aria-current={view === item ? "page" : undefined} onClick={() => setView(item)}>{item[0]!.toUpperCase() + item.slice(1)}</Button>)}</nav></header>
-    {view === "work" ? <main className="work-layout" data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} coach={coach} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => void confirmReceiptAndBack()} onUndo={undo} coach={coach} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} tutorialReceipt={snapshot.tutorialReceipt} savedProposal={snapshot.currentProposal} tutorialProposal={snapshot.tutorialProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} selectOrder={(orderId) => { setSelectedOrderId(orderId); if (orderId !== null) void reportTutorialAction({ action: "order_selected", orderId }); }} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openTutorialReceipt={() => setReceipt(snapshot.tutorialReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} openTutorialProposal={() => setProposal(snapshot.tutorialProposal)} selectReady={() => { void reportTutorialAction({ action: "ready_filter_selected" }); }} coach={coach} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} onSend={(message) => { try { const context: AgentViewContext = proposal !== null ? { view: "work", focus: { kind: "proposal", proposalId: proposal.id } } : receipt !== null ? { view: "work", focus: { kind: "receipt", receiptId: receipt.id } } : selectedOrderId !== null ? { view: "work", focus: { kind: "order", orderId: selectedOrderId } } : { view, focus: null }; sendAgentMessage(message, context); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><EmptyRoute title="Explore" text="Scenario guides and the tool catalogue arrive with agent integration." />{coach}</div> : <div data-view="audit"><EmptyRoute title="Audit" text="Inference activity arrives with agent integration. Command audit is already retained by the server." />{coach}</div>}
+    {view === "work" ? <main className="work-layout" data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} coach={coach} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => void confirmReceiptAndBack()} onUndo={undo} coach={coach} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} tutorialReceipt={snapshot.tutorialReceipt} savedProposal={snapshot.currentProposal} tutorialProposal={snapshot.tutorialProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} selectOrder={(orderId) => { setSelectedOrderId(orderId); if (orderId !== null) void reportTutorialAction({ action: "order_selected", orderId }); }} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openTutorialReceipt={() => setReceipt(snapshot.tutorialReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} openTutorialProposal={() => setProposal(snapshot.tutorialProposal)} selectReady={() => { void reportTutorialAction({ action: "ready_filter_selected" }); }} coach={coach} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} onSend={(message) => { try { const context: AgentViewContext = proposal !== null ? { view: "work", focus: { kind: "proposal", proposalId: proposal.id } } : receipt !== null ? { view: "work", focus: { kind: "receipt", receiptId: receipt.id } } : selectedOrderId !== null ? { view: "work", focus: { kind: "order", orderId: selectedOrderId } } : { view, focus: null }; sendAgentMessage(message, context); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><EmptyRoute title="Explore" text="Scenario guides and the tool catalogue arrive with agent integration." />{coach}</div> : <div data-view="audit"><AuditView page={auditPage} details={auditDetails} loading={auditLoading} error={auditError} revision={auditRevision} connected={status === "connected"} requestPage={requestAudit} requestDetail={requestAuditDetail} />{coach}</div>}
   </div>;
 }
