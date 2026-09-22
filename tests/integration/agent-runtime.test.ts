@@ -8,7 +8,7 @@ import { makeAgentCoordinator } from "../../src/server/agent-runtime";
 import type { ServerConfig } from "../../src/server/config";
 import { resolveIdentity } from "../../src/server/identity";
 import { runWithWorkspaceRepository, WorkspaceRepository, type AgentTurnRecord, type WorkspaceRepositoryService } from "../../src/server/persistence";
-import type { JevAdapter, MinistralAdapter, MinistralResult, ProviderMetadata } from "../../src/server/providers/contracts";
+import type { ChatMessage, JevAdapter, MinistralAdapter, MinistralRequest, MinistralResult, ProviderMetadata } from "../../src/server/providers/contracts";
 import { providerFailure } from "../../src/server/providers/http";
 import type { RealtimeHubService } from "../../src/server/realtime";
 
@@ -35,6 +35,20 @@ const hub = {
   publishAgent: () => Effect.void,
 } as unknown as RealtimeHubService;
 const workView = { view: "work", focus: null } as const;
+type ToolPayload = {
+  readonly ok?: boolean;
+  readonly truncated?: boolean;
+  readonly result?: {
+    readonly count?: number;
+    readonly orders?: ReadonlyArray<{ readonly id?: string; readonly status?: string }>;
+    readonly id?: string;
+    readonly changes?: ReadonlyArray<unknown>;
+    readonly omissions?: ReadonlyArray<unknown>;
+  };
+};
+const toolPayloads = (messages: ReadonlyArray<ChatMessage>) => messages
+  .filter((message): message is Extract<ChatMessage, { readonly role: "tool" }> => message.role === "tool")
+  .map((message) => ({ id: message.toolCallId, payload: JSON.parse(message.content) as ToolPayload }));
 
 const waitForTurn = async (repository: WorkspaceRepositoryService, turnId: string, statuses: ReadonlyArray<AgentTurnRecord["status"]>) => {
   const deadline = Date.now() + 5_000;
@@ -137,13 +151,62 @@ describe("agent runtime", () => {
     }));
   });
 
-  it("bounds repeated large tool results, reaches a terminal state, and admits the next turn", async () => {
+  it("keeps ordinary list and batch results useful in the next model request and stored history", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");
     let round = 0;
-    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => round++ === 0
-      ? result(Array.from({ length: 6 }, (_, index) => ({ id: `call_list_${index}`, name: "listOrders", arguments: {} })))
-      : result([], "Done.")) };
+    let nextRequest: MinistralRequest | null = null;
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      if (round++ === 0) return result([
+        { id: "call_all", name: "listOrders", arguments: {} },
+        { id: "call_ready", name: "listOrders", arguments: { status: "ready" } },
+        { id: "call_batch", name: "prepareBatch", arguments: {} },
+      ]);
+      nextRequest = request;
+      return result([], "Done.");
+    }) };
+    await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev }, { finalAcknowledgementMs: 200 });
+      const turnId = "turn_12345678-useful";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "request-useful", message: "Inspect the queue and prepare the ready batch.", viewContext: workView, connectionId: "connection-useful", send: async (message) => {
+        if (message.type === "agent_ui_operation") queueMicrotask(() => coordinator.acknowledgeUi(identity, 1, turnId, message.operation.id, "connection-useful", "applied"));
+      } }));
+      const terminal = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      const modelResults = toolPayloads(nextRequest?.messages ?? []);
+      const storedResults = toolPayloads(terminal.history);
+      for (const results of [modelResults, storedResults]) {
+        expect(results).toHaveLength(3);
+        const all = results.find((entry) => entry.id === "call_all")?.payload;
+        expect(all).toMatchObject({ ok: true, result: { count: 24 } });
+        expect(all?.truncated).toBeUndefined();
+        expect(all?.result?.orders).toHaveLength(24);
+        expect(all?.result?.orders?.map((order) => order.id)).toContain("BB-1072");
+        const ready = results.find((entry) => entry.id === "call_ready")?.payload;
+        expect(ready).toMatchObject({ ok: true, result: { count: 6 } });
+        expect(ready?.result?.orders).toHaveLength(6);
+        expect(ready?.result?.orders?.every((order) => order.status === "ready")).toBe(true);
+        const batch = results.find((entry) => entry.id === "call_batch")?.payload;
+        expect(batch?.truncated).toBeUndefined();
+        expect(batch?.result?.id).toMatch(/^proposal_/);
+        expect(batch?.result?.changes).toHaveLength(6);
+        expect(batch?.result?.omissions).toHaveLength(18);
+      }
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "connection-useful")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it("retains six bounded list results, reaches a terminal state, and admits the next turn", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const filename = join(directory, "workspace.sqlite");
+    let round = 0;
+    let nextRequest: MinistralRequest | null = null;
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      if (round++ === 0) return result(Array.from({ length: 6 }, (_, index) => ({ id: `call_list_${index}`, name: "listOrders", arguments: {} })));
+      nextRequest = request;
+      return result([], "Done.");
+    }) };
     await runWithWorkspaceRepository(filename, Effect.gen(function* () {
       const repository = yield* WorkspaceRepository;
       const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev }, { finalAcknowledgementMs: 200 });
@@ -151,9 +214,12 @@ describe("agent runtime", () => {
       yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: firstTurn, requestId: "request-size", message: "List the orders in several ways.", viewContext: workView, connectionId: "connection-size", send: async () => undefined }));
       const terminal = yield* Effect.promise(() => waitForTurn(repository, firstTurn, ["waiting_for_ui"]));
       expect(terminal.phase).toBe("Rendering answer");
-      expect(new TextEncoder().encode(JSON.stringify(terminal.history)).byteLength).toBeLessThan(32 * 1024);
-      expect(terminal.history.filter((message) => message.role === "tool")).toHaveLength(6);
-      expect(terminal.history.filter((message) => message.role === "tool").every((message) => message.role === "tool" && message.content.includes('"truncated":true'))).toBe(true);
+      expect(new TextEncoder().encode(JSON.stringify(terminal.history)).byteLength).toBeLessThan(28 * 1024);
+      for (const results of [toolPayloads(nextRequest?.messages ?? []), toolPayloads(terminal.history)]) {
+        expect(results).toHaveLength(6);
+        expect(results.every(({ payload }) => payload.truncated === undefined && payload.result?.count === 24 && payload.result.orders?.length === 24)).toBe(true);
+        expect(results.every(({ payload }) => payload.result?.orders?.some((order) => order.id === "BB-1042" && order.status === "review"))).toBe(true);
+      }
       expect(coordinator.acknowledgeComplete(identity, 1, firstTurn, "connection-size")).toBe(true);
       yield* repository.completeAgentMeasurement(identity, 1, firstTurn, 75);
 

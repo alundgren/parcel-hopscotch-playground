@@ -18,7 +18,7 @@ const maximumCallsPerRound = 6;
 const uiTimeoutMs = 5_000;
 const finalAcknowledgementTimeoutMs = 5_000;
 const historyBytes = 24 * 1024;
-const maximumToolResultBytes = 2 * 1024;
+const maximumToolResultBytes = 4 * 1024;
 const encoder = new TextEncoder();
 
 type RuntimeFiber = ReturnType<typeof Effect.runFork>;

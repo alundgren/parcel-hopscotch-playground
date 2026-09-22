@@ -281,7 +281,7 @@ const agentTurnRecord = (row: AgentTurnRow): AgentTurnRecord => ({
 });
 
 const maximumStoredHistoryBytes = 28 * 1024;
-const maximumStoredToolResultBytes = 2 * 1024;
+const maximumStoredToolResultBytes = 4 * 1024;
 const encodedBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 const compactStoredToolResult = (message: ChatMessage): ChatMessage => {
   if (message.role !== "tool" || new TextEncoder().encode(message.content).byteLength <= maximumStoredToolResultBytes) return message;

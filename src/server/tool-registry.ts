@@ -22,6 +22,13 @@ const orderResult = Schema.Struct({
   businessValue: Schema.String,
   evidence: Schema.Array(Schema.Struct({ label: Schema.String, value: Schema.String, occurredAt: Schema.String, age: Schema.String })),
 });
+const orderListResult = Schema.Struct({
+  id: Schema.String,
+  item: Schema.String,
+  issue: Schema.String,
+  status: OrderStatus,
+  family: ResolutionFamily,
+});
 
 export type ToolCategory = "Read" | "Guide" | "Prepare" | "Classify";
 export interface ToolExample { readonly arguments: unknown; readonly result: unknown }
@@ -59,9 +66,9 @@ const specs = {
   listOrders: {
     description: "Find the current user's fulfilment orders using bounded application filters.",
     category: "Read", purpose: "Find orders", allowedEffects: ["read_workspace"],
-    example: { arguments: { status: "ready" }, result: { orders: [{ id: "BB-1051", status: "ready" }] } },
+    example: { arguments: { status: "ready" }, result: { count: 1, orders: [{ id: "BB-1051", item: "Stoneware mug", issue: "Blue unavailable", status: "ready", family: "substitution" }] } },
     input: Schema.Struct({ status: Schema.optionalKey(OrderStatus), family: Schema.optionalKey(ResolutionFamily), query: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(80))) }),
-    output: Schema.Struct({ orders: Schema.Array(orderResult) }),
+    output: Schema.Struct({ count: Schema.Int, orders: Schema.Array(orderListResult) }),
   },
   getOrder: {
     description: "Read one current user's order and its evidence by opaque order ID.",
