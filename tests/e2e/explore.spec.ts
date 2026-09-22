@@ -75,7 +75,7 @@ test("launches the orientation, tutorial, and batch scenarios through working fl
   await page.getByRole("button", { name: "Explore", exact: true }).click();
   await page.getByRole("button", { name: "Try in Work: Make a batch decision" }).click();
   await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
-  await expect(page.getByText("Nothing changes until you accept the batch.")).toBeVisible();
+  await expect(page.getByText("Nothing changes until you accept it.")).toBeVisible();
   await expect(page.getByText("Accepted by you")).toHaveCount(0);
   await pause(page);
   await page.getByRole("button", { name: "Cancel" }).click();

@@ -52,7 +52,7 @@ Repeat the install when the pinned Playwright version changes. CI already runs
 this command. Chromium is a development dependency; the production Docker image
 does not need it.
 
-Use `vp run proof:visual` for the existing Work, Explore, and Audit comparisons at
+Use `vp run proof:visual` for the Work, Explore, Audit, prepared-batch, and acknowledgement comparisons at
 1440×1000 and 320×900. Playwright starts the app with disposable SQLite data and
 serves the prototype and assets from `docs` at
 `http://127.0.0.1:4174/design/approved-prototype.html` using Python 3. Both servers
@@ -75,9 +75,11 @@ and leave visual approval pending. A security rejection must be reported, not
 retried through alternative access routes.
 
 
-Playwright uses the scripted providers through the real WebSocket transport and SQLite repository. It records videos in `test-results/`. The visual command creates six same-state comparisons against the unchanged approved prototype at 1440 by 1000 and 320 by 900. The video command records readable desktop and narrow demonstrations. Its pauses occur after the measured completion boundaries.
+Playwright uses the scripted providers through the real WebSocket transport and SQLite repository. It records videos in `test-results/`. The visual command creates ten same-state comparisons against the unchanged approved prototype at 1440 by 1000 and 320 by 900. The video command records readable desktop and narrow demonstrations. Its pauses occur after the measured completion boundaries.
 
-The retained [acceptance report](docs/acceptance-report.md) documents 36 browser cases and separate server-turn, Send-to-completed-work and Accept-to-visible samples. The [live benchmark report](docs/benchmarks/2026-09-22-live/README.md) retains the single authorized 28-request run. Jev sent no token cap; its question, choice, request and response byte, and timeout bounds are recorded in the report correction. The 64-token cap applies only to Ministral constrained requests. Benchmark scenarios and ordinary agent turns request at most 256 tokens, while the provider adapter rejects values above 512. One of two live tool scenarios remained incomplete and is reported that way.
+The retained [acceptance report](docs/acceptance-report.md) documents 36 browser cases and separate server-turn, Send-to-completed-work and Accept-to-visible samples. The [live benchmark report](docs/benchmarks/2026-09-22-live/README.md) retains the single authorized 28-request run. Jev sent no token cap; its question, choice, request and response byte, and timeout bounds are recorded in the report correction. The 64-token cap applies only to Ministral constrained requests. Those historical benchmark scenarios requested at most 256 tokens. Current agent turns allow 4,096 output tokens per request, up to eight model requests per turn and six tool calls per request. Chat responses are limited to 2 MiB and 120 seconds per provider attempt; Jev keeps its separate limits. One of two live tool scenarios remained incomplete and is reported that way.
+
+The separate [human-run live acceptance suite](docs/live-acceptance.md) covers all four Explore scenarios and every registered tool with repeated real inference. It is delivered outside this checkout and uses only `PARCEL_LIVE_TEST_API_KEY`. The owner runs the paid suite.
 
 ## Local container review
 

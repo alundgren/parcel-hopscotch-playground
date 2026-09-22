@@ -3,20 +3,20 @@ import { expect, test, type Browser, type Page, type TestInfo } from "@playwrigh
 
 type MainView = "Work" | "Explore" | "Audit";
 
-const capture = async (page: Page, path: string) => {
-  await page.evaluate(async () => {
+const capture = async (page: Page, path: string, resetScroll = true) => {
+  await page.evaluate(async (resetScroll) => {
     await document.fonts.ready;
     await Promise.all(Array.from(document.images, (image) => image.decode()));
-    window.scrollTo(0, 0);
+    if (resetScroll) window.scrollTo(0, 0);
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-  });
+  }, resetScroll);
   await page.screenshot({ path, animations: "disabled" });
 };
 
 const comparison = async (
   browser: Browser,
   testInfo: TestInfo,
-  view: MainView,
+  view: MainView | "Proposal" | "Acknowledgement",
   referencePath: string,
   actualPath: string,
 ) => {
@@ -101,6 +101,40 @@ test("captures approved and actual Work, Explore, and Audit at the project viewp
       await testInfo.attach(`${view} ${testInfo.project.name} reference`, { path: referencePath, contentType: "image/png" });
       await testInfo.attach(`${view} ${testInfo.project.name} actual`, { path: actualPaths.get(view)!, contentType: "image/png" });
     }
+  } finally {
+    await referenceContext.close();
+  }
+});
+
+test("compares a prepared batch awaiting human acceptance", async ({ page, context, browser }, testInfo) => {
+  await context.setExtraHTTPHeaders({
+    "Cf-Access-Authenticated-User-Email": `proposal-proof-${testInfo.project.name}@example.test`,
+  });
+  await page.goto("/");
+  await expect(page.getByTestId("connection-status")).toContainText("Connected");
+  await page.getByRole("button", { name: "Explore", exact: true }).click();
+  await page.getByRole("button", { name: "Try in Work: Make a batch decision" }).click();
+  await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
+  await expect(page.locator('[data-chat-role="assistant"]').last()).toContainText("Nothing changes until you accept");
+  await expect(page.getByPlaceholder("Message...")).toBeEnabled();
+  const actualPath = testInfo.outputPath(`actual-proposal-${testInfo.project.name}.png`);
+  await capture(page, actualPath);
+  const referenceContext = await browser.newContext({ ...testInfo.project.use });
+  try {
+    const referencePage = await referenceContext.newPage();
+    await referencePage.goto("http://127.0.0.1:4174/design/approved-prototype.html");
+    await referencePage.getByRole("button", { name: "Try in Work: Make a batch decision" }).click();
+    await expect(referencePage.getByRole("heading", { name: "Review 2 changes" })).toBeVisible();
+    const referencePath = testInfo.outputPath(`reference-proposal-${testInfo.project.name}.png`);
+    await capture(referencePage, referencePath);
+    await comparison(browser, testInfo, "Proposal", referencePath, actualPath);
+    await page.getByPlaceholder("Message...").scrollIntoViewIfNeeded();
+    await referencePage.getByPlaceholder("Message...").scrollIntoViewIfNeeded();
+    const actualChat = testInfo.outputPath(`actual-acknowledgement-${testInfo.project.name}.png`);
+    const referenceChat = testInfo.outputPath(`reference-acknowledgement-${testInfo.project.name}.png`);
+    await capture(page, actualChat, false);
+    await capture(referencePage, referenceChat, false);
+    await comparison(browser, testInfo, "Acknowledgement", referenceChat, actualChat);
   } finally {
     await referenceContext.close();
   }

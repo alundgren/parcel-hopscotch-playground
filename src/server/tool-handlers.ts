@@ -27,7 +27,8 @@ const findOrder = async (context: ToolContext, orderId: string) => {
 };
 
 const present = async (context: ToolContext, proposal: ReviewedProposal) => {
-  await context.requestUi({ kind: "present_proposal", proposalId: proposal.id });
+  const shown = await context.requestUi({ kind: "present_proposal", proposalId: proposal.id });
+  if (!shown.applied) throw new ToolExecutionError("tool_failed", "The proposal was saved but could not be displayed. Open the saved proposal in Work to review it.");
   return proposal;
 };
 

@@ -114,7 +114,7 @@ const specs = {
     output: Schema.Struct({ count: Schema.Int, orders: Schema.Array(orderListResult) }),
   },
   getOrder: {
-    description: "Read one current user's order and its evidence by opaque order ID.",
+    description: "Look up an order ID such as BB-1042 and read its current details and evidence. Use this for order IDs, not classifyNote.",
     category: "Read", purpose: "Inspect an order", allowedEffects: ["read_workspace"],
     example: { arguments: { orderId: "BB-1042" }, result: { order: {
       id: "BB-1042", item: "Woven basket", issue: "Street number needs checking.", status: "review", family: "address", version: 1,
@@ -150,7 +150,7 @@ const specs = {
     input: Schema.Struct({ target: Schema.Literals(["workQueue", "readyFilter", "chatComposer", "orderRow", "orderEvidence"]), orderId: Schema.optionalKey(Identifier) }), output: ResultMessage,
   },
   startTutorial: {
-    description: "Start one bounded application tutorial for the current workspace. Real user actions advance it.",
+    description: "Teach a task with address-correction, substitution-review, or batch-approval. Choose the tutorial matching the inspected order or requested workflow. Real user actions advance it.",
     category: "Guide", purpose: "Teach a task", allowedEffects: ["start_bounded_tutorial"],
     example: { arguments: { tutorialId: "address-correction" }, result: { id: "address-correction", instanceId: "tutorial_example", title: "Address correction", step: 0, totalSteps: 8, phase: "teaching", instruction: "Open BB-1042 and compare the saved address with the evidence.", targetId: "target-order-BB-1042" } },
     input: Schema.Struct({ tutorialId: TutorialId }), output: TutorialState,
@@ -191,7 +191,7 @@ const specs = {
     input: Schema.Struct({ receiptId: Identifier }), output: ProposalOutput,
   },
   classifyNote: {
-    description: "Use Jev to classify a short note into the application's six exception families plus other.",
+    description: "Classify actual customer or operator note text into the six exception families plus other using Jev. Never pass an order ID or an order lookup request; use getOrder to retrieve evidence first.",
     category: "Classify", purpose: "Classify a note", allowedEffects: ["provider_classification", "read_only"],
     example: { arguments: { note: "Carrier missed collection." }, result: { category: "carrier", confidence: 0.98, alternatives: [{ category: "carrier", probability: 0.98 }, { category: "other", probability: 0.02 }] } },
     input: Schema.Struct({ note: ShortText }),

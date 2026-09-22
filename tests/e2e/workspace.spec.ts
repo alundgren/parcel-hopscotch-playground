@@ -178,7 +178,7 @@ test("uses the agent to inspect evidence, prepare a batch for human acceptance, 
   await composer.fill("Prepare all the green orders as a batch.");
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
-  await expect(page.getByText("The eligible orders are ready for your review. Nothing changes until you accept the batch.")).toBeVisible();
+  await expect(page.getByText("The proposal is ready for your review. Nothing changes until you accept it.")).toBeVisible();
   await expect(page.getByText("Accepted by you")).toHaveCount(0);
   await expect(page.getByLabel("Orders left out")).toContainText("BB-1088");
   await page.screenshot({ path: testInfo.outputPath("agent-batch-review.png"), fullPage: true });
