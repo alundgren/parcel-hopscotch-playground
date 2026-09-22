@@ -9,6 +9,8 @@ import {
   runAuditedJev,
   runAuditedMinistral,
 } from "./providers/index.js";
+import { makeToolRegistry, modelToolsFromRegistry } from "./tool-registry.js";
+import { toolHandlers } from "./tool-handlers.js";
 
 const localKey = async (): Promise<string | null> => {
   if (process.env.OPENROUTER_API_KEY?.trim()) {
@@ -46,6 +48,8 @@ const identity = await Effect.runPromise(
     databasePath: ".tmp/provider-smoke.sqlite",
     allowDevelopmentIdentity: true,
     developmentEmail: "provider-smoke@example.test",
+    agentMode: "live",
+    openRouterApiKey: key,
   }),
 );
 
@@ -59,6 +63,8 @@ const jev = makeJevAdapter({
   timeoutMs: 20_000,
   maximumConcurrency: 1,
 });
+const registry = makeToolRegistry(toolHandlers);
+const modelTools = modelToolsFromRegistry(registry);
 
 const result = await runWithWorkspaceRepository(
   process.env.DATABASE_PATH ?? ".tmp/provider-smoke.sqlite",
@@ -78,31 +84,24 @@ const result = await runWithWorkspaceRepository(
       {
         messages: [
           {
-            role: "user",
-            content: "Look up order BB-1042. Use the provided tool and do not add prose.",
+            role: "system",
+            content: "Use the registered tools for fulfilment work. Never accept or commit a proposal.",
           },
-        ],
-        tools: [
           {
-            name: "getOrder",
-            description: "Read one fictional fulfilment order by its ID.",
-            parameters: {
-              type: "object",
-              properties: { orderId: { type: "string" } },
-              required: ["orderId"],
-              additionalProperties: false,
-            },
-            validateArguments: (value) => {
-              if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-              const record = value as Record<string, unknown>;
-              return Object.keys(record).length === 1 && record.orderId === "BB-1042";
-            },
+            role: "user",
+            content: "Look up order BB-1042. Choose the correct registered tool and do not add prose.",
           },
         ],
-        toolChoice: { name: "getOrder" },
+        tools: modelTools,
+        toolChoice: "auto",
         maxOutputTokens: 64,
       },
     );
+    const selected = chat.toolCalls.find((call) => call.name === "getOrder");
+    const getOrder = modelTools.find((tool) => tool.name === "getOrder");
+    if (selected === undefined || getOrder === undefined || !getOrder.validateArguments(selected.arguments)) {
+      throw new Error("Ministral did not select getOrder with valid bounded arguments.");
+    }
     const decisions = yield* runAuditedJev(
       {
         repository,

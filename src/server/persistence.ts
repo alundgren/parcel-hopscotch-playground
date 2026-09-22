@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
-import type { CommandReceipt, OrderStatus, ReviewedProposal, WorkspaceSnapshot } from "../shared/contracts.js";
+import type { AgentViewContext, CommandReceipt, OrderStatus, ReviewedProposal, WorkspaceSnapshot } from "../shared/contracts.js";
+import type { ChatMessage } from "./providers/contracts.js";
 import { targets } from "../shared/targets.js";
 import { evaluateResolution, initialStateFor, materializeResolution, resolutionBlockReason, resolutionFacts, type InventoryCondition, type OrderBusinessState, type ResolutionPolicy } from "./fulfilment.js";
 import type { RequestIdentity } from "./identity.js";
@@ -19,6 +20,35 @@ interface StoredReceipt { readonly public: CommandReceipt; readonly applied: Rea
 
 export interface CommandCommit { readonly receipt: CommandReceipt; readonly snapshot: WorkspaceSnapshot; readonly generationChanged: boolean }
 export interface ScenarioCommit { readonly message: string; readonly snapshot: WorkspaceSnapshot }
+export interface AgentTurnRecord {
+  readonly id: string;
+  readonly generation: number;
+  readonly requestId: string;
+  readonly connectionId: string;
+  readonly status: NonNullable<WorkspaceSnapshot["activeTurn"]>["status"];
+  readonly phase: string;
+  readonly history: ReadonlyArray<ChatMessage>;
+  readonly error: string | null;
+  readonly proposalId: string | null;
+  readonly startedAt: string;
+  readonly finishedAt: string | null;
+  readonly completeDurationMs: number | null;
+  readonly measurement: NonNullable<WorkspaceSnapshot["activeTurn"]>["measurement"];
+}
+export interface AgentTurnUpdate {
+  readonly status: AgentTurnRecord["status"];
+  readonly phase: string;
+  readonly history: ReadonlyArray<ChatMessage>;
+  readonly error?: string | null;
+  readonly proposalId?: string | null;
+  readonly finishedAt?: string | null;
+  readonly measurement?: AgentTurnRecord["measurement"];
+}
+export type ResolvedAgentViewContext =
+  | { readonly view: "work" | "explore" | "audit"; readonly focus: null }
+  | { readonly view: "work"; readonly focus: { readonly kind: "order"; readonly order: { readonly id: string; readonly item: string; readonly issue: string; readonly status: OrderStatus; readonly businessValue: string; readonly evidence: ReadonlyArray<{ readonly label: string; readonly value: string }> } } }
+  | { readonly view: "work"; readonly focus: { readonly kind: "proposal"; readonly proposal: Pick<ReviewedProposal, "id" | "kind" | "title" | "ready" | "changes" | "omissions" | "effects"> } }
+  | { readonly view: "work"; readonly focus: { readonly kind: "receipt"; readonly receipt: Pick<CommandReceipt, "id" | "kind" | "title" | "changes" | "undoable"> } };
 export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly snapshot: (identity: RequestIdentity, now?: number) => Effect.Effect<WorkspaceSnapshot, WorkspaceStoreError>;
   readonly orderIds: (identity: RequestIdentity) => Effect.Effect<ReadonlyArray<string>, WorkspaceStoreError>;
@@ -28,8 +58,27 @@ export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly prepareReset: (identity: RequestIdentity, generation: number) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
   readonly accept: (identity: RequestIdentity, generation: number, proposalId: string, idempotencyKey: string) => Effect.Effect<CommandCommit, WorkspaceCommandError | WorkspaceStoreError>;
   readonly advanceScenario: (identity: RequestIdentity, generation: number) => Effect.Effect<ScenarioCommit, WorkspaceCommandError | WorkspaceStoreError>;
+  readonly createAgentTurn: (identity: RequestIdentity, generation: number, turnId: string, requestId: string, connectionId: string, message: string) => Effect.Effect<{ readonly created: boolean; readonly turn: AgentTurnRecord }, WorkspaceCommandError>;
+  readonly updateAgentTurn: (identity: RequestIdentity, generation: number, turnId: string, update: AgentTurnUpdate) => Effect.Effect<AgentTurnRecord, WorkspaceCommandError>;
+  readonly agentTurn: (identity: RequestIdentity, generation: number, turnId: string) => Effect.Effect<AgentTurnRecord | null, WorkspaceCommandError>;
+  readonly agentHistories: (identity: RequestIdentity, generation: number, excludeTurnId: string, limit?: number) => Effect.Effect<ReadonlyArray<ReadonlyArray<ChatMessage>>, WorkspaceCommandError>;
+  readonly resolveAgentViewContext: (identity: RequestIdentity, generation: number, context: AgentViewContext) => Effect.Effect<ResolvedAgentViewContext, WorkspaceCommandError>;
+  readonly completeAgentMeasurement: (identity: RequestIdentity, generation: number, turnId: string, durationMs: number) => Effect.Effect<void, WorkspaceCommandError>;
+  readonly recordCommandMeasurement: (identity: RequestIdentity, generation: number, receiptId: string, durationMs: number) => Effect.Effect<void, WorkspaceCommandError>;
+  readonly markAgentConnectionIncomplete: (identity: RequestIdentity, connectionId: string) => Effect.Effect<void>;
+  readonly recoverAgentTurns: () => Effect.Effect<number>;
 }
 export class WorkspaceRepository extends Context.Service<WorkspaceRepository, WorkspaceRepositoryService>()("parcel-hopscotch/WorkspaceRepository") {}
+
+const chatMessageId = (userId: string, generation: number, turnId: string, role: string): string => {
+  const namespace = createHash("sha256").update(`${userId}\0${generation}\0${turnId}\0${role}`).digest("hex").slice(0, 20);
+  return `${turnId}:${namespace}:${role}`;
+};
+
+const chatTurnId = (id: string): string => {
+  const separator = id.indexOf(":");
+  return separator === -1 ? id : id.slice(0, separator);
+};
 
 const statusLabels: Record<OrderStatus, string> = { ready: "Ready", review: "Review", waiting: "Waiting" };
 const ageLabel = (occurredAt: string, now: number): string => {
@@ -60,6 +109,25 @@ const migrate = (database: DatabaseSync) => {
     CREATE TABLE IF NOT EXISTS proposals (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, proposal_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, payload_json TEXT NOT NULL, committed_at TEXT NOT NULL, undone_by TEXT, UNIQUE (user_id, generation, idempotency_key), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS chat_messages (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, role TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS agent_turns (
+      id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      request_id TEXT NOT NULL,
+      connection_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      phase TEXT NOT NULL,
+      history_json TEXT NOT NULL,
+      error_message TEXT,
+      proposal_id TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      complete_duration_ms REAL,
+      measurement TEXT NOT NULL,
+      PRIMARY KEY (user_id, generation, id),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS agent_turns_user_started ON agent_turns (user_id, generation, started_at DESC);
     CREATE TABLE IF NOT EXISTS tutorial_state (user_id TEXT NOT NULL, generation INTEGER NOT NULL, tutorial_id TEXT NOT NULL, step INTEGER NOT NULL, PRIMARY KEY (user_id, generation, tutorial_id), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS audit_records (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, body_json TEXT NOT NULL, completed_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS provider_attempts (
@@ -199,11 +267,94 @@ const attemptSummary = (row: Omit<AttemptRow, "request_json" | "response_json">)
   retryCount: Number(row.retry_count),
 });
 
-const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, now = Date.now()): WorkspaceSnapshot => {
+type AgentTurnRow = {
+  id: string; generation: number; request_id: string; connection_id: string;
+  status: AgentTurnRecord["status"]; phase: string; history_json: string;
+  error_message: string | null; proposal_id: string | null; started_at: string;
+  finished_at: string | null; complete_duration_ms: number | null;
+  measurement: AgentTurnRecord["measurement"];
+};
+const agentTurnRecord = (row: AgentTurnRow): AgentTurnRecord => ({
+  id: row.id,
+  generation: Number(row.generation),
+  requestId: row.request_id,
+  connectionId: row.connection_id,
+  status: row.status,
+  phase: row.phase,
+  history: JSON.parse(row.history_json) as ReadonlyArray<ChatMessage>,
+  error: row.error_message,
+  proposalId: row.proposal_id,
+  startedAt: row.started_at,
+  finishedAt: row.finished_at,
+  completeDurationMs: row.complete_duration_ms === null ? null : Number(row.complete_duration_ms),
+  measurement: row.measurement,
+});
+
+const maximumStoredHistoryBytes = 28 * 1024;
+const maximumStoredToolResultBytes = 4 * 1024;
+const encodedBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+const compactStoredToolResult = (message: ChatMessage): ChatMessage => {
+  if (message.role !== "tool" || new TextEncoder().encode(message.content).byteLength <= maximumStoredToolResultBytes) return message;
+  let outcome = "completed";
+  try {
+    const parsed = JSON.parse(message.content) as { ok?: unknown };
+    outcome = parsed.ok === false ? "failed" : parsed.ok === true ? "completed" : "returned a result";
+  } catch {
+    outcome = "returned a result";
+  }
+  return {
+    ...message,
+    content: JSON.stringify({ ok: outcome === "completed", truncated: true, summary: `The tool ${outcome}; its full result exceeded the stored context limit.` }),
+  };
+};
+const groupHistory = (history: ReadonlyArray<ChatMessage>): Array<Array<ChatMessage>> => {
+  const groups: Array<Array<ChatMessage>> = [];
+  for (const message of history) {
+    const previous = groups.at(-1);
+    if (message.role === "tool" && previous?.[0]?.role === "assistant" && previous[0].toolCalls !== undefined) previous.push(message);
+    else groups.push([message]);
+  }
+  return groups;
+};
+const boundStoredHistory = (history: ReadonlyArray<ChatMessage>): ReadonlyArray<ChatMessage> => {
+  const compacted = history.map(compactStoredToolResult);
+  if (encodedBytes(compacted) <= maximumStoredHistoryBytes) return compacted;
+  const groups = groupHistory(compacted);
+  const first = groups[0]?.[0]?.role === "user" ? groups[0]! : [];
+  const candidates = first.length === 0 ? groups : groups.slice(1);
+  const selected: Array<Array<ChatMessage>> = [];
+  const omitted: Array<Array<ChatMessage>> = [];
+  const summary: ChatMessage = { role: "assistant", content: "Earlier tool outcomes were omitted from stored context because this turn reached its history limit." };
+  let bytes = encodedBytes([...first, summary]);
+  for (const group of [...candidates].reverse()) {
+    const groupBytes = encodedBytes(group);
+    if (bytes + groupBytes > maximumStoredHistoryBytes) omitted.unshift(group);
+    else { selected.unshift(group); bytes += groupBytes; }
+  }
+  return omitted.length === 0 ? [...first, ...selected.flat()] : [...first, summary, ...selected.flat()];
+};
+
+const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMode: WorkspaceSnapshot["agentMode"], now = Date.now()): WorkspaceSnapshot => {
   const user = ensureUser(database, identity);
   const orders = database.prepare(`SELECT order_id, item, issue, status, family, version, resolved, state_json FROM orders WHERE user_id = ? AND completed = 0 ORDER BY CASE order_id WHEN 'BB-1051' THEN 0 WHEN 'BB-1063' THEN 1 WHEN 'BB-1042' THEN 2 WHEN 'BB-1088' THEN 3 ELSE 4 END, seed_position`).all(user.id) as Array<{ order_id: string; item: string; issue: string; status: OrderStatus; family: WorkspaceSnapshot["orders"][number]["family"]; version: number; resolved: number; state_json: string }>;
   const evidence = database.prepare("SELECT order_id, label, value, occurred_at FROM order_evidence WHERE user_id = ? ORDER BY order_id, occurred_at").all(user.id) as Array<{ order_id: string; label: string; value: string; occurred_at: string }>;
   const receipt = database.prepare("SELECT payload_json FROM receipts WHERE user_id = ? AND generation = ? ORDER BY committed_at DESC, rowid DESC LIMIT 1").get(user.id, user.generation) as { payload_json: string } | undefined;
+  const messages = database.prepare("SELECT id, role, body, created_at FROM chat_messages WHERE user_id = ? AND generation = ? ORDER BY created_at DESC, rowid DESC LIMIT 60").all(user.id, user.generation) as Array<{ id: string; role: "user" | "assistant"; body: string; created_at: string }>;
+  const messageGroups = new Map<string, Array<(typeof messages)[number]>>();
+  for (const message of messages.reverse()) {
+    const turnId = chatTurnId(message.id);
+    messageGroups.set(turnId, [...(messageGroups.get(turnId) ?? []), message]);
+  }
+  const selectedMessages: Array<(typeof messages)[number]> = [];
+  let selectedMessageBytes = 0;
+  for (const group of [...messageGroups.values()].reverse()) {
+    const bytes = new TextEncoder().encode(JSON.stringify(group)).byteLength;
+    if (selectedMessageBytes + bytes > 64 * 1024) break;
+    selectedMessages.unshift(...group);
+    selectedMessageBytes += bytes;
+  }
+  const active = database.prepare("SELECT * FROM agent_turns WHERE user_id = ? AND generation = ? AND status IN ('running', 'waiting_for_ui') ORDER BY started_at DESC LIMIT 1").get(user.id, user.generation) as AgentTurnRow | undefined;
+  const pendingProposal = database.prepare("SELECT payload_json FROM proposals WHERE user_id = ? AND generation = ? AND status = 'pending' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(user.id, user.generation) as { payload_json: string } | undefined;
   return {
     generation: user.generation,
     sequence: sequenceFor(database, user.id, user.generation),
@@ -216,6 +367,19 @@ const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, now = D
       return { id: item.order_id, item: item.item, issue: item.issue, status, statusLabel: statusLabels[status], family: item.family, version: Number(item.version), businessValue: currentState.summary, targetId: targets.orderRow(item.order_id), evidence: evidence.filter((entry) => entry.order_id === item.order_id).map((entry) => ({ label: entry.label, value: entry.value, occurredAt: entry.occurred_at, age: ageLabel(entry.occurred_at, now) })) };
     }),
     latestReceipt: receipt === undefined ? null : (JSON.parse(receipt.payload_json) as StoredReceipt).public,
+    currentProposal: pendingProposal === undefined ? null : (JSON.parse(pendingProposal.payload_json) as StoredProposal).public,
+    chat: selectedMessages.map((message) => ({
+      id: message.id,
+      turnId: chatTurnId(message.id),
+      role: message.role,
+      content: message.body,
+      createdAt: message.created_at,
+    })),
+    activeTurn: active === undefined ? null : (() => {
+      const turn = agentTurnRecord(active);
+      return { id: turn.id, generation: turn.generation, status: turn.status, phase: turn.phase, error: turn.error, startedAt: turn.startedAt, finishedAt: turn.finishedAt, completeDurationMs: turn.completeDurationMs, measurement: turn.measurement };
+    })(),
+    agentMode,
   };
 };
 
@@ -248,12 +412,12 @@ const preparePolicy = (database: DatabaseSync, userId: string, orderId: string):
   return { ready: true, policy: { ...evaluation.policy, priorStatus: affected.status, priorIssue: affected.issue, priorCompleted: Number(affected.completed), priorResolved: Number(affected.resolved), priorState: JSON.parse(affected.state_json) as OrderBusinessState, nextCompleted: Number(affected.completed), nextResolved: 1 } };
 };
 
-const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, Effect.acquireRelease(
+const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMode"]) => Layer.effect(WorkspaceRepository, Effect.acquireRelease(
   Effect.sync(() => { const database = new DatabaseSync(filename); migrate(database); return database; }),
   (database) => Effect.sync(() => database.close()),
 ).pipe(Effect.map((database) => {
   const command = <A>(run: () => A) => Effect.try({ try: run, catch: (error) => error instanceof WorkspaceCommandError ? error : fail("command_failed", String(error)) });
-  const snapshot: WorkspaceRepositoryService["snapshot"] = (identity, now) => Effect.try({ try: () => readSnapshot(database, identity, now), catch: (error) => new WorkspaceStoreError({ message: `Could not read the workspace: ${String(error)}` }) });
+  const snapshot: WorkspaceRepositoryService["snapshot"] = (identity, now) => Effect.try({ try: () => readSnapshot(database, identity, agentMode, now), catch: (error) => new WorkspaceStoreError({ message: `Could not read the workspace: ${String(error)}` }) });
   const orderIds: WorkspaceRepositoryService["orderIds"] = (identity) => snapshot(identity).pipe(Effect.map((state) => state.orders.map((order) => order.id)));
   const prepareResolution: WorkspaceRepositoryService["prepareResolution"] = (identity, generation, orderId) => command(() => transact(database, () => {
     const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
@@ -315,12 +479,12 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
     const keyed = database.prepare("SELECT proposal_id, payload_json FROM receipts WHERE user_id = ? AND generation = ? AND idempotency_key = ?").get(user.id, generation, idempotencyKey) as { proposal_id: string; payload_json: string } | undefined;
     if (keyed !== undefined) {
       if (keyed.proposal_id !== proposalId) throw fail("idempotency_conflict", "That acceptance key was already used for another proposal.");
-      return { receipt: (JSON.parse(keyed.payload_json) as StoredReceipt).public, snapshot: readSnapshot(database, identity), generationChanged: false };
+      return { receipt: (JSON.parse(keyed.payload_json) as StoredReceipt).public, snapshot: readSnapshot(database, identity, agentMode), generationChanged: false };
     }
     const priorReceipt = database.prepare("SELECT payload_json FROM receipts WHERE user_id = ? AND generation = ? AND proposal_id = ? ORDER BY committed_at LIMIT 1").get(user.id, generation, proposalId) as { payload_json: string } | undefined;
     if (proposalRow.status === "accepted") {
       if (priorReceipt === undefined) throw fail("proposal_state_invalid", "The accepted proposal has no receipt.");
-      return { receipt: (JSON.parse(priorReceipt.payload_json) as StoredReceipt).public, snapshot: readSnapshot(database, identity), generationChanged: false };
+      return { receipt: (JSON.parse(priorReceipt.payload_json) as StoredReceipt).public, snapshot: readSnapshot(database, identity, agentMode), generationChanged: false };
     }
     if (proposalRow.status !== "pending") throw fail("proposal_unavailable", "This proposal is no longer available.");
     if (!stored.public.ready) throw fail("proposal_not_ready", "This proposal is held and cannot be accepted.");
@@ -332,6 +496,7 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
       database.prepare("DELETE FROM proposals WHERE user_id = ?").run(user.id);
       database.prepare("DELETE FROM receipts WHERE user_id = ?").run(user.id);
       database.prepare("DELETE FROM chat_messages WHERE user_id = ?").run(user.id);
+      database.prepare("DELETE FROM agent_turns WHERE user_id = ?").run(user.id);
       database.prepare("DELETE FROM tutorial_state WHERE user_id = ?").run(user.id);
       database.prepare("DELETE FROM scenario_events WHERE user_id = ?").run(user.id);
       database.prepare("UPDATE users SET generation = ? WHERE id = ?").run(nextGeneration, user.id);
@@ -341,7 +506,7 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
       const payload: StoredReceipt = { public: publicReceipt, applied: [] };
       database.prepare("INSERT INTO receipts (id, user_id, generation, proposal_id, idempotency_key, payload_json, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(publicReceipt.id, user.id, nextGeneration, proposalId, idempotencyKey, JSON.stringify(payload), publicReceipt.committedAt);
       database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, ?, 'reset', ?, ?)").run(`audit_${randomUUID()}`, user.id, nextGeneration, JSON.stringify({ fromGeneration: generation, receiptId: publicReceipt.id }), publicReceipt.committedAt);
-      return { receipt: publicReceipt, snapshot: readSnapshot(database, identity), generationChanged: true };
+      return { receipt: publicReceipt, snapshot: readSnapshot(database, identity, agentMode), generationChanged: true };
     }
     const inventoryNeeds = new Map<string, { quantity: number; expectedVersion: number }>();
     for (const policy of stored.policies) {
@@ -369,7 +534,7 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
     database.prepare("UPDATE proposals SET status = 'accepted' WHERE id = ? AND user_id = ?").run(proposalId, user.id);
     if (stored.undoReceiptId !== undefined) database.prepare("UPDATE receipts SET undone_by = ? WHERE id = ? AND user_id = ?").run(publicReceipt.id, stored.undoReceiptId, user.id);
     database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, ?, 'command', ?, ?)").run(`audit_${randomUUID()}`, user.id, generation, JSON.stringify({ proposalId, receiptId: publicReceipt.id, sequence }), publicReceipt.committedAt);
-    return { receipt: publicReceipt, snapshot: readSnapshot(database, identity), generationChanged: false };
+    return { receipt: publicReceipt, snapshot: readSnapshot(database, identity, agentMode), generationChanged: false };
   }));
 
   const advanceScenario: WorkspaceRepositoryService["advanceScenario"] = (identity, generation) => command(() => transact(database, () => {
@@ -378,7 +543,7 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
     if (Number(stock.quantity) <= 0) throw fail("scenario_complete", "The stock-change scenario has no further step.");
     database.prepare("UPDATE inventory SET quantity = quantity - 1, version = version + 1 WHERE user_id = ? AND sku = 'MUG-SAGE'").run(user.id);
     appendEvent(database, user.id, generation, "scenario.stock_changed", { sku: "MUG-SAGE", quantity: Number(stock.quantity) - 1 });
-    return { message: "Scenario advanced: sage mug stock changed.", snapshot: readSnapshot(database, identity) };
+    return { message: "Scenario advanced: sage mug stock changed.", snapshot: readSnapshot(database, identity, agentMode) };
   }));
   const startProviderAttempt: WorkspaceRepositoryService["startProviderAttempt"] = (input: ProviderAttemptStart) => Effect.sync(() => transact(database, () => {
     if (input.requestId.length < 1 || input.requestId.length > 128 || input.turnId.length < 1 || input.turnId.length > 128) throw new Error("Provider request and turn identifiers must be between 1 and 128 characters.");
@@ -486,8 +651,143 @@ const repositoryLayer = (filename: string) => Layer.effect(WorkspaceRepository, 
     const result = database.prepare("UPDATE provider_attempts SET outcome = 'interrupted', completed_at = ?, duration_ms = NULL, error_code = 'server_restart', error_message = 'The server restarted before this provider attempt completed.' WHERE outcome = 'running'").run(recoveredAt);
     return Number(result.changes);
   });
-  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, accept, advanceScenario, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
+  const turnRow = (userId: string, generation: number, turnId: string) =>
+    database.prepare("SELECT * FROM agent_turns WHERE user_id = ? AND generation = ? AND id = ?").get(userId, generation, turnId) as AgentTurnRow | undefined;
+  const createAgentTurn: WorkspaceRepositoryService["createAgentTurn"] = (identity, generation, turnId, requestId, connectionId, message) => command(() => transact(database, () => {
+    if (!/^turn_[A-Za-z0-9-]{8,100}$/.test(turnId)) throw fail("invalid_turn_id", "The turn ID is invalid.");
+    if (message.trim().length < 1 || message.length > 2_000) throw fail("invalid_message", "Messages must contain between 1 and 2,000 characters.");
+    const user = ensureUser(database, identity);
+    expectGeneration(user.generation, generation);
+    const existing = turnRow(user.id, generation, turnId);
+    if (existing !== undefined) return { created: false, turn: agentTurnRecord(existing) };
+    const startedAt = new Date().toISOString();
+    const history: ReadonlyArray<ChatMessage> = [{ role: "user", content: message.trim() }];
+    database.prepare(`INSERT INTO agent_turns (
+      id, user_id, generation, request_id, connection_id, status, phase,
+      history_json, started_at, measurement
+    ) VALUES (?, ?, ?, ?, ?, 'running', 'Thinking', ?, ?, 'pending')`).run(
+      turnId, user.id, generation, requestId, connectionId, JSON.stringify(history), startedAt,
+    );
+    database.prepare("INSERT INTO chat_messages (id, user_id, generation, role, body, created_at) VALUES (?, ?, ?, 'user', ?, ?)").run(
+      chatMessageId(user.id, generation, turnId, "user"), user.id, generation, message.trim(), startedAt,
+    );
+    return { created: true, turn: agentTurnRecord(turnRow(user.id, generation, turnId)!) };
+  }));
+  const updateAgentTurn: WorkspaceRepositoryService["updateAgentTurn"] = (identity, generation, turnId, update) => command(() => transact(database, () => {
+    const user = ensureUser(database, identity);
+    expectGeneration(user.generation, generation);
+    const current = turnRow(user.id, generation, turnId);
+    if (current === undefined) throw fail("turn_not_found", "That agent turn is unavailable.");
+    const boundedHistory = boundStoredHistory(update.history);
+    const historyJson = JSON.stringify(boundedHistory);
+    if (new TextEncoder().encode(historyJson).byteLength > 32 * 1024) throw fail("history_too_large", "The conversation history exceeded its limit.");
+    const measurement = current.measurement === "incomplete" ? "incomplete" : (update.measurement ?? current.measurement);
+    database.prepare(`UPDATE agent_turns SET status = ?, phase = ?, history_json = ?,
+      error_message = ?, proposal_id = COALESCE(?, proposal_id), finished_at = ?, measurement = ?
+      WHERE user_id = ? AND generation = ? AND id = ?`).run(
+      update.status,
+      update.phase.slice(0, 128),
+      historyJson,
+      update.error === undefined ? current.error_message : update.error,
+      update.proposalId ?? null,
+      update.finishedAt === undefined ? current.finished_at : update.finishedAt,
+      measurement,
+      user.id,
+      generation,
+      turnId,
+    );
+    const terminalVisible = update.status === "complete" || update.status === "cancelled" || update.status === "failed" || update.status === "interrupted" || (update.status === "waiting_for_ui" && update.phase === "Rendering answer");
+    if (terminalVisible) {
+      const assistant = [...boundedHistory].reverse().find((entry) => entry.role === "assistant" && entry.content !== null && entry.content.trim().length > 0);
+      if (assistant?.role === "assistant" && assistant.content !== null) {
+        database.prepare(`INSERT INTO chat_messages (id, user_id, generation, role, body, created_at)
+          VALUES (?, ?, ?, 'assistant', ?, ?)
+          ON CONFLICT(id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at`).run(
+          chatMessageId(user.id, generation, turnId, "assistant"), user.id, generation, assistant.content.slice(0, 8_000), new Date().toISOString(),
+        );
+      }
+    }
+    return agentTurnRecord(turnRow(user.id, generation, turnId)!);
+  }));
+  const agentTurn: WorkspaceRepositoryService["agentTurn"] = (identity, generation, turnId) => command(() => {
+    const user = ensureUser(database, identity);
+    expectGeneration(user.generation, generation);
+    const row = turnRow(user.id, generation, turnId);
+    return row === undefined ? null : agentTurnRecord(row);
+  });
+  const agentHistories: WorkspaceRepositoryService["agentHistories"] = (identity, generation, excludeTurnId, requestedLimit = 6) => command(() => {
+    const user = ensureUser(database, identity);
+    expectGeneration(user.generation, generation);
+    const limit = Math.max(1, Math.min(8, Math.floor(requestedLimit)));
+    const rows = database.prepare("SELECT history_json FROM agent_turns WHERE user_id = ? AND generation = ? AND id <> ? AND status = 'complete' ORDER BY started_at DESC LIMIT ?").all(user.id, generation, excludeTurnId, limit) as Array<{ history_json: string }>;
+    return rows.reverse().map((row) => JSON.parse(row.history_json) as ReadonlyArray<ChatMessage>);
+  });
+  const resolveAgentViewContext: WorkspaceRepositoryService["resolveAgentViewContext"] = (identity, generation, context) => command(() => {
+    const user = ensureUser(database, identity);
+    expectGeneration(user.generation, generation);
+    if (context.view !== "work" && context.focus !== null) throw fail("invalid_view_context", "Only the Work view can identify selected work.");
+    if (context.focus === null) return { view: context.view, focus: null };
+    if (context.focus.kind === "order") {
+      const orderId = context.focus.orderId;
+      const order = readSnapshot(database, identity, agentMode).orders.find((candidate) => candidate.id === orderId);
+      if (order === undefined) throw fail("invalid_view_context", "The selected order is not available in this workspace.");
+      return { view: "work", focus: { kind: "order", order: { id: order.id, item: order.item, issue: order.issue, status: order.status, businessValue: order.businessValue, evidence: order.evidence.map(({ label, value }) => ({ label, value })) } } };
+    }
+    if (context.focus.kind === "proposal") {
+      const row = database.prepare("SELECT payload_json FROM proposals WHERE id = ? AND user_id = ? AND generation = ? AND status = 'pending'").get(context.focus.proposalId, user.id, generation) as { payload_json: string } | undefined;
+      if (row === undefined) throw fail("invalid_view_context", "The selected proposal is not available in this workspace.");
+      const proposal = (JSON.parse(row.payload_json) as StoredProposal).public;
+      return { view: "work", focus: { kind: "proposal", proposal: { id: proposal.id, kind: proposal.kind, title: proposal.title, ready: proposal.ready, changes: proposal.changes, omissions: proposal.omissions, effects: proposal.effects } } };
+    }
+    const row = database.prepare("SELECT payload_json FROM receipts WHERE id = ? AND user_id = ? AND generation = ?").get(context.focus.receiptId, user.id, generation) as { payload_json: string } | undefined;
+    if (row === undefined) throw fail("invalid_view_context", "The selected receipt is not available in this workspace.");
+    const receipt = (JSON.parse(row.payload_json) as StoredReceipt).public;
+    return { view: "work", focus: { kind: "receipt", receipt: { id: receipt.id, kind: receipt.kind, title: receipt.title, changes: receipt.changes, undoable: receipt.undoable } } };
+  });
+  const completeAgentMeasurement: WorkspaceRepositoryService["completeAgentMeasurement"] = (identity, generation, turnId, durationMs) => command(() => transact(database, () => {
+    if (!Number.isFinite(durationMs) || durationMs < 0 || durationMs > 10 * 60_000) throw fail("invalid_duration", "The completed-turn duration is invalid.");
+    const user = ensureUser(database, identity);
+    expectGeneration(user.generation, generation);
+    const current = turnRow(user.id, generation, turnId);
+    if (current === undefined) throw fail("turn_not_found", "That agent turn is unavailable.");
+    if (current.status !== "waiting_for_ui" && current.status !== "complete") throw fail("turn_not_ready", "That turn has not delivered its final response.");
+    if (current.measurement === "incomplete") return;
+    database.prepare("UPDATE agent_turns SET status = 'complete', phase = 'Complete', complete_duration_ms = ?, measurement = 'complete', finished_at = COALESCE(finished_at, ?) WHERE user_id = ? AND generation = ? AND id = ?").run(
+      durationMs, new Date().toISOString(), user.id, generation, turnId,
+    );
+  }));
+  const recordCommandMeasurement: WorkspaceRepositoryService["recordCommandMeasurement"] = (identity, generation, receiptId, durationMs) => command(() => transact(database, () => {
+    if (!Number.isFinite(durationMs) || durationMs < 0 || durationMs > 10 * 60_000) throw fail("invalid_duration", "The committed-command duration is invalid.");
+    const user = ensureUser(database, identity);
+    expectGeneration(user.generation, generation);
+    const receipt = database.prepare("SELECT id FROM receipts WHERE id = ? AND user_id = ? AND generation = ?").get(receiptId, user.id, generation) as { id: string } | undefined;
+    if (receipt === undefined) throw fail("receipt_not_found", "That receipt is not available in this workspace.");
+    database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, ?, 'command_visible', ?, ?)").run(
+      `audit_${randomUUID()}`, user.id, generation, JSON.stringify({ receiptId, durationMs, clock: "browser_monotonic" }), new Date().toISOString(),
+    );
+  }));
+  const markAgentConnectionIncomplete: WorkspaceRepositoryService["markAgentConnectionIncomplete"] = (identity, connectionId) => Effect.sync(() => {
+    database.prepare("UPDATE agent_turns SET measurement = 'incomplete', status = CASE WHEN phase = 'Rendering answer' THEN 'complete' ELSE status END WHERE user_id = ? AND connection_id = ? AND status IN ('running', 'waiting_for_ui')").run(identity.id, connectionId);
+  });
+  const recoverAgentTurns: WorkspaceRepositoryService["recoverAgentTurns"] = () => Effect.sync(() => {
+    const finishedAt = new Date().toISOString();
+    const rows = database.prepare("SELECT user_id, generation, id, history_json FROM agent_turns WHERE status IN ('running', 'waiting_for_ui')").all() as Array<{ user_id: string; generation: number; id: string; history_json: string }>;
+    for (const row of rows) {
+      const terminal = "The server restarted before this turn completed. You can send the request again.";
+      const history = boundStoredHistory([...(JSON.parse(row.history_json) as Array<ChatMessage>), { role: "assistant", content: terminal }]);
+      database.prepare("UPDATE agent_turns SET status = 'interrupted', phase = 'Interrupted', history_json = ?, error_message = 'The server restarted before this turn completed.', finished_at = ?, measurement = 'incomplete' WHERE user_id = ? AND generation = ? AND id = ?").run(
+        JSON.stringify(history), finishedAt, row.user_id, row.generation, row.id,
+      );
+      database.prepare(`INSERT INTO chat_messages (id, user_id, generation, role, body, created_at)
+        VALUES (?, ?, ?, 'assistant', ?, ?)
+        ON CONFLICT(id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at`).run(
+        chatMessageId(row.user_id, row.generation, row.id, "assistant"), row.user_id, row.generation, terminal, finishedAt,
+      );
+    }
+    return rows.length;
+  });
+  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, resolveAgentViewContext, completeAgentMeasurement, recordCommandMeasurement, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
 })));
 
-export const workspacePersistenceLayer = (filename: string) => repositoryLayer(filename);
+export const workspacePersistenceLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMode"] = "unavailable") => repositoryLayer(filename, agentMode);
 export const runWithWorkspaceRepository = <A, E>(filename: string, effect: Effect.Effect<A, E, WorkspaceRepository>): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(workspacePersistenceLayer(filename)), Effect.scoped));

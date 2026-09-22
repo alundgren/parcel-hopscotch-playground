@@ -20,6 +20,8 @@ const config: ServerConfig = {
   databasePath: ":memory:",
   allowDevelopmentIdentity: false,
   developmentEmail: null,
+  agentMode: "unavailable",
+  openRouterApiKey: null,
 };
 
 const identity = (email: string) =>

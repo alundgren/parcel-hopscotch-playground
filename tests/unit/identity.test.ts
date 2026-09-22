@@ -11,6 +11,8 @@ const production: ServerConfig = {
   databasePath: ":memory:",
   allowDevelopmentIdentity: false,
   developmentEmail: null,
+  agentMode: "unavailable",
+  openRouterApiKey: null,
 };
 
 const result = (headers: ReadonlyArray<string>, config = production) =>

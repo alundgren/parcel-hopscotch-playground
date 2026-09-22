@@ -10,6 +10,7 @@ import type { IncomingMessage } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import type { ServerConfig } from "./config.js";
+import { makeAgentCoordinator } from "./agent-runtime.js";
 import { resolveIdentity } from "./identity.js";
 import { workspacePersistenceLayer } from "./persistence.js";
 import {
@@ -58,6 +59,7 @@ const staticResponse = (url: string) => {
 };
 
 export const serverLayer = (config: ServerConfig) => {
+  const agentCoordinator = makeAgentCoordinator(config);
   const routes = Layer.mergeAll(
     HttpRouter.add(
       "GET",
@@ -86,7 +88,7 @@ export const serverLayer = (config: ServerConfig) => {
         }
         const identity = preflight.success[0];
         const socket = yield* request.upgrade;
-        yield* runWorkspaceSocket(socket, identity, () => ({
+        yield* runWorkspaceSocket(socket, identity, agentCoordinator, () => ({
           bufferedBytes: source.socket.writableLength,
           needsDrain: source.socket.writableNeedDrain,
         }));
@@ -104,7 +106,7 @@ export const serverLayer = (config: ServerConfig) => {
 
   return HttpRouter.serve(routes, { disableListenLog: true }).pipe(
     Layer.provide([
-      workspacePersistenceLayer(config.databasePath),
+      workspacePersistenceLayer(config.databasePath, config.agentMode),
       realtimeHubLayer,
       NodeHttpServer.layer(createServer, {
         host: config.host,

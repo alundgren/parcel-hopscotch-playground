@@ -12,7 +12,9 @@ const program = Effect.gen(function* () {
   yield* Effect.tryPromise(() =>
     runWithWorkspaceRepository(
       config.databasePath,
-      Effect.flatMap(WorkspaceRepository, (repository) => repository.recoverProviderAttempts()),
+      Effect.flatMap(WorkspaceRepository, (repository) =>
+        Effect.all([repository.recoverProviderAttempts(), repository.recoverAgentTurns()]),
+      ),
     ),
   );
   yield* Effect.sync(() => {

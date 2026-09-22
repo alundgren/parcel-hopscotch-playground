@@ -29,6 +29,8 @@ const config: ServerConfig = {
   databasePath: ":memory:",
   allowDevelopmentIdentity: false,
   developmentEmail: null,
+  agentMode: "unavailable",
+  openRouterApiKey: null,
 };
 const identity = (email: string): RequestIdentity =>
   Effect.runSync(resolveIdentity(["Cf-Access-Authenticated-User-Email", email], config));
