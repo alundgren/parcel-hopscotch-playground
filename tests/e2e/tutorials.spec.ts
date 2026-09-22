@@ -45,7 +45,7 @@ test("teaches address correction and completes a separate case without agent ass
   await expect(page.locator("html")).toHaveCSS("scroll-behavior", "auto");
 
   await page.locator("#target-order-BB-1042").evaluate((element) => element.remove());
-  await expect(page.getByText("The next target is not available here. Return to Work or reopen the saved proposal or receipt.")).toBeVisible();
+  await expect(page.getByText("The next step is not visible. Return to Work and open the requested order from the list.")).toBeVisible();
   await page.reload();
   await expect(page.getByTestId("connection-status")).toContainText("Connected");
   await expect(coach(page)).toHaveAttribute("data-tutorial-step", "0");
@@ -58,6 +58,14 @@ test("teaches address correction and completes a separate case without agent ass
   await context.setOffline(false);
   await expect(page.getByTestId("connection-status")).toContainText("Connected", { timeout: 10_000 });
   await expect(coach(page)).toHaveAttribute("data-tutorial-step", "1");
+  await page.reload();
+  await expect(page.getByTestId("connection-status")).toContainText("Connected");
+  await expect(coach(page)).toHaveAttribute("data-tutorial-step", "1");
+  await expect(page.getByTestId("order-list")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath(`recovery-order-list-${testInfo.project.name}.png`), fullPage: true });
+  await page.locator("#target-order-BB-1042").click();
+  await expect(page.locator("#target-order-BB-1042-evidence")).toBeVisible();
+  await expect(coach(page)).toHaveAttribute("data-tutorial-step", "1");
   await page.getByRole("button", { name: "Dismiss tutorial" }).click();
   await expect(coach(page)).toHaveCount(0);
   await startTutorial(page, "Teach me the address correction tutorial.", "Address correction");
@@ -69,6 +77,15 @@ test("teaches address correction and completes a separate case without agent ass
   await page.screenshot({ path: testInfo.outputPath(`actual-address-tutorial-${testInfo.project.name}.png`), fullPage: true });
   await acceptIndividual(page);
   await expect(coach(page)).toHaveAttribute("data-tutorial-step", "3");
+  await page.reload();
+  await expect(page.getByTestId("connection-status")).toContainText("Connected");
+  await page.locator("#target-order-BB-1102").click();
+  await page.getByRole("button", { name: "Review change" }).click();
+  await acceptIndividual(page);
+  await page.locator("#target-receipt-back").click();
+  await expect(coach(page)).toHaveAttribute("data-tutorial-step", "3");
+  await page.getByRole("button", { name: "Continue tutorial receipt" }).click();
+  await expect(page.getByText("BB-1042", { exact: true })).toBeVisible();
   await page.locator("#target-receipt-back").click();
   await expect(coach(page)).toHaveAttribute("data-tutorial-phase", "practice");
 
@@ -86,7 +103,7 @@ test("teaches substitution review, survives navigation and cancellation, and res
   await startTutorial(page, "Teach me the substitution tutorial.", "Substitution review");
 
   await page.getByRole("button", { name: "Audit", exact: true }).click();
-  await expect(page.getByText("The next target is not available here. Return to Work or reopen the saved proposal or receipt.")).toBeVisible();
+  await expect(page.getByText("The next step is not visible. Return to Work and open the requested order from the list.")).toBeVisible();
   await page.getByRole("button", { name: "Work", exact: true }).click();
   await expect(coach(page)).toHaveAttribute("data-tutorial-step", "0");
 

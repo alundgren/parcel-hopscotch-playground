@@ -105,7 +105,7 @@ const specs = {
   startTutorial: {
     description: "Start one bounded application tutorial for the current workspace. Real user actions advance it.",
     category: "Guide", purpose: "Teach a task", allowedEffects: ["start_bounded_tutorial"],
-    example: { arguments: { tutorialId: "address-correction" }, result: { id: "address-correction", instanceId: "tutorial_example", step: 0, totalSteps: 8, phase: "teaching" } },
+    example: { arguments: { tutorialId: "address-correction" }, result: { id: "address-correction", instanceId: "tutorial_example", title: "Address correction", step: 0, totalSteps: 8, phase: "teaching", instruction: "Open BB-1042 and compare the saved address with the evidence.", targetId: "target-order-BB-1042" } },
     input: Schema.Struct({ tutorialId: TutorialId }), output: TutorialState,
   },
   stopTutorial: {

@@ -65,16 +65,30 @@ describe("reviewed fulfilment commands", () => {
       expect((yield* repository.snapshot(user)).tutorial?.step).toBe(1);
 
       const proposal = yield* repository.prepareResolution(user, 1, "BB-1042");
-      expect((yield* repository.snapshot(user)).tutorial?.step).toBe(2);
+      const preparedSnapshot = yield* repository.snapshot(user);
+      expect(preparedSnapshot.tutorial?.step).toBe(2);
+      expect(preparedSnapshot.tutorialProposal?.id).toBe(proposal.id);
+      const laterPending = yield* repository.prepareResolution(user, 1, "BB-1088");
+      const proposalRecovery = yield* repository.snapshot(user);
+      expect(proposalRecovery.currentProposal?.id).toBe(laterPending.id);
+      expect(proposalRecovery.tutorialProposal?.id).toBe(proposal.id);
       const commit = yield* repository.accept(user, 1, proposal.id, "address-tutorial-key");
       expect(commit.snapshot.tutorial?.step).toBe(3);
+      expect(commit.snapshot.tutorialProposal).toBeNull();
+      expect(commit.snapshot.tutorialReceipt?.id).toBe(commit.receipt.id);
 
-      const receiptStep = commit.snapshot.tutorial!;
+      const laterProposal = yield* repository.prepareResolution(user, 1, "BB-1068");
+      const laterCommit = yield* repository.accept(user, 1, laterProposal.id, "later-unrelated-key");
+      expect(laterCommit.snapshot.latestReceipt?.id).toBe(laterCommit.receipt.id);
+      expect(laterCommit.snapshot.tutorialReceipt?.id).toBe(commit.receipt.id);
+
+      const receiptStep = laterCommit.snapshot.tutorial!;
       const wrongReceipt = yield* repository.recordTutorialAction(user, 1, { ...tutorialRevision(receiptStep), kind: "receipt_confirmed", receiptId: (yield* repository.accept(user, 1, wrong.id, "wrong-tutorial-key")).receipt.id });
       expect(wrongReceipt.advanced).toBe(false);
       const confirmed = yield* repository.recordTutorialAction(user, 1, { ...tutorialRevision(receiptStep), kind: "receipt_confirmed", receiptId: commit.receipt.id });
       expect(confirmed.advanced).toBe(true);
       expect(confirmed.snapshot.tutorial).toMatchObject({ step: 4, phase: "practice" });
+      expect(confirmed.snapshot.tutorialReceipt).toBeNull();
     }));
 
     await useRepository(filename, (repository) => Effect.gen(function* () {

@@ -55,7 +55,9 @@ export type TutorialState = typeof TutorialState.Type;
 export const WorkspaceSnapshot = Schema.Struct({
   generation: Schema.Int, sequence: Schema.Int, orders: Schema.Array(OrderSummary),
   latestReceipt: Schema.NullOr(CommandReceipt),
+  tutorialReceipt: Schema.NullOr(CommandReceipt),
   currentProposal: Schema.NullOr(ReviewedProposal),
+  tutorialProposal: Schema.NullOr(ReviewedProposal),
   chat: Schema.Array(Schema.Struct({
     id: Schema.String,
     turnId: Schema.String,

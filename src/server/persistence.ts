@@ -139,7 +139,7 @@ const migrate = (database: DatabaseSync) => {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS agent_turns_user_started ON agent_turns (user_id, generation, started_at DESC);
-    CREATE TABLE IF NOT EXISTS tutorial_state (user_id TEXT NOT NULL, generation INTEGER NOT NULL, tutorial_id TEXT NOT NULL, instance_id TEXT NOT NULL, step INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, generation, tutorial_id), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS tutorial_state (user_id TEXT NOT NULL, generation INTEGER NOT NULL, tutorial_id TEXT NOT NULL, instance_id TEXT NOT NULL, step INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, proposal_id TEXT, receipt_id TEXT, PRIMARY KEY (user_id, generation, tutorial_id), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS audit_records (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, body_json TEXT NOT NULL, completed_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS provider_attempts (
       id TEXT PRIMARY KEY,
@@ -181,6 +181,8 @@ const migrate = (database: DatabaseSync) => {
   const tutorialColumns = database.prepare("PRAGMA table_info(tutorial_state)").all() as Array<{ name: string }>;
   if (!tutorialColumns.some((column) => column.name === "instance_id")) database.exec("ALTER TABLE tutorial_state ADD COLUMN instance_id TEXT");
   if (!tutorialColumns.some((column) => column.name === "active")) database.exec("ALTER TABLE tutorial_state ADD COLUMN active INTEGER NOT NULL DEFAULT 1");
+  if (!tutorialColumns.some((column) => column.name === "proposal_id")) database.exec("ALTER TABLE tutorial_state ADD COLUMN proposal_id TEXT");
+  if (!tutorialColumns.some((column) => column.name === "receipt_id")) database.exec("ALTER TABLE tutorial_state ADD COLUMN receipt_id TEXT");
   const missingInstances = database.prepare("SELECT rowid FROM tutorial_state WHERE instance_id IS NULL OR instance_id = ''").all() as Array<{ rowid: number }>;
   const setInstance = database.prepare("UPDATE tutorial_state SET instance_id = ? WHERE rowid = ?");
   for (const row of missingInstances) setInstance.run(`tutorial_${randomUUID()}`, row.rowid);
@@ -217,11 +219,11 @@ const appendEvent = (database: DatabaseSync, userId: string, generation: number,
   return sequence;
 };
 
-interface TutorialRow { readonly tutorial_id: TutorialId; readonly instance_id: string; readonly step: number; readonly active: number }
+interface TutorialRow { readonly tutorial_id: TutorialId; readonly instance_id: string; readonly step: number; readonly active: number; readonly proposal_id: string | null; readonly receipt_id: string | null }
 const activeTutorialRow = (database: DatabaseSync, userId: string, generation: number): TutorialRow | null =>
-  (database.prepare("SELECT tutorial_id, instance_id, step, active FROM tutorial_state WHERE user_id = ? AND generation = ? AND active = 1 ORDER BY rowid DESC LIMIT 1").get(userId, generation) as TutorialRow | undefined) ?? null;
+  (database.prepare("SELECT tutorial_id, instance_id, step, active, proposal_id, receipt_id FROM tutorial_state WHERE user_id = ? AND generation = ? AND active = 1 ORDER BY rowid DESC LIMIT 1").get(userId, generation) as TutorialRow | undefined) ?? null;
 const tutorialRow = (database: DatabaseSync, userId: string, generation: number, tutorialId: TutorialId): TutorialRow | null =>
-  (database.prepare("SELECT tutorial_id, instance_id, step, active FROM tutorial_state WHERE user_id = ? AND generation = ? AND tutorial_id = ?").get(userId, generation, tutorialId) as TutorialRow | undefined) ?? null;
+  (database.prepare("SELECT tutorial_id, instance_id, step, active, proposal_id, receipt_id FROM tutorial_state WHERE user_id = ? AND generation = ? AND tutorial_id = ?").get(userId, generation, tutorialId) as TutorialRow | undefined) ?? null;
 
 const tutorialCanResume = (database: DatabaseSync, userId: string, tutorialId: TutorialId, step: number): boolean => {
   const required = tutorialRequiredOrderIds[tutorialId];
@@ -239,11 +241,14 @@ const advanceTutorial = (
   userId: string,
   generation: number,
   event: TutorialProgressEvent,
+  references: { readonly proposalId?: string; readonly receiptId?: string } = {},
 ): boolean => {
   const current = activeTutorialRow(database, userId, generation);
   if (current === null || !tutorialStepMatches(current.tutorial_id, Number(current.step), event)) return false;
   const nextStep = Number(current.step) + 1;
-  database.prepare("UPDATE tutorial_state SET step = ? WHERE user_id = ? AND generation = ? AND tutorial_id = ? AND instance_id = ? AND active = 1").run(nextStep, userId, generation, current.tutorial_id, current.instance_id);
+  const proposalId = event.kind === "proposal_prepared" ? references.proposalId ?? null : event.kind === "proposal_accepted" ? null : current.proposal_id;
+  const receiptId = event.kind === "proposal_accepted" ? references.receiptId ?? null : event.kind === "receipt_confirmed" ? null : current.receipt_id;
+  database.prepare("UPDATE tutorial_state SET step = ?, proposal_id = ?, receipt_id = ? WHERE user_id = ? AND generation = ? AND tutorial_id = ? AND instance_id = ? AND active = 1").run(nextStep, proposalId, receiptId, userId, generation, current.tutorial_id, current.instance_id);
   appendEvent(database, userId, generation, "tutorial.progressed", { tutorialId: current.tutorial_id, tutorialInstanceId: current.instance_id, step: nextStep });
   return true;
 };
@@ -404,6 +409,12 @@ const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMo
   const active = database.prepare("SELECT * FROM agent_turns WHERE user_id = ? AND generation = ? AND status IN ('running', 'waiting_for_ui') ORDER BY started_at DESC LIMIT 1").get(user.id, user.generation) as AgentTurnRow | undefined;
   const pendingProposal = database.prepare("SELECT payload_json FROM proposals WHERE user_id = ? AND generation = ? AND status = 'pending' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(user.id, user.generation) as { payload_json: string } | undefined;
   const tutorial = activeTutorialRow(database, user.id, user.generation);
+  const tutorialReceipt = tutorial?.receipt_id === null || tutorial?.receipt_id === undefined
+    ? undefined
+    : database.prepare("SELECT payload_json FROM receipts WHERE id = ? AND user_id = ? AND generation = ?").get(tutorial.receipt_id, user.id, user.generation) as { payload_json: string } | undefined;
+  const tutorialProposal = tutorial?.proposal_id === null || tutorial?.proposal_id === undefined
+    ? undefined
+    : database.prepare("SELECT payload_json FROM proposals WHERE id = ? AND user_id = ? AND generation = ? AND status = 'pending'").get(tutorial.proposal_id, user.id, user.generation) as { payload_json: string } | undefined;
   return {
     generation: user.generation,
     sequence: sequenceFor(database, user.id, user.generation),
@@ -416,7 +427,9 @@ const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMo
       return { id: item.order_id, item: item.item, issue: item.issue, status, statusLabel: statusLabels[status], family: item.family, version: Number(item.version), businessValue: currentState.summary, targetId: targets.orderRow(item.order_id), evidence: evidence.filter((entry) => entry.order_id === item.order_id).map((entry) => ({ label: entry.label, value: entry.value, occurredAt: entry.occurred_at, age: ageLabel(entry.occurred_at, now) })) };
     }),
     latestReceipt: receipt === undefined ? null : (JSON.parse(receipt.payload_json) as StoredReceipt).public,
+    tutorialReceipt: tutorialReceipt === undefined ? null : (JSON.parse(tutorialReceipt.payload_json) as StoredReceipt).public,
     currentProposal: pendingProposal === undefined ? null : (JSON.parse(pendingProposal.payload_json) as StoredProposal).public,
+    tutorialProposal: tutorialProposal === undefined ? null : (JSON.parse(tutorialProposal.payload_json) as StoredProposal).public,
     chat: selectedMessages.map((message) => ({
       id: message.id,
       turnId: chatTurnId(message.id),
@@ -526,7 +539,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     const policies = evaluated.ready ? [evaluated.policy] : [];
     const publicProposal = makePublic(generation, "resolution", title, policies, evaluated.ready ? [] : [{ orderId, reason: evaluated.reason }], evaluated.ready ? [] : [evaluated.reason], evaluated.ready);
     const proposal = storeProposal(database, user.id, { public: publicProposal, policies });
-    if (proposal.ready) advanceTutorial(database, user.id, generation, { kind: "proposal_prepared", proposalKind: "resolution", orderIds: proposal.changes.map((change) => change.orderId) });
+    if (proposal.ready) advanceTutorial(database, user.id, generation, { kind: "proposal_prepared", proposalKind: "resolution", orderIds: proposal.changes.map((change) => change.orderId) }, { proposalId: proposal.id });
     return proposal;
   }));
   const prepareBatch: WorkspaceRepositoryService["prepareBatch"] = (identity, generation) => command(() => transact(database, () => {
@@ -554,7 +567,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     if (policies.length === 0) throw fail("nothing_ready", "No orders currently pass the ready checks.");
     const publicProposal = makePublic(generation, "batch", `Review ${policies.length} changes`, policies, omissions, [`${policies.length} orders will move to packing.`, `${omissions.length} orders are left out.`]);
     const proposal = storeProposal(database, user.id, { public: publicProposal, policies });
-    advanceTutorial(database, user.id, generation, { kind: "proposal_prepared", proposalKind: "batch", orderIds: proposal.changes.map((change) => change.orderId) });
+    advanceTutorial(database, user.id, generation, { kind: "proposal_prepared", proposalKind: "batch", orderIds: proposal.changes.map((change) => change.orderId) }, { proposalId: proposal.id });
     return proposal;
   }));
   const prepareUndo: WorkspaceRepositoryService["prepareUndo"] = (identity, generation, receiptId) => command(() => transact(database, () => {
@@ -643,7 +656,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     database.prepare("UPDATE proposals SET status = 'accepted' WHERE id = ? AND user_id = ?").run(proposalId, user.id);
     if (stored.undoReceiptId !== undefined) database.prepare("UPDATE receipts SET undone_by = ? WHERE id = ? AND user_id = ?").run(publicReceipt.id, stored.undoReceiptId, user.id);
     if (stored.public.kind === "resolution" || stored.public.kind === "batch") {
-      advanceTutorial(database, user.id, generation, { kind: "proposal_accepted", proposalKind: stored.public.kind, orderIds: stored.public.changes.map((change) => change.orderId) });
+      advanceTutorial(database, user.id, generation, { kind: "proposal_accepted", proposalKind: stored.public.kind, orderIds: stored.public.changes.map((change) => change.orderId) }, { receiptId: publicReceipt.id });
     }
     database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, ?, 'command', ?, ?)").run(`audit_${randomUUID()}`, user.id, generation, JSON.stringify({ proposalId, receiptId: publicReceipt.id, sequence }), publicReceipt.committedAt);
     return { receipt: publicReceipt, snapshot: readSnapshot(database, identity, agentMode), generationChanged: false };
