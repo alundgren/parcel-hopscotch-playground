@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildJevBenchmarkRequest,
   buildMinistralBenchmarkRequest,
+  benchmarkLimits,
   fixtureDigest,
   isAllowedPrediction,
   nearestRankPercentile,
@@ -71,6 +72,25 @@ describe("provider benchmark fixtures", () => {
       expect(JSON.stringify(ministral)).not.toContain(input.caseId);
       expect(JSON.stringify(jev)).not.toContain("semanticSubtype");
       expect(JSON.stringify(ministral)).not.toContain("semanticSubtype");
+    }
+  });
+
+  it("records the distinct constrained bounds for Ministral and Jev", () => {
+    expect(benchmarkLimits.ministralConstrainedMaximumOutputTokens).toBe(64);
+    expect(benchmarkLimits.jevConstrainedMaximumOutputTokens).toBeNull();
+    expect(benchmarkLimits.jevQuestionsPerRequest).toBe(1);
+    expect(benchmarkLimits.jevChoicesPerTask).toEqual({ consent: 3, exception: 7 });
+    expect(benchmarkLimits.jevMaximumRequestBytes).toBe(32 * 1024);
+    expect(benchmarkLimits.jevMaximumResponseBytes).toBe(256 * 1024);
+
+    for (const input of fixtures.inputs) {
+      const request = buildJevBenchmarkRequest(input);
+      expect(Object.keys(request.questions)).toHaveLength(1);
+      const question = request.questions.classification;
+      expect(question?.type).toBe("choice");
+      if (question?.type === "choice") {
+        expect(Object.keys(question.criteria)).toHaveLength(input.task === "consent" ? 3 : 7);
+      }
     }
   });
 

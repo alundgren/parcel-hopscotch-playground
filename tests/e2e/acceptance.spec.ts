@@ -107,14 +107,18 @@ test("isolates turns, provider failures, audit history, accepted work, and reset
     await expect(first.getByPlaceholder("Message...")).toBeEnabled();
     await expect(second.getByText("I could not complete that turn. You can retry it, and any proposal already shown is still available for review.")).toHaveCount(0);
 
+    await send(first, "Find BB-1088, open it, and highlight the evidence.");
+    await expect(first.getByText("I found the order and showed the relevant evidence.")).toHaveCount(2);
+    await expect(second.getByText("Find BB-1088, open it, and highlight the evidence.")).toHaveCount(0);
+
     await first.getByRole("button", { name: "Audit", exact: true }).click();
-    await expect(first.locator(".audit-summary")).toHaveCount(3);
+    await expect(first.locator(".audit-summary")).toHaveCount(5);
     await expect(first.getByText("Error", { exact: true }).first()).toBeVisible();
     await second.getByRole("button", { name: "Audit", exact: true }).click();
     await expect(second.locator(".audit-summary")).toHaveCount(0);
 
     await first.getByRole("button", { name: "Work", exact: true }).click();
-    await first.getByRole("button", { name: "Back to work" }).click();
+    await first.getByRole("button", { name: "Back to queue" }).click();
     await first.getByRole("button", { name: "Reset my demo" }).click();
     await first.getByRole("button", { name: "Reset my demo" }).click();
     await expect(first.getByText("Fresh workspace ready")).toBeVisible();
@@ -123,7 +127,7 @@ test("isolates turns, provider failures, audit history, accepted work, and reset
     await expect(second.getByText("Fresh workspace ready")).toHaveCount(0);
 
     await first.getByRole("button", { name: "Audit", exact: true }).click();
-    await expect(first.locator(".audit-summary")).toHaveCount(3);
+    await expect(first.locator(".audit-summary")).toHaveCount(5);
     await expect(first.getByText("Workspace reset", { exact: true })).toBeVisible();
     await second.getByRole("button", { name: "Audit", exact: true }).click();
     await expect(second.locator(".audit-summary")).toHaveCount(0);

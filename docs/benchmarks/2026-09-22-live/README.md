@@ -2,6 +2,8 @@
 
 This is the single authorized live run of the bounded provider benchmark. It ran from commit `bfe74280c512ae8677260fc0d8844e750e1283be` with fixture digest `7cc2cc38f2425ab080d3c2e0d25457d1977221b01dd190b96f0ae0035f89d971`.
 
+The historical manifest's `constrainedMaximumOutputTokens: 64` field applied only to Ministral. Jev sent no token cap. [The retained correction](CORRECTION.md) records the actual Jev request bounds and observed sizes without changing the measured artifacts.
+
 The run attempted all 28 permitted requests with concurrency 1, no retry, and a 20-second timeout per request. Jev ran before Ministral for all 12 constrained fixtures. Two separate Ministral tool sequences then ran with at most two requests each. The command exited 2 because one tool sequence was incomplete. It made no automatic rerun.
 
 ## Constrained results

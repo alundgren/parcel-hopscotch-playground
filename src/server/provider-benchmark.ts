@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import type {
-  JevRequest,
-  MinistralRequest,
-  ProviderMetadata,
-  ProviderUsage,
+import {
+  providerBounds,
+  type JevRequest,
+  type MinistralRequest,
+  type ProviderMetadata,
+  type ProviderUsage,
 } from "./providers/contracts.js";
 
 export type BenchmarkTask = "consent" | "exception";
@@ -87,7 +88,12 @@ export const benchmarkLimits = {
   concurrency: 1,
   retries: 0,
   requestTimeoutMs: 20_000,
-  constrainedMaximumOutputTokens: 64,
+  ministralConstrainedMaximumOutputTokens: 64,
+  jevConstrainedMaximumOutputTokens: null,
+  jevQuestionsPerRequest: 1,
+  jevChoicesPerTask: { consent: 3, exception: 7 },
+  jevMaximumRequestBytes: providerBounds.maximumContextBytes,
+  jevMaximumResponseBytes: providerBounds.maximumResponseBytes,
   scenarioMaximumOutputTokens: 256,
   maximumRunDurationMs: 10 * 60_000,
 } as const;
@@ -227,7 +233,7 @@ export const buildMinistralBenchmarkRequest = (input: BenchmarkInput): Ministral
         isObject(value) && Object.keys(value).length === 1 && typeof value.choice === "string" && choices.includes(value.choice),
     }],
     toolChoice: { name: "recordClassification" },
-    maxOutputTokens: benchmarkLimits.constrainedMaximumOutputTokens,
+    maxOutputTokens: benchmarkLimits.ministralConstrainedMaximumOutputTokens,
   };
 };
 
