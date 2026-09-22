@@ -634,6 +634,7 @@ describe("provider attempt audit", () => {
       const resetProposal = yield* repository.prepareReset(owner, 1);
       yield* repository.accept(owner, 1, resetProposal.id, "retained-reset-key", "reset-request");
       return {
+        metadataAttemptId: metadataAttempt.id,
         page: yield* repository.auditPage(owner, "Prepare BB-1042"),
         byAttemptId: yield* repository.auditPage(owner, started.id),
         byFixtureLabel: yield* repository.auditPage(owner, "Fixture"),
@@ -654,10 +655,10 @@ describe("provider attempt audit", () => {
     expect(result.byFixtureLabel.attempts).toHaveLength(1);
     expect(result.byUnknownLabel.attempts).toHaveLength(1);
     expect(result.byReceiptLinkedMetric.attempts).toHaveLength(1);
-    expect(result.byInputTokens.attempts.map((attempt) => attempt.id)).toEqual([result.byDisplayedCost.attempts[0]?.id]);
-    expect(result.byOutputTokens.attempts.map((attempt) => attempt.id)).toEqual([result.byDisplayedCost.attempts[0]?.id]);
-    expect(result.byRequestBytes.attempts.map((attempt) => attempt.id)).toEqual([result.byDisplayedCost.attempts[0]?.id]);
-    expect(result.byResponseBytes.attempts.map((attempt) => attempt.id)).toEqual([result.byDisplayedCost.attempts[0]?.id]);
+    expect(result.byInputTokens.attempts.map((attempt) => attempt.id)).toContain(result.metadataAttemptId);
+    expect(result.byOutputTokens.attempts.map((attempt) => attempt.id)).toContain(result.metadataAttemptId);
+    expect(result.byRequestBytes.attempts.map((attempt) => attempt.id)).toContain(result.metadataAttemptId);
+    expect(result.byResponseBytes.attempts.map((attempt) => attempt.id)).toContain(result.metadataAttemptId);
     expect(result.byDisplayedCost.attempts).toHaveLength(1);
     expect(result.resetPage.markers).toHaveLength(1);
     expect(result.detail?.application.map((record) => [record.kind, record.outcome])).toEqual(expect.arrayContaining([

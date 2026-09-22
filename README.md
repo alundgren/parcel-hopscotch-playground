@@ -32,6 +32,30 @@ pnpm build
 pnpm test:e2e
 ```
 
+Create the six labeled approved-reference comparisons at 1440×1000 and 320×900 with:
+
+```bash
+pnpm proof:visual
+```
+
+Playwright writes the comparisons, raw screenshots, and videos to `test-results/`. The command waits for the real workspace and tool catalogue before capture.
+
+Create readable desktop and narrow demonstrations of completed batch work and stale-review recovery with:
+
+```bash
+pnpm proof:video
+```
+
+This adds pauses after completed states are visible. The pauses occur outside the Send-to-completed-work and Accept-to-visible measurement intervals.
+
+Exercise the complete bounded provider benchmark without paid requests with:
+
+```bash
+pnpm benchmark:providers -- --mode fixture --output-dir /tmp/parcel-provider-benchmark-fixture
+```
+
+The fixture directory must be empty. Live mode additionally requires `--confirm-live`, a clean checkout, an output directory outside the repository, and `OPENROUTER_API_KEY` in the process environment. It is disabled in CI. The retained [single live run](docs/benchmarks/2026-09-22-live/README.md) records the fixed inputs, limits, outcomes, actual usage, and costs.
+
 Run the bounded live provider check explicitly with:
 
 ```bash
