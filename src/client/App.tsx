@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { AgentViewContext, AuditAttemptDetail, AuditAttemptSummary, AuditPage, CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, TutorialState, WorkspaceSnapshot } from "../shared/contracts";
+import type { AgentViewContext, AuditAttemptDetail, AuditAttemptSummary, AuditPage, CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, ToolCatalogueEntry, ToolCategory, TutorialState, WorkspaceSnapshot } from "../shared/contracts";
+import { exploreScenarios, type ExploreScenarioId } from "../shared/explore";
 import { targets } from "../shared/targets";
 import { Button } from "./components/ui/button";
 import { useWorkspace, type ConnectionStatus } from "./use-workspace";
@@ -131,6 +132,96 @@ function ChatPanel({ snapshot, connected, onSend, onCancel, error }: { snapshot:
 }
 function EmptyRoute({ title, text }: { title: string; text: string }) { return <main className="empty-route"><h1>{title}</h1><p>{text}</p></main>; }
 
+type CatalogueCategory = "All" | ToolCategory;
+interface ScenarioNotice { readonly scenario: ExploreScenarioId; readonly message: string; readonly offerReset: boolean }
+const effectLabels: Readonly<Record<string, string>> = {
+  read_workspace: "Read the current workspace",
+  read_audit: "Read owner-scoped Audit history",
+  navigate_registered_view: "Open a registered application view",
+  highlight_registered_target: "Highlight a registered application target",
+  start_bounded_tutorial: "Start a bounded tutorial",
+  stop_tutorial_guidance: "Dismiss the current tutorial",
+  create_reviewed_proposal: "Prepare a proposal for human review",
+  provider_classification: "Run a bounded provider classification",
+  read_only: "Leave workspace data unchanged",
+};
+
+function ExploreView({ entries, connected, busy, scenarioActive, notice, runScenario, cancelScenario, prepareReset, advanceScenario }: {
+  entries: ReadonlyArray<ToolCatalogueEntry>;
+  connected: boolean;
+  busy: boolean;
+  scenarioActive: boolean;
+  notice: ScenarioNotice | null;
+  runScenario: (scenario: ExploreScenarioId) => void;
+  cancelScenario: () => void;
+  prepareReset: () => void;
+  advanceScenario: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<CatalogueCategory>("All");
+  const [scenarioId, setScenarioId] = useState<ExploreScenarioId | null>(null);
+  const [copyStatus, setCopyStatus] = useState("");
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const scenario = exploreScenarios.find((candidate) => candidate.id === scenarioId) ?? null;
+  const matches = entries.filter((entry) =>
+    (category === "All" || entry.category === category)
+    && (scenario === null || scenario.tools.includes(entry.id))
+    && words.every((word) => JSON.stringify(entry).toLowerCase().includes(word))
+  );
+  const clear = () => { setQuery(""); setCategory("All"); setScenarioId(null); setCopyStatus(""); };
+  const showScenarioTools = (id: ExploreScenarioId) => {
+    setQuery("");
+    setCategory("All");
+    setScenarioId(id);
+    setCopyStatus("");
+    requestAnimationFrame(() => document.getElementById("tool-filter")?.focus());
+  };
+  const copyExample = async (entry: ToolCatalogueEntry) => {
+    const value = JSON.stringify({ tool: entry.id, arguments: entry.example.arguments }, null, 2);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyStatus(`Copied the ${entry.id} example.`);
+    } catch {
+      const node = document.getElementById(`tool-call-${entry.id}`);
+      if (node !== null) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+      setCopyStatus("The example is selected. Use your usual copy shortcut.");
+    }
+  };
+  return <main className="explore-view" aria-labelledby="explore-title">
+    <div className="explore-heading"><h1 id="explore-title">Explore</h1><span>Current workspace</span></div>
+    <div className="scenario-grid">
+      {exploreScenarios.map((item) => <article className="scenario-card" key={item.id} data-scenario={item.id}>
+        <h2>{item.title}</h2>
+        <p className="scenario-prompt">{item.prompt}</p>
+        <p>{item.description}</p>
+        {notice?.scenario === item.id && <div className="scenario-notice" role="status"><p>{notice.message}</p>{scenarioActive && <Button variant="link" onClick={cancelScenario}>Cancel</Button>}{notice.offerReset && <Button variant="link" onClick={prepareReset} disabled={!connected || busy}>Prepare reset for review</Button>}</div>}
+        <div className="scenario-actions"><Button className="scenario-try" aria-label={`${item.actionLabel}: ${item.title}`} onClick={() => runScenario(item.id)} disabled={!connected || busy}>{busy && notice?.scenario === item.id ? "Working…" : item.actionLabel} <span aria-hidden="true">↗</span></Button><Button variant="link" aria-label={`Show tools for ${item.title}`} aria-pressed={scenarioId === item.id} onClick={() => showScenarioTools(item.id)}>{item.tools.length} tools</Button>{item.id === "batch" && <Button variant="link" onClick={advanceScenario} disabled={!connected || busy}>Advance stock case</Button>}</div>
+      </article>)}
+    </div>
+    <section aria-label="Tool catalogue" id="tool-catalogue">
+      <div className="tools-toolbar">
+        <label className="tool-search"><span aria-hidden="true">⌕</span><span className="sr-only">Filter tools</span><input id="tool-filter" type="search" value={query} onChange={(event) => { setQuery(event.target.value); setCopyStatus(""); }} placeholder="Filter tools or try a phrase…" autoComplete="off" />{query.length > 0 && <Button variant="icon" aria-label="Clear tool search" onClick={() => { setQuery(""); setCopyStatus(""); document.getElementById("tool-filter")?.focus(); }}>×</Button>}</label>
+        <div className="tool-filters" role="group" aria-label="Tool type">{(["All", "Read", "Guide", "Prepare", "Classify"] as const).map((name) => <Button key={name} variant="quiet" aria-pressed={category === name} onClick={() => { setCategory(name); setCopyStatus(""); }}>{name}</Button>)}</div>
+      </div>
+      <div className="tool-status"><span aria-live="polite">{matches.length === entries.length ? `${matches.length} tools` : `${matches.length} of ${entries.length} tools`}</span>{scenario !== null && <Button className="scenario-filter" onClick={() => setScenarioId(null)} aria-label={`Clear ${scenario.title} scenario filter`}>{scenario.title} ×</Button>}</div>
+      {matches.length === 0 ? <div className="tools-empty"><p>No tools match these filters.</p><Button onClick={clear}>Clear filters</Button></div> : <>
+        <div className="tool-columns" aria-hidden="true"><span>Tool</span><span>What it does</span><span>Type</span><span /></div>
+        <div className="tool-list">{matches.map((entry) => <details className="tool-row" key={entry.id} data-tool-id={entry.id}>
+          <summary><span><span className="tool-name">{entry.purpose}</span><code className="tool-id">{entry.id}</code></span><span className="tool-description">{entry.description}</span><span className="tool-kind">{entry.category}</span><span className="tool-chevron" aria-hidden="true">›</span></summary>
+          <div className="tool-detail"><p className="tool-effect">What it may do: {entry.allowedEffects.map((effect) => effectLabels[effect] ?? effect).join("; ")}.</p><p className="tool-example-note">Illustrative examples validated against the runtime schemas.</p><div className="tool-examples"><div><div className="code-label"><span>Example call</span><Button variant="link" onClick={() => void copyExample(entry)} aria-label={`Copy example call for ${entry.id}`}>Copy</Button></div><pre id={`tool-call-${entry.id}`}>{JSON.stringify({ tool: entry.id, arguments: entry.example.arguments }, null, 2)}</pre></div><div><div className="code-label"><span>Example result</span></div><pre>{JSON.stringify(entry.example.result, null, 2)}</pre></div></div></div>
+        </details>)}</div>
+      </>}
+      <div className="copy-status" role="status">{copyStatus}</div>
+    </section>
+  </main>;
+}
+
 const durationText = (duration: number | null): string => duration === null ? "Unknown" : duration < 1_000 ? `${Math.round(duration)} ms` : `${(duration / 1_000).toFixed(duration < 10_000 ? 2 : 1)} s`;
 const tokenText = (attempt: AuditAttemptSummary): string => attempt.totalTokens === null ? "Unknown" : attempt.totalTokens.toLocaleString();
 const costText = (attempt: AuditAttemptSummary): string => {
@@ -151,8 +242,17 @@ const outcomeText: Record<AuditAttemptSummary["outcome"], string> = {
   timeout: "Timed out", cancelled: "Cancelled", interrupted: "Interrupted",
 };
 type AuditTab = "request" | "response" | "application";
+const consentResultText = (bodyText: string): string | null => {
+  try {
+    const body = JSON.parse(bodyText) as { result?: { consent?: unknown; needsReview?: unknown } };
+    if (typeof body.result?.consent !== "string" || typeof body.result.needsReview !== "boolean") return null;
+    return `Consent: ${body.result.consent}. ${body.result.needsReview ? "Human review required." : "No further consent review required."}`;
+  } catch {
+    return null;
+  }
+};
 
-function AuditDetails({ detail, tab, setTab, loadMore, filterTurn }: { detail: AuditAttemptDetail | null; tab: AuditTab; setTab: (tab: AuditTab) => void; loadMore: (attemptId: string, cursor: string) => void; filterTurn: (turnId: string) => void }) {
+function AuditDetails({ detail, tab, setTab, loadMore, filterTurn, revealToolResult }: { detail: AuditAttemptDetail | null; tab: AuditTab; setTab: (tab: AuditTab) => void; loadMore: (attemptId: string, cursor: string) => void; filterTurn: (turnId: string) => void; revealToolResult: boolean }) {
   if (detail === null) return <div className="audit-detail-loading" role="status">Loading request details…</div>;
   const panelId = `audit-panel-${detail.attempt.id}`;
   const selectedText = tab === "request" ? detail.requestText : detail.responseText ?? "No response body was recorded.";
@@ -174,24 +274,35 @@ function AuditDetails({ detail, tab, setTab, loadMore, filterTurn }: { detail: A
       {(["request", "response", "application"] as const).map((name, index, tabs) => <button key={name} type="button" role="tab" tabIndex={tab === name ? 0 : -1} aria-selected={tab === name} aria-controls={panelId} id={`audit-tab-${detail.attempt.id}-${name}`} onClick={() => setTab(name)} onKeyDown={(event) => { let next = index; if (event.key === "ArrowRight") next = (index + 1) % tabs.length; else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length; else if (event.key === "Home") next = 0; else if (event.key === "End") next = tabs.length - 1; else return; event.preventDefault(); const nextTab = tabs[next]!; setTab(nextTab); document.getElementById(`audit-tab-${detail.attempt.id}-${nextTab}`)?.focus(); }}>{name === "application" ? "Application result" : name[0]!.toUpperCase() + name.slice(1)}</button>)}
     </div>
     <div role="tabpanel" id={panelId} aria-labelledby={`audit-tab-${detail.attempt.id}-${tab}`}>
-      {tab === "application" ? detail.application.length === 0 ? <p className="audit-no-result">No correlated application result was recorded.</p> : <div className="audit-results">{detail.application.map((record) => <details key={record.id}><summary><strong>{record.label}</strong><span>{record.outcome}</span><span>{new Date(record.occurredAt).toLocaleTimeString()}</span></summary><div className="audit-result-refs">{record.requestId !== null && <span>Request {record.requestId}</span>}{record.turnId !== null && <span>Turn {record.turnId}</span>}{record.proposalId !== null && <span>Proposal {record.proposalId}</span>}{record.receiptId !== null && <span>Receipt {record.receiptId}</span>}</div><pre>{record.bodyText}</pre></details>)}{detail.applicationNextCursor !== null && <Button variant="quiet" onClick={() => loadMore(detail.attempt.id, detail.applicationNextCursor!)}>Load earlier results</Button>}</div> : <pre>{selectedText}</pre>}
+      {tab === "application" ? detail.application.length === 0 ? <p className="audit-no-result">No correlated application result was recorded.</p> : <div className="audit-results">{detail.application.map((record) => { const focusedResult = revealToolResult && record.kind === "tool"; const focusedConsent = focusedResult ? consentResultText(record.bodyText) : null; return <details key={record.id} open={focusedResult || undefined} data-focused-application-result={focusedResult ? "true" : undefined}><summary><strong>{record.label}</strong><span>{record.outcome}</span><span>{new Date(record.occurredAt).toLocaleTimeString()}</span></summary>{focusedConsent !== null && <p className="audit-focused-result" data-focused-consent-result="true">{focusedConsent}</p>}<div className="audit-result-refs">{record.requestId !== null && <span>Request {record.requestId}</span>}{record.turnId !== null && <span>Turn {record.turnId}</span>}{record.proposalId !== null && <span>Proposal {record.proposalId}</span>}{record.receiptId !== null && <span>Receipt {record.receiptId}</span>}</div><pre>{record.bodyText}</pre></details>; })}{detail.applicationNextCursor !== null && <Button variant="quiet" onClick={() => loadMore(detail.attempt.id, detail.applicationNextCursor!)}>Load earlier results</Button>}</div> : <pre>{selectedText}</pre>}
     </div>
   </div>;
 }
 
-function AuditView({ page, details, loading, error, revision, connected, requestPage, requestDetail }: {
+function AuditView({ page, details, loading, error, revision, connected, focusedAttemptId, onFocusedAttemptRendered, requestPage, requestDetail }: {
   page: AuditPage | null;
   details: Readonly<Record<string, AuditAttemptDetail>>;
   loading: boolean;
   error: string | null;
   revision: number;
   connected: boolean;
+  focusedAttemptId: string | null;
+  onFocusedAttemptRendered: (attemptId: string) => void;
   requestPage: (query: string, cursor?: string | null, appendAttempts?: boolean, markerCursor?: string | null, appendMarkers?: boolean) => void;
   requestDetail: (attemptId: string, applicationCursor?: string | null, append?: boolean) => void;
 }) {
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
   const [tab, setTab] = useState<AuditTab>("request");
+  const acknowledgedFocus = useRef<string | null>(null);
+  useEffect(() => {
+    if (focusedAttemptId === null) return;
+    acknowledgedFocus.current = null;
+    setQuery(focusedAttemptId);
+    setOpenId(focusedAttemptId);
+    setTab("application");
+    if (connected && details[focusedAttemptId] === undefined) requestDetail(focusedAttemptId);
+  }, [focusedAttemptId]);
   useEffect(() => {
     if (!connected) return;
     const timer = window.setTimeout(() => requestPage(query), 180);
@@ -200,6 +311,19 @@ function AuditView({ page, details, loading, error, revision, connected, request
   useEffect(() => {
     if (connected && openId !== null) requestDetail(openId);
   }, [revision, connected]);
+  useEffect(() => {
+    if (focusedAttemptId === null || acknowledgedFocus.current === focusedAttemptId || details[focusedAttemptId] === undefined || !page?.attempts.some((attempt) => attempt.id === focusedAttemptId)) return;
+    let cancelled = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const detail = document.getElementById(`audit-detail-${focusedAttemptId}`);
+      const visibleResult = detail?.querySelector('[data-focused-consent-result="true"]');
+      const openResult = visibleResult?.closest('details[data-focused-application-result="true"][open]');
+      if (cancelled || !(visibleResult instanceof HTMLElement) || openResult === null || openResult === undefined || visibleResult.getClientRects().length === 0) return;
+      acknowledgedFocus.current = focusedAttemptId;
+      onFocusedAttemptRendered(focusedAttemptId);
+    }));
+    return () => { cancelled = true; };
+  }, [focusedAttemptId, details, page?.attempts, onFocusedAttemptRendered]);
   const open = (attemptId: string) => {
     if (openId === attemptId) { setOpenId(null); return; }
     setOpenId(attemptId);
@@ -217,7 +341,7 @@ function AuditView({ page, details, loading, error, revision, connected, request
     {page !== null && page.markers.length > 0 && <div className="audit-markers" aria-label="Reset history">{page.markers.map((marker) => <details key={marker.id} data-reset-id={marker.id}><summary><span>Workspace reset</span><span>{new Date(marker.occurredAt).toLocaleString()}</span></summary><pre>{marker.bodyText}</pre></details>)}{page.markerNextCursor !== null && <div className="audit-more"><Button variant="quiet" disabled={loading} onClick={() => requestPage(query, null, false, page.markerNextCursor, true)}>{loading ? "Loading…" : "Load earlier resets"}</Button></div>}</div>}
     {visible.length === 0 && !loading ? <div className="audit-empty">{query.trim().length > 0 ? <>No requests match this filter. <Button variant="link" onClick={() => setQuery("")}>Clear search</Button></> : "No inference attempts have been recorded yet."}</div> : <div className="audit-scroll"><table className="audit-table" aria-label="Inference requests"><colgroup><col className="audit-col-time" /><col /><col className="audit-col-model" /><col className="audit-col-outcome" /><col className="audit-col-duration" /><col className="audit-col-tokens" /><col className="audit-col-cost" /></colgroup><thead><tr><th scope="col">At</th><th scope="col">Request</th><th scope="col">Model</th><th scope="col">Outcome</th><th scope="col" className="audit-number">Duration</th><th scope="col" className="audit-number">Tokens</th><th scope="col" className="audit-number">Cost</th></tr></thead><tbody>{visible.map((attempt) => {
       const expanded = openId === attempt.id;
-      return <Fragment key={attempt.id}><tr className={`audit-summary${expanded ? " audit-summary-open" : ""}`} data-attempt-id={attempt.id}><td>{new Date(attempt.startedAt).toLocaleTimeString([], { hour12: false })}</td><td><button type="button" className="audit-expand" aria-expanded={expanded} aria-controls={`audit-detail-${attempt.id}`} onClick={() => open(attempt.id)}><span aria-hidden="true">{expanded ? "⌄" : "›"}</span><span>{attempt.requestLabel}</span></button></td><td><span>{modelText(attempt)}</span>{attempt.mode === "scripted" && <small>Fixture</small>}</td><td className={`audit-outcome audit-outcome-${attempt.outcome}`}>{outcomeText[attempt.outcome]}</td><td className="audit-number">{durationText(attempt.durationMs)}</td><td className="audit-number">{tokenText(attempt)}</td><td className="audit-number">{costText(attempt)}</td></tr>{expanded && <tr><td colSpan={7} className="audit-detail-cell"><AuditDetails detail={details[attempt.id] ?? null} tab={tab} setTab={setTab} loadMore={(attemptId, cursor) => requestDetail(attemptId, cursor, true)} filterTurn={(turnId) => setQuery(turnId)} /></td></tr>}</Fragment>;
+      return <Fragment key={attempt.id}><tr className={`audit-summary${expanded ? " audit-summary-open" : ""}`} data-attempt-id={attempt.id}><td>{new Date(attempt.startedAt).toLocaleTimeString([], { hour12: false })}</td><td><button type="button" className="audit-expand" aria-expanded={expanded} aria-controls={`audit-detail-${attempt.id}`} onClick={() => open(attempt.id)}><span aria-hidden="true">{expanded ? "⌄" : "›"}</span><span>{attempt.requestLabel}</span></button></td><td><span>{modelText(attempt)}</span>{attempt.mode === "scripted" && <small>Fixture</small>}</td><td className={`audit-outcome audit-outcome-${attempt.outcome}`}>{outcomeText[attempt.outcome]}</td><td className="audit-number">{durationText(attempt.durationMs)}</td><td className="audit-number">{tokenText(attempt)}</td><td className="audit-number">{costText(attempt)}</td></tr>{expanded && <tr><td colSpan={7} className="audit-detail-cell"><AuditDetails detail={details[attempt.id] ?? null} tab={tab} setTab={setTab} loadMore={(attemptId, cursor) => requestDetail(attemptId, cursor, true)} filterTurn={(turnId) => setQuery(turnId)} revealToolResult={focusedAttemptId === attempt.id} /></td></tr>}</Fragment>;
     })}</tbody></table></div>}
     {page?.nextCursor !== null && page?.nextCursor !== undefined && <div className="audit-more"><Button variant="quiet" disabled={loading} onClick={() => requestPage(query, page.nextCursor, true)}>{loading ? "Loading…" : "Load more"}</Button></div>}
   </main>;
@@ -230,7 +354,9 @@ export default function App() {
   const [receipt, setReceipt] = useState<CommandReceipt | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { snapshot, status, runCommand, sendAgentMessage, cancelAgentTurn, agentOperation, acknowledgeAgentOperation, acknowledgeAgentComplete, acknowledgeCommandVisible, agentError, auditPage, auditDetails, auditLoading, auditError, auditRevision, requestAudit, requestAuditDetail } = useWorkspace();
+  const [scenarioNotice, setScenarioNotice] = useState<ScenarioNotice | null>(null);
+  const [auditFocus, setAuditFocus] = useState<{ readonly attemptId: string; readonly turnId: string; readonly generation: number; readonly acknowledge: boolean } | null>(null);
+  const { snapshot, status, toolCatalogue, runCommand, runExploreScenario, sendAgentMessage, cancelAgentTurn, agentOperation, acknowledgeAgentOperation, acknowledgeAgentComplete, acknowledgeCommandVisible, agentError, auditPage, auditDetails, auditLoading, auditError, auditRevision, requestAudit, requestAuditDetail } = useWorkspace();
   const acceptStarted = useRef<number | null>(null);
   const priorGeneration = useRef<number | null>(null);
   useEffect(() => {
@@ -310,6 +436,47 @@ export default function App() {
   const accept = async () => { if (proposal === null) return; acceptStarted.current = performance.now(); const result = await perform(() => runCommand({ type: "accept_proposal", proposalId: proposal.id, idempotencyKey: crypto.randomUUID() })); if (result?.kind === "receipt") { setProposal(null); setSelectedOrderId(null); setReceipt(result.receipt); } else { acceptStarted.current = null; } };
   const undo = async () => { if (receipt === null) return; await showProposal(() => runCommand({ type: "prepare_undo", receiptId: receipt.id })); };
   const advance = async () => { const result = await perform(() => runCommand({ type: "advance_scenario", scenario: "stock_change" })); if (result?.kind === "scenario") setError(result.message); };
+  const advanceFromExplore = async () => {
+    setScenarioNotice({ scenario: "batch", message: "Advancing the stock case without inference…", offerReset: false });
+    const result = await perform(() => runCommand({ type: "advance_scenario", scenario: "stock_change" }));
+    if (result?.kind === "scenario") setScenarioNotice({ scenario: "batch", message: result.message, offerReset: false });
+    else if (result === null) setScenarioNotice({ scenario: "batch", message: "This stock case has no further step. Prepare a reset to restore it.", offerReset: true });
+  };
+  const launchExploreScenario = async (scenarioId: ExploreScenarioId) => {
+    if (snapshot === null) return;
+    setError(null);
+    if (scenarioId === "learn") {
+      const address = snapshot.orders.find((order) => order.id === "BB-1042");
+      if (address === undefined || address.status !== "review") {
+        setScenarioNotice({ scenario: scenarioId, message: "BB-1042 has already moved past its address review. Prepare a reset to practise the approved walkthrough again.", offerReset: true });
+        return;
+      }
+    }
+    if (scenarioId === "batch" && !snapshot.orders.some((order) => order.status === "ready")) {
+      setScenarioNotice({ scenario: scenarioId, message: "There are no ready orders left to review. Prepare a reset to restore the example queue.", offerReset: true });
+      return;
+    }
+    setScenarioNotice({ scenario: scenarioId, message: scenarioId === "consent" ? "Jev is checking the selected customer evidence…" : "Opening this scenario in Work…", offerReset: false });
+    if (scenarioId === "consent") {
+      const result = await perform(runExploreScenario);
+      if (result?.kind !== "explore") {
+        if (result === null) setScenarioNotice({ scenario: scenarioId, message: "The consent check did not complete. Its recorded failure remains available in Audit.", offerReset: false });
+        return;
+      }
+      setScenarioNotice({ scenario: scenarioId, message: result.message, offerReset: false });
+      setAuditFocus({ attemptId: result.attemptId, turnId: result.turnId, generation: snapshot.generation, acknowledge: result.outcome === "completed" });
+      setView("audit");
+      return;
+    }
+    const selected = exploreScenarios.find((candidate) => candidate.id === scenarioId);
+    if (selected === undefined) return;
+    setView("work");
+    sendAgentMessage(selected.prompt, { view: "explore", focus: null });
+  };
+  const prepareExploreReset = async () => {
+    setView("work");
+    await showProposal(() => runCommand({ type: "prepare_reset" }));
+  };
   type TutorialActionInput =
     | { readonly action: "order_selected"; readonly orderId: string }
     | { readonly action: "ready_filter_selected" }
@@ -348,7 +515,7 @@ export default function App() {
       : "The next step is not visible. Return to Work and open the requested order from the list.";
   const coach = snapshot?.tutorial === null || snapshot?.tutorial === undefined ? null : <TutorialCoach tutorial={snapshot.tutorial} recoveryText={recoveryText} onDismiss={dismissTutorial} disabled={busy || status !== "connected"} />;
 
-  return <div className="app-shell"><header className="topbar"><div className="brand"><BrandIcon /> <span>Bracken &amp; Beam</span></div><span className={`connection connection-${status}`} data-testid="connection-status"><span aria-hidden="true" />{connectionText[status]}</span><nav aria-label="Main navigation">{(["work", "explore", "audit"] as const).map((item) => <Button key={item} variant="quiet" aria-current={view === item ? "page" : undefined} onClick={() => setView(item)}>{item[0]!.toUpperCase() + item.slice(1)}</Button>)}</nav></header>
-    {view === "work" ? <main className="work-layout" data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} coach={coach} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => void confirmReceiptAndBack()} onUndo={undo} coach={coach} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} tutorialReceipt={snapshot.tutorialReceipt} savedProposal={snapshot.currentProposal} tutorialProposal={snapshot.tutorialProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} selectOrder={(orderId) => { setSelectedOrderId(orderId); if (orderId !== null) void reportTutorialAction({ action: "order_selected", orderId }); }} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openTutorialReceipt={() => setReceipt(snapshot.tutorialReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} openTutorialProposal={() => setProposal(snapshot.tutorialProposal)} selectReady={() => { void reportTutorialAction({ action: "ready_filter_selected" }); }} coach={coach} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} onSend={(message) => { try { const context: AgentViewContext = proposal !== null ? { view: "work", focus: { kind: "proposal", proposalId: proposal.id } } : receipt !== null ? { view: "work", focus: { kind: "receipt", receiptId: receipt.id } } : selectedOrderId !== null ? { view: "work", focus: { kind: "order", orderId: selectedOrderId } } : { view, focus: null }; sendAgentMessage(message, context); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><EmptyRoute title="Explore" text="Scenario guides and the tool catalogue arrive with agent integration." />{coach}</div> : <div data-view="audit"><AuditView page={auditPage} details={auditDetails} loading={auditLoading} error={auditError} revision={auditRevision} connected={status === "connected"} requestPage={requestAudit} requestDetail={requestAuditDetail} />{coach}</div>}
+  return <div className="app-shell"><header className="topbar"><div className="brand"><BrandIcon /> <span>Bracken &amp; Beam</span></div><span className={`connection connection-${status}`} data-testid="connection-status"><span aria-hidden="true" />{connectionText[status]}</span><nav aria-label="Main navigation">{(["work", "explore", "audit"] as const).map((item) => <Button key={item} variant="quiet" aria-current={view === item ? "page" : undefined} onClick={() => { setView(item); setAuditFocus(null); }}>{item[0]!.toUpperCase() + item.slice(1)}</Button>)}</nav></header>
+    {view === "work" ? <main className="work-layout" data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} coach={coach} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => void confirmReceiptAndBack()} onUndo={undo} coach={coach} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} tutorialReceipt={snapshot.tutorialReceipt} savedProposal={snapshot.currentProposal} tutorialProposal={snapshot.tutorialProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} selectOrder={(orderId) => { setSelectedOrderId(orderId); if (orderId !== null) void reportTutorialAction({ action: "order_selected", orderId }); }} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openTutorialReceipt={() => setReceipt(snapshot.tutorialReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} openTutorialProposal={() => setProposal(snapshot.tutorialProposal)} selectReady={() => { void reportTutorialAction({ action: "ready_filter_selected" }); }} coach={coach} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} onSend={(message) => { try { const context: AgentViewContext = proposal !== null ? { view: "work", focus: { kind: "proposal", proposalId: proposal.id } } : receipt !== null ? { view: "work", focus: { kind: "receipt", receiptId: receipt.id } } : selectedOrderId !== null ? { view: "work", focus: { kind: "order", orderId: selectedOrderId } } : { view, focus: null }; sendAgentMessage(message, context); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><ExploreView entries={toolCatalogue} connected={status === "connected" && snapshot !== null && snapshot.activeTurn === null} busy={busy} scenarioActive={snapshot?.activeTurn !== null && snapshot?.activeTurn !== undefined} notice={scenarioNotice} runScenario={(scenario) => void launchExploreScenario(scenario)} cancelScenario={cancelAgentTurn} prepareReset={() => void prepareExploreReset()} advanceScenario={() => void advanceFromExplore()} />{coach}</div> : <div data-view="audit"><AuditView page={auditPage} details={auditDetails} loading={auditLoading} error={auditError} revision={auditRevision} connected={status === "connected"} focusedAttemptId={auditFocus?.attemptId ?? null} onFocusedAttemptRendered={(attemptId) => { if (auditFocus?.attemptId === attemptId && auditFocus.acknowledge) acknowledgeAgentComplete(auditFocus.turnId, auditFocus.generation); }} requestPage={requestAudit} requestDetail={requestAuditDetail} />{coach}</div>}
   </div>;
 }

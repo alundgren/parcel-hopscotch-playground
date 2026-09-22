@@ -11,6 +11,49 @@ const EmptyInput = Schema.Record(Schema.String, Schema.Never);
 const OrderIdInput = Schema.Struct({ orderId: Identifier });
 const ProposalOutput = ReviewedProposalSchema;
 const ResultMessage = Schema.Struct({ ok: Schema.Boolean, message: Schema.String });
+const addressExample = {
+  orderId: "BB-1042",
+  family: "address",
+  before: "14 Willow Lane, Bath BA1 2AB",
+  after: "41 Willow Lane, Bath BA1 2AB",
+  effect: "Ship to the customer-confirmed street number.",
+  expectedVersion: 1,
+} as const;
+const substitutionExample = {
+  orderId: "BB-1051",
+  family: "substitution",
+  before: "Blue stoneware mug, quantity 1, £24.00",
+  after: "Sage stoneware mug, quantity 1, £24.00",
+  effect: "Reserve one sage mug at no price change.",
+  expectedVersion: 1,
+} as const;
+const bundleExample = {
+  orderId: "BB-1090",
+  family: "bundle",
+  before: "Matched candle pair with gift sleeve",
+  after: "Matched candle pair confirmed",
+  effect: "Confirm the complete matched bundle.",
+  expectedVersion: 1,
+} as const;
+const undoExample = {
+  orderId: "BB-1051",
+  family: "substitution",
+  before: "Sage stoneware mug, quantity 1, £24.00",
+  after: "Blue stoneware mug, quantity 1, £24.00",
+  effect: "Restore the accepted replacement to the original blue mug.",
+  expectedVersion: 2,
+} as const;
+const proposalExample = (kind: "resolution" | "batch" | "undo" | "reset", title: string, change?: typeof addressExample | typeof substitutionExample | typeof bundleExample | typeof undoExample) => ({
+  id: "proposal_example",
+  generation: 1,
+  kind,
+  title,
+  ready: true,
+  changes: change === undefined ? [] : [change],
+  omissions: [],
+  effects: kind === "reset" ? ["Restore the seeded workspace and keep Audit history."] : change === undefined ? [] : [change.effect],
+  createdAt: "2026-09-21T09:14:00.000Z",
+});
 
 const orderResult = Schema.Struct({
   id: Schema.String,
@@ -73,13 +116,17 @@ const specs = {
   getOrder: {
     description: "Read one current user's order and its evidence by opaque order ID.",
     category: "Read", purpose: "Inspect an order", allowedEffects: ["read_workspace"],
-    example: { arguments: { orderId: "BB-1042" }, result: { order: { id: "BB-1042" } } },
+    example: { arguments: { orderId: "BB-1042" }, result: { order: {
+      id: "BB-1042", item: "Woven basket", issue: "Street number needs checking.", status: "review", family: "address", version: 1,
+      businessValue: "14 Willow Lane, Bath BA1 2AB",
+      evidence: [{ label: "Customer", value: "The number is 41, not 14. Everything else is right.", occurredAt: "2026-09-21T08:40:00.000Z", age: "34 min ago" }],
+    } } },
     input: OrderIdInput, output: Schema.Struct({ order: orderResult }),
   },
   groupOrders: {
     description: "Group the current queue by status or exception family.",
     category: "Read", purpose: "Group the work", allowedEffects: ["read_workspace"],
-    example: { arguments: { groupBy: "status" }, result: { groups: [{ name: "ready", count: 2, orderIds: ["BB-1051"] }] } },
+    example: { arguments: { groupBy: "status" }, result: { groups: [{ name: "ready", count: 1, orderIds: ["BB-1051"] }] } },
     input: Schema.Struct({ groupBy: Schema.Literals(["status", "family"]) }),
     output: Schema.Struct({ groups: Schema.Array(Schema.Struct({ name: Schema.String, count: Schema.Int, orderIds: Schema.Array(Schema.String) })) }),
   },
@@ -117,50 +164,50 @@ const specs = {
   prepareAddressCorrection: {
     description: "Prepare the authoritative address correction for an address order. The user must accept the preview.",
     category: "Prepare", purpose: "Prepare an address correction", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: { orderId: "BB-1042" }, result: { id: "proposal_example", kind: "resolution" } },
+    example: { arguments: { orderId: "BB-1042" }, result: proposalExample("resolution", "Check address", addressExample) },
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareSubstitution: {
     description: "Prepare the authoritative substitution for a substitution order. Stock and consent remain application checks.",
     category: "Prepare", purpose: "Prepare a substitution", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: { orderId: "BB-1051" }, result: { id: "proposal_example", kind: "resolution" } },
+    example: { arguments: { orderId: "BB-1051" }, result: proposalExample("resolution", "Review replacement", substitutionExample) },
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareResolution: {
     description: "Prepare the existing authoritative resolution for any conventional exception family. The user must accept the preview.",
     category: "Prepare", purpose: "Prepare a reviewed resolution", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: { orderId: "BB-1090" }, result: { id: "proposal_example", kind: "resolution" } },
+    example: { arguments: { orderId: "BB-1090" }, result: proposalExample("resolution", "Review resolution", bundleExample) },
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareBatch: {
     description: "Prepare all currently eligible ready orders with exact inclusions and omissions. The user must accept the preview.",
     category: "Prepare", purpose: "Prepare a batch", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: {}, result: { id: "proposal_example", kind: "batch" } }, input: EmptyInput, output: ProposalOutput,
+    example: { arguments: {}, result: proposalExample("batch", "Review 1 change", substitutionExample) }, input: EmptyInput, output: ProposalOutput,
   },
   prepareUndo: {
     description: "Prepare a checked reversal of a current user's receipt. The user must accept the preview.",
     category: "Prepare", purpose: "Prepare an undo", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: { receiptId: "receipt_example" }, result: { id: "proposal_example", kind: "undo" } },
+    example: { arguments: { receiptId: "receipt_example" }, result: proposalExample("undo", "Undo 1 accepted change", undoExample) },
     input: Schema.Struct({ receiptId: Identifier }), output: ProposalOutput,
   },
   classifyNote: {
     description: "Use Jev to classify a short note into the application's six exception families plus other.",
     category: "Classify", purpose: "Classify a note", allowedEffects: ["provider_classification", "read_only"],
-    example: { arguments: { note: "Carrier missed collection." }, result: { category: "carrier", confidence: 0.98 } },
+    example: { arguments: { note: "Carrier missed collection." }, result: { category: "carrier", confidence: 0.98, alternatives: [{ category: "carrier", probability: 0.98 }, { category: "other", probability: 0.02 }] } },
     input: Schema.Struct({ note: ShortText }),
     output: Schema.Struct({ category: Schema.Literals(["address", "substitution", "bundle", "weight", "carrier", "duplicate", "other"]), confidence: Schema.Number, alternatives: Schema.Array(Schema.Struct({ category: Schema.String, probability: Schema.Number })) }),
   },
   checkConsent: {
     description: "Use Jev to assess the selected order's customer evidence against fixed consent alternatives. Conditional or ambiguous input remains unconfirmed.",
     category: "Classify", purpose: "Check replacement consent", allowedEffects: ["provider_classification", "read_only"],
-    example: { arguments: { orderId: "BB-1076" }, result: { consent: "conditional", needsReview: true, evidence: "Sage might work..." } },
+    example: { arguments: { orderId: "BB-1076" }, result: { consent: "conditional", needsReview: true, evidence: "Sage might work, but can you send a picture first?", alternatives: [{ label: "conditional", probability: 0.98 }, { label: "explicit", probability: 0.01 }, { label: "unclear", probability: 0.01 }] } },
     input: OrderIdInput,
     output: Schema.Struct({ consent: Schema.Literals(["explicit", "conditional", "unclear"]), needsReview: Schema.Boolean, evidence: Schema.String, alternatives: Schema.Array(Schema.Struct({ label: Schema.String, probability: Schema.Number })) }),
   },
   prepareReset: {
     description: "Prepare a reset preview for the current workspace. Only the user can accept it.",
     category: "Prepare", purpose: "Prepare a fresh start", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: {}, result: { id: "proposal_example", kind: "reset" } }, input: EmptyInput, output: ProposalOutput,
+    example: { arguments: {}, result: proposalExample("reset", "Reset my demo") }, input: EmptyInput, output: ProposalOutput,
   },
 } as const satisfies Record<string, ToolSpec>;
 
@@ -228,16 +275,37 @@ export const modelToolsFromRegistry = (registry: Readonly<Record<ToolName, Regis
     },
   }));
 
-export const toolCatalogueMetadata = Object.values(specs).map((tool, index) => ({
-  id: Object.keys(specs)[index] as ToolName,
-  purpose: tool.purpose,
-  category: tool.category,
-  description: tool.description,
-  allowedEffects: tool.allowedEffects,
-  example: tool.example,
-  inputSchema: jsonSchema(tool.input),
-  outputSchema: jsonSchema(tool.output),
-}));
+const validateToolExample = (id: ToolName, tool: (typeof specs)[ToolName]): void => {
+  try {
+    Schema.decodeUnknownSync(tool.input, { onExcessProperty: "error" })(tool.example.arguments);
+  } catch {
+    throw new Error(`The ${id} catalogue input example does not match its runtime schema.`);
+  }
+  try {
+    Schema.decodeUnknownSync(tool.output, { onExcessProperty: "error" })(tool.example.result);
+  } catch {
+    throw new Error(`The ${id} catalogue result example does not match its runtime schema.`);
+  }
+};
+
+export const validateToolCatalogueExamples = (): void => {
+  for (const [untypedName, tool] of Object.entries(specs)) validateToolExample(untypedName as ToolName, tool);
+};
+
+export const toolCatalogueMetadata = Object.entries(specs).map(([untypedName, tool]) => {
+  const id = untypedName as ToolName;
+  validateToolExample(id, tool);
+  return {
+    id,
+    purpose: tool.purpose,
+    category: tool.category,
+    description: tool.description,
+    allowedEffects: tool.allowedEffects,
+    example: tool.example,
+    inputSchema: jsonSchema(tool.input),
+    outputSchema: jsonSchema(tool.output),
+  };
+});
 
 export const findRegisteredTool = (
   registry: Readonly<Record<ToolName, RegisteredTool>>,

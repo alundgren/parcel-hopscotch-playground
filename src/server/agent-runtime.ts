@@ -72,6 +72,18 @@ export interface AgentStartContext {
   readonly send: (message: ServerMessage) => Promise<void>;
 }
 
+export interface ExploreScenarioStartContext extends Omit<AgentStartContext, "message" | "viewContext"> {
+  readonly scenario: "consent";
+}
+
+export interface ExploreScenarioLaunch {
+  readonly scenario: "consent";
+  readonly outcome: "completed" | "failed";
+  readonly attemptId: string;
+  readonly turnId: string;
+  readonly message: string;
+}
+
 const metadata = (model: string, request: unknown, response: unknown): ProviderMetadata => ({
   provider: "Scripted",
   requestedModel: model,
@@ -111,6 +123,8 @@ const scriptedMinistral = (): MinistralAdapter => ({
           ? "The tutorial is ready. Your verified work advances it, and you can dismiss it at any time."
         : text.includes("reset")
           ? "The reset is ready for your review. Nothing changes until you accept it."
+          : text.includes("attention")
+            ? "I grouped the current queue and opened Work so you can review what is ready and what still needs a decision."
           : text.includes("audit")
             ? "I opened Audit. Return to Work to continue the conversation."
             : text.includes("explore")
@@ -131,6 +145,12 @@ const scriptedMinistral = (): MinistralAdapter => ({
         ? [{ id: id(), name: "startTutorial", arguments: { tutorialId: text.includes("substitut") || text.includes("replacement") ? "substitution-review" : text.includes("batch") ? "batch-approval" : "address-correction" } }]
       : text.includes("reset")
       ? [{ id: id(), name: "prepareReset", arguments: {} }]
+      : text.includes("attention")
+        ? [
+            { id: id(), name: "listOrders", arguments: {} },
+            { id: id(), name: "groupOrders", arguments: { groupBy: "status" } },
+            { id: id(), name: "navigate", arguments: { view: "work" } },
+          ]
       : text.includes("audit")
         ? [{ id: id(), name: "navigate", arguments: { view: "audit" } }]
       : text.includes("explore")
@@ -152,7 +172,7 @@ const scriptedMinistral = (): MinistralAdapter => ({
 });
 
 const scriptedJev = (): JevAdapter => ({
-  decide: (request) => Effect.sync((): JevResult => {
+  decide: (request) => Effect.sleep(JSON.stringify(request.state).toLowerCase().includes("picture first") ? 600 : 0).pipe(Effect.map((): JevResult => {
     const stateText = JSON.stringify(request.state).toLowerCase();
     const answers = Object.fromEntries(Object.entries(request.questions).map(([name, question]) => {
       if (question.type === "choice") {
@@ -169,7 +189,7 @@ const scriptedJev = (): JevAdapter => ({
     }));
     const response = { answers };
     return { kind: "decisions", answers, metadata: metadata(JEV_MODEL, request, response), safeRequest: request, safeResponse: response };
-  }),
+  })),
 });
 
 const unavailableMinistral: MinistralAdapter = {
@@ -439,6 +459,77 @@ export const makeAgentCoordinator = (
     completionConnections.set(active.identity.id, pending);
   };
 
+  const runConsentScenario = async (
+    active: ActiveTurn,
+    repository: WorkspaceRepositoryService,
+    hub: RealtimeHubService,
+    initial: AgentTurnRecord,
+  ): Promise<ExploreScenarioLaunch> => {
+    let history = [...initial.history];
+    const providerRequestId = `${active.turnId}:jev:1`;
+    const toolRequestId = `${active.turnId}:tool:consent`;
+    let output: unknown = null;
+    let failure: Error | null = null;
+    try {
+      await ensureCurrentGeneration(active, repository);
+      await update(active, repository, history, "running", "Checking consent");
+      output = await registry.checkConsent.execute({
+        repository,
+        identity: active.identity,
+        generation: active.generation,
+        turnId: active.turnId,
+        requestId: toolRequestId,
+        runJev: async (request) => {
+          if (active.cancelled) throw new Error("cancelled");
+          await ensureCurrentGeneration(active, repository);
+          active.jevCount += 1;
+          const result = await providerResult(active, runAuditedJev({
+            repository,
+            identity: active.identity,
+            generation: active.generation,
+            requestId: providerRequestId,
+            turnId: active.turnId,
+            mode: config.agentMode,
+            notify: (userId, attempt) => hub.publishAudit(userId, attempt),
+          }, adapters.jev, request));
+          if (!result.ok) throw result.error;
+          await ensureCurrentGeneration(active, repository);
+          return result.value;
+        },
+        requestUi: async () => ({ applied: false, message: "This scenario does not request a UI operation." }),
+      }, { orderId: "BB-1076" });
+    } catch (cause) {
+      if (active.cancelled || (cause instanceof Error && cause.message === "cancelled")) throw cause;
+      failure = cause instanceof Error ? cause : new Error("Jev could not complete the consent check.");
+    }
+    if (active.cancelled) throw new Error("cancelled");
+    await ensureCurrentGeneration(active, repository);
+    const attempts = await Effect.runPromise(repository.providerAttempts(active.identity, 2, { requestId: providerRequestId }));
+    const attempt = attempts.find((candidate) => candidate.requestId === providerRequestId && candidate.turnId === active.turnId);
+    if (attempt === undefined) throw new Error("The consent check did not produce an audit trace.");
+    const message = failure === null
+      ? consentDisclosure(output) ?? "Jev completed the consent check."
+      : `Jev could not complete the consent check: ${failure.message}`;
+    await Effect.runPromise(repository.recordApplicationAudit(active.identity, active.generation, {
+      kind: "tool",
+      label: registry.checkConsent.purpose,
+      outcome: failure === null ? "completed" : "failed",
+      requestId: toolRequestId,
+      turnId: active.turnId,
+      attemptId: attempt.id,
+      body: { tool: "checkConsent", arguments: { orderId: "BB-1076" }, result: failure === null ? output : { ok: false, message: failure.message } },
+    }));
+    history = [...history, { role: "assistant", content: message }];
+    if (failure !== null) {
+      await update(active, repository, history, "failed", "Failed", { error: message, finished: true, measurement: "incomplete" });
+      releaseActive(active);
+      return { scenario: "consent", outcome: "failed", attemptId: attempt.id, turnId: active.turnId, message };
+    }
+    waitForFinalRender(active, repository, history);
+    await update(active, repository, history, "waiting_for_ui", "Rendering Audit result", { finished: true });
+    return { scenario: "consent", outcome: "completed", attemptId: attempt.id, turnId: active.turnId, message };
+  };
+
   const runTurn = async (active: ActiveTurn, repository: WorkspaceRepositoryService, hub: RealtimeHubService, initial: AgentTurnRecord, viewContext: ResolvedAgentViewContext) => {
     let history = [...initial.history];
     const disclosures: Array<string> = [];
@@ -574,6 +665,86 @@ export const makeAgentCoordinator = (
 
   return {
     registry,
+    runExploreScenario: async (context: ExploreScenarioStartContext): Promise<{ readonly started: true }> => {
+      const current = activeByUser.get(context.identity.id);
+      if (current !== undefined) throw new Error("Wait for the current turn to finish or cancel it first.");
+      const pendingAdmission = admissionsByUser.get(context.identity.id);
+      if (pendingAdmission !== undefined) throw new Error("Wait for the current turn to finish or cancel it first.");
+      let releaseAdmission: () => void = () => {};
+      const admission: Admission = {
+        turnId: context.turnId,
+        done: new Promise<void>((resolve) => { releaseAdmission = resolve; }),
+        release: () => releaseAdmission(),
+      };
+      admissionsByUser.set(context.identity.id, admission);
+      const startedMonotonicMs = performance.now();
+      let active: ActiveTurn | null = null;
+      try {
+        const created = await Effect.runPromise(context.repository.createAgentTurn(
+          context.identity,
+          context.generation,
+          context.turnId,
+          context.requestId,
+          context.connectionId,
+          "Does \"Sage might work, but send a picture first\" count as consent?",
+        ));
+        if (!created.created) throw new Error("That Explore scenario was already started.");
+        active = {
+          key: `${context.identity.id}:${context.generation}:${context.turnId}`,
+          identity: context.identity,
+          generation: context.generation,
+          turnId: context.turnId,
+          requestId: context.requestId,
+          connectionId: context.connectionId,
+          send: context.send,
+          hub: context.hub,
+          connected: true,
+          cancelled: false,
+          providerFiber: null,
+          jevCount: 0,
+          uiMissing: false,
+          startedMonotonicMs,
+          serverCompleted: false,
+          operations: new Map(),
+        };
+        activeByUser.set(context.identity.id, active);
+        await context.send({ type: "agent_state", state: await Effect.runPromise(context.repository.snapshot(context.identity)) });
+        const admitted = active;
+        void (async () => {
+          try {
+            const result = await runConsentScenario(admitted, context.repository, context.hub, created.turn);
+            await context.send({
+              type: "command_result",
+              requestId: context.requestId,
+              result: { kind: "explore", ...result },
+              state: await Effect.runPromise(context.repository.snapshot(context.identity)),
+            });
+          } catch (cause) {
+            clearPendingCompletion(admitted);
+            const cancelled = admitted.cancelled || (cause instanceof Error && cause.message === "cancelled");
+            const message = cancelled ? "Cancelled. The consent check did not change any work." : cause instanceof Error ? cause.message : "The consent check failed.";
+            const history = await Effect.runPromise(context.repository.agentTurn(context.identity, context.generation, context.turnId)).then((turn) => turn?.history ?? []).catch(() => []);
+            await update(admitted, context.repository, [...history, { role: "assistant", content: message }], cancelled ? "cancelled" : "failed", cancelled ? "Cancelled" : "Failed", { error: cancelled ? null : message, finished: true, measurement: "incomplete" }).catch(() => undefined);
+            releaseActive(admitted);
+            await context.send({ type: "error", requestId: context.requestId, code: cancelled ? "explore_scenario_cancelled" : "explore_scenario_failed", message }).catch(() => undefined);
+          }
+        })();
+        return { started: true };
+      } catch (cause) {
+        if (active !== null) {
+          clearPendingCompletion(active);
+          const cancelled = active.cancelled || (cause instanceof Error && cause.message === "cancelled");
+          const message = cancelled ? "Cancelled. The consent check did not change any work." : cause instanceof Error ? cause.message : "The consent check failed.";
+          const history = await Effect.runPromise(context.repository.agentTurn(context.identity, context.generation, context.turnId)).then((turn) => turn?.history ?? []).catch(() => []);
+          await update(active, context.repository, [...history, { role: "assistant", content: message }], cancelled ? "cancelled" : "failed", cancelled ? "Cancelled" : "Failed", { error: cancelled ? null : message, finished: true, measurement: "incomplete" }).catch(() => undefined);
+          releaseActive(active);
+        }
+        throw cause;
+      } finally {
+        if (admissionsByUser.get(context.identity.id) === admission) admissionsByUser.delete(context.identity.id);
+        admission.release();
+      }
+    },
     start: async (context: AgentStartContext) => {
       const current = activeByUser.get(context.identity.id);
       if (current !== undefined) {

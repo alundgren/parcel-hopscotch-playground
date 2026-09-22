@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 import { ClientMessage } from "../../src/shared/contracts";
+import { exploreScenarios } from "../../src/shared/explore";
 import { isRegisteredTarget, targets } from "../../src/shared/targets";
-import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, toolCatalogueMetadata } from "../../src/server/tool-registry";
+import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, toolCatalogueMetadata, validateToolCatalogueExamples } from "../../src/server/tool-registry";
 import { toolHandlers } from "../../src/server/tool-handlers";
 
 describe("agent tool registry", () => {
@@ -13,8 +14,22 @@ describe("agent tool registry", () => {
     expect(tools.map((tool) => tool.name)).toEqual(toolCatalogueMetadata.map((tool) => tool.id));
     expect(tools).toHaveLength(16);
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["startTutorial", "stopTutorial"]));
+    expect(tools.map((tool) => tool.name)).toContain("prepareReset");
     expect(tools.map((tool) => String(tool.name))).not.toContain("acceptProposal");
     expect(toolCatalogueMetadata.every((tool) => tool.allowedEffects.length > 0 && tool.example !== undefined)).toBe(true);
+    expect(() => validateToolCatalogueExamples()).not.toThrow();
+    const proposalExamples = Object.fromEntries(toolCatalogueMetadata
+      .filter((tool) => ["prepareAddressCorrection", "prepareSubstitution", "prepareResolution", "prepareBatch", "prepareUndo"].includes(tool.id))
+      .map((tool) => [tool.id, tool.example.result as { readonly changes: ReadonlyArray<{ readonly orderId: string; readonly family: string; readonly before: string; readonly after: string }> }]));
+    expect(proposalExamples.prepareAddressCorrection?.changes[0]).toMatchObject({ orderId: "BB-1042", family: "address" });
+    expect(proposalExamples.prepareSubstitution?.changes[0]).toMatchObject({ orderId: "BB-1051", family: "substitution", after: expect.stringContaining("Sage") });
+    expect(proposalExamples.prepareResolution?.changes[0]).toMatchObject({ orderId: "BB-1090", family: "bundle" });
+    expect(proposalExamples.prepareBatch?.changes[0]).toMatchObject({ orderId: "BB-1051", family: "substitution" });
+    expect(proposalExamples.prepareUndo?.changes[0]).toMatchObject({ orderId: "BB-1051", family: "substitution", before: expect.stringContaining("Sage"), after: expect.stringContaining("Blue") });
+    const groupResult = toolCatalogueMetadata.find((tool) => tool.id === "groupOrders")?.example.result as { readonly groups: ReadonlyArray<{ readonly count: number; readonly orderIds: ReadonlyArray<string> }> };
+    expect(groupResult.groups.every((group) => group.count === group.orderIds.length)).toBe(true);
+    const names = new Set(tools.map((tool) => tool.name));
+    expect(exploreScenarios.flatMap((scenario) => scenario.tools).every((name) => names.has(name as never))).toBe(true);
   });
 
   it("rejects injected identity, arbitrary selectors, extra fields, and inherited names", () => {

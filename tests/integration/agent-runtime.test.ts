@@ -61,11 +61,122 @@ const waitForTurn = async (repository: WorkspaceRepositoryService, turnId: strin
   throw new Error("Timed out waiting for the agent turn.");
 };
 
+const waitForMessage = async (sent: ReadonlyArray<ServerMessage>, predicate: (message: ServerMessage) => boolean) => {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const message = sent.find(predicate);
+    if (message !== undefined) return message;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for the server message.");
+};
+
 afterEach(async () => {
   await Promise.all(paths.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
 describe("agent runtime", () => {
+  it("runs the known consent scenario through audited Jev and returns its exact trace", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const filename = join(directory, "workspace.sqlite");
+    const jev: JevAdapter = { decide: (request) => Effect.succeed({
+      kind: "decisions",
+      answers: { consent: { type: "choice", choice: "conditional", confidence: 0.98, probabilities: { conditional: 0.98, explicit: 0.01, unclear: 0.01 } } },
+      metadata: { ...metadata, requestedModel: "typesafe/jev-1.13", actualModel: "scripted/jev-1.13" },
+      safeRequest: request,
+      safeResponse: { answers: { consent: { type: "choice", choice: "conditional", confidence: 0.98, probabilities: { conditional: 0.98, explicit: 0.01, unclear: 0.01 } } } },
+    }) };
+    await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral: { complete: () => Effect.fail(providerFailure("provider_error", "Ministral must not run for this scenario.")) }, jev });
+      const sent: Array<ServerMessage> = [];
+      expect(yield* Effect.promise(() => coordinator.runExploreScenario({
+        repository, hub, identity, generation: 1, turnId: "turn_12345678-explore-consent", requestId: "request-explore-consent", scenario: "consent", connectionId: "connection-explore-consent", send: async (message) => { sent.push(message); },
+      }))).toEqual({ started: true });
+      const response = yield* Effect.promise(() => waitForMessage(sent, (message) => message.type === "command_result" && message.requestId === "request-explore-consent"));
+      if (response.type !== "command_result" || response.result.kind !== "explore") throw new Error("Explore result was not returned.");
+      const launch = response.result;
+      expect(launch).toMatchObject({ scenario: "consent", turnId: "turn_12345678-explore-consent", message: expect.stringContaining("Consent: conditional") });
+      const attempts = yield* repository.providerAttempts(identity, 10, { requestId: "turn_12345678-explore-consent:jev:1" });
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]).toMatchObject({ id: launch.attemptId, turnId: launch.turnId, kind: "decisions", mode: "scripted", outcome: "success" });
+      const detail = yield* repository.auditDetail(identity, launch.attemptId);
+      expect(detail?.application.some((record) => record.kind === "tool" && record.turnId === launch.turnId && record.label === "Check replacement consent")).toBe(true);
+      expect((yield* repository.agentTurn(identity, 1, launch.turnId))).toMatchObject({ status: "waiting_for_ui", phase: "Rendering Audit result" });
+      expect(sent.some((message) => message.type === "agent_state")).toBe(true);
+      expect(coordinator.acknowledgeComplete(identity, 1, launch.turnId, "connection-explore-consent")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, launch.turnId, 240);
+      expect((yield* repository.agentTurn(identity, 1, launch.turnId))).toMatchObject({ status: "complete", measurement: "complete", completeDurationMs: 240 });
+    }));
+  });
+
+  it("returns the exact failed consent trace without a chat-model fallback", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const filename = join(directory, "workspace.sqlite");
+    const jev: JevAdapter = { decide: () => Effect.fail(providerFailure("configuration", "Jev is unavailable for this test.")) };
+    await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral: { complete: () => Effect.fail(providerFailure("provider_error", "Ministral must not run for this scenario.")) }, jev });
+      const sent: Array<ServerMessage> = [];
+      expect(yield* Effect.promise(() => coordinator.runExploreScenario({
+        repository, hub, identity, generation: 1, turnId: "turn_12345678-explore-failure", requestId: "request-explore-failure", scenario: "consent", connectionId: "connection-explore-failure", send: async (message) => { sent.push(message); },
+      }))).toEqual({ started: true });
+      const response = yield* Effect.promise(() => waitForMessage(sent, (message) => message.type === "command_result" && message.requestId === "request-explore-failure"));
+      if (response.type !== "command_result" || response.result.kind !== "explore") throw new Error("Explore failure result was not returned.");
+      const launch = response.result;
+      expect(launch.outcome).toBe("failed");
+      expect(launch.message).toContain("Jev could not complete the consent check");
+      const attempt = yield* repository.providerAttempt(identity, launch.attemptId);
+      expect(attempt).toMatchObject({ turnId: launch.turnId, requestId: `${launch.turnId}:jev:1`, outcome: "error", errorCode: "configuration" });
+      const detail = yield* repository.auditDetail(identity, launch.attemptId);
+      expect(detail?.application.some((record) => record.label === "Check replacement consent" && record.outcome === "failed")).toBe(true);
+      expect(yield* repository.agentTurn(identity, 1, launch.turnId)).toMatchObject({ status: "failed", measurement: "incomplete", completeDurationMs: null });
+      expect(coordinator.acknowledgeComplete(identity, 1, launch.turnId, "connection-explore-failure")).toBe(false);
+    }));
+  });
+
+  it("interrupts a direct consent attempt on generation cancellation and rejects stale generations", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const filename = join(directory, "workspace.sqlite");
+    const delayedResult = {
+      kind: "decisions" as const,
+      answers: { consent: { type: "choice" as const, choice: "conditional", confidence: 0.98, probabilities: { conditional: 0.98, explicit: 0.01, unclear: 0.01 } } },
+      metadata: { ...metadata, requestedModel: "typesafe/jev-1.13", actualModel: "scripted/jev-1.13" },
+      safeRequest: {},
+      safeResponse: {},
+    };
+    const jev: JevAdapter = { decide: () => Effect.sleep(2_000).pipe(Effect.as(delayedResult)) };
+    await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral: { complete: () => Effect.fail(providerFailure("provider_error", "Ministral must not run for this scenario.")) }, jev });
+      const sent: Array<ServerMessage> = [];
+      expect(yield* Effect.promise(() => coordinator.runExploreScenario({
+        repository, hub, identity, generation: 1, turnId: "turn_12345678-explore-cancel", requestId: "request-explore-cancel", scenario: "consent", connectionId: "connection-explore-cancel", send: async (message) => { sent.push(message); },
+      }))).toEqual({ started: true });
+      yield* Effect.promise(() => waitForTurn(repository, "turn_12345678-explore-cancel", ["running"]));
+      yield* Effect.promise(async () => {
+        const deadline = Date.now() + 2_000;
+        while (Date.now() < deadline) {
+          if ((await Effect.runPromise(repository.providerAttempts(identity, 10, { turnId: "turn_12345678-explore-cancel" }))).length === 1) return;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error("Timed out waiting for the direct Jev attempt.");
+      });
+      expect(yield* Effect.promise(() => coordinator.cancelGeneration(identity, 1))).toBe(true);
+      const cancellation = yield* Effect.promise(() => waitForMessage(sent, (message) => message.type === "error" && message.requestId === "request-explore-cancel"));
+      expect(cancellation).toMatchObject({ type: "error", code: "explore_scenario_cancelled" });
+      const attempts = yield* repository.providerAttempts(identity, 10, { turnId: "turn_12345678-explore-cancel" });
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]).toMatchObject({ outcome: "interrupted" });
+      yield* Effect.promise(async () => {
+        await expect(coordinator.runExploreScenario({
+          repository, hub, identity, generation: 2, turnId: "turn_12345678-explore-stale", requestId: "request-explore-stale", scenario: "consent", connectionId: "connection-explore-stale", send: async () => {},
+        })).rejects.toThrow();
+      });
+      expect(yield* repository.providerAttempts(identity, 10, { turnId: "turn_12345678-explore-stale" })).toEqual([]);
+    }));
+  });
+
   it("recovers a persisted running turn as interrupted without issuing another provider request", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");

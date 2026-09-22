@@ -65,7 +65,9 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   await expect(page.getByRole("tabpanel")).toContainText(/content|answers/);
   await page.getByRole("tab", { name: "Application result" }).click();
   await expect(page.getByRole("tabpanel")).toContainText(/Completed agent turn|Check replacement consent|completed/i);
-  await page.getByRole("tabpanel").locator("summary").filter({ hasText: "Classify a note" }).click();
+  const ordinaryToolResult = page.getByRole("tabpanel").locator("summary").filter({ hasText: "Classify a note" });
+  await expect(ordinaryToolResult.locator("..")).not.toHaveAttribute("open", "");
+  await ordinaryToolResult.click();
   await expect(page.getByRole("tabpanel")).toContainText('"result"');
   await expect(page.getByRole("tabpanel")).toContainText(`Turn ${turnId!}`);
   await page.locator(".audit-scroll").evaluate((element) => { element.scrollLeft = 0; });

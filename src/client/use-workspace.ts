@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Schema } from "effect";
-import { ServerMessageSchema, WorkspaceSnapshot as WorkspaceSnapshotSchema, type AgentUiOperation, type AgentViewContext, type AuditAttemptDetail, type AuditPage, type CommandResult, type ServerMessage, type TutorialId, type WorkspaceCommand, type WorkspaceSnapshot } from "../shared/contracts";
+import { ServerMessageSchema, WorkspaceSnapshot as WorkspaceSnapshotSchema, type AgentUiOperation, type AgentViewContext, type AuditAttemptDetail, type AuditPage, type CommandResult, type ServerMessage, type ToolCatalogueEntry, type TutorialId, type WorkspaceCommand, type WorkspaceSnapshot } from "../shared/contracts";
 
 export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline" | "retired";
 type WorkspaceEvent = Extract<ServerMessage, { readonly type: "event" }>;
@@ -66,6 +66,7 @@ export function useWorkspace() {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditRevision, setAuditRevision] = useState(0);
+  const [toolCatalogue, setToolCatalogue] = useState<ReadonlyArray<ToolCatalogueEntry>>([]);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | null>(null);
   const reconnectAttempt = useRef(0);
@@ -128,6 +129,10 @@ export function useWorkspace() {
       }
       if (message.type === "agent_ui_operation") {
         if (acceptsAgentOperation(stateRef.current, message.operation)) setAgentOperation(message.operation);
+        return;
+      }
+      if (message.type === "tool_catalogue") {
+        setToolCatalogue(message.entries);
         return;
       }
       if (message.type === "audit_page") {
@@ -224,6 +229,19 @@ export function useWorkspace() {
     return turnId;
   }, [status]);
 
+  const runExploreScenario = useCallback((): Promise<CommandResult> => {
+    const socket = socketRef.current; const state = stateRef.current;
+    if (socket === null || socket.readyState !== WebSocket.OPEN || state === null || status !== "connected") return Promise.reject(new Error("Reconnect before starting this scenario."));
+    const id = requestId();
+    const turnId = `turn_${crypto.randomUUID()}`;
+    turnStartedRef.current.set(turnId, performance.now());
+    return new Promise<CommandResult>((resolve, reject) => {
+      pendingRef.current.set(id, { resolve, reject });
+      const message = { type: "run_explore_scenario", requestId: id, generation: state.generation, turnId, scenario: "consent" } satisfies WorkspaceCommand;
+      socket.send(JSON.stringify(message));
+    });
+  }, [status]);
+
   const cancelAgentTurn = useCallback(() => {
     const socket = socketRef.current; const state = stateRef.current;
     if (socket === null || socket.readyState !== WebSocket.OPEN || state?.activeTurn === null || state === null) return;
@@ -279,5 +297,5 @@ export function useWorkspace() {
     return () => { disposedRef.current = true; window.removeEventListener("offline", goOffline); window.removeEventListener("online", goOnline); if (reconnectTimer.current !== null) window.clearTimeout(reconnectTimer.current); rejectPending("Workspace unmounted."); socketRef.current?.close(1000, "Workspace unmounted"); socketRef.current = null; };
   }, [connect, rejectPending]);
 
-  return { snapshot, status, runCommand, sendAgentMessage, cancelAgentTurn, agentOperation, acknowledgeAgentOperation, acknowledgeAgentComplete, acknowledgeCommandVisible, agentError, auditPage, auditDetails, auditLoading, auditError, auditRevision, requestAudit, requestAuditDetail };
+  return { snapshot, status, toolCatalogue, runCommand, runExploreScenario, sendAgentMessage, cancelAgentTurn, agentOperation, acknowledgeAgentOperation, acknowledgeAgentComplete, acknowledgeCommandVisible, agentError, auditPage, auditDetails, auditLoading, auditError, auditRevision, requestAudit, requestAuditDetail };
 }
