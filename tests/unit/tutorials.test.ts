@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { batchTutorialOrders, tutorialBatchOrderIds, tutorialPublicState, tutorialStepMatches } from "../../src/shared/tutorials";
 
 describe("bounded tutorial definitions", () => {

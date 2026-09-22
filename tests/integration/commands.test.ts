@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { ServerConfig } from "../../src/server/config";
 import { resolveIdentity } from "../../src/server/identity";
 import { runWithWorkspaceRepository, WorkspaceRepository, type WorkspaceRepositoryService } from "../../src/server/persistence";

@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { WebSocketServer } from "ws";
 
 // The verifier stays plain JavaScript so it can run without a build step.

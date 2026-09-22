@@ -47,7 +47,7 @@ test("filters and inspects the validated registry catalogue", async ({ page, con
   await resetRow.locator("summary").focus();
   await page.keyboard.press("Enter");
   await expect(resetRow).toHaveAttribute("open", "");
-  await expect(resetRow.getByText("Illustrative examples validated against the runtime schemas.")).toBeVisible();
+  await expect(resetRow.getByText("Example data.")).toBeVisible();
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://127.0.0.1:4173" });
   await resetRow.getByRole("button", { name: "Copy example call for prepareReset" }).click();
   await expect(page.locator(".copy-status")).toContainText(/Copied the prepareReset example|example is selected/);

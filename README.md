@@ -8,10 +8,10 @@ The experiment compares Ministral conversation and tool use with Jev constrained
 
 ## Fresh local setup
 
-Install Vite Plus 0.3.0 from the exact [official installer source](https://github.com/voidzero-dev/vite-plus/blob/b2d15e3899dcc8adedfd45d98de9d30046a624f4/packages/cli/install.sh). The installer manages the project-pinned Node 24.19.0 runtime and pnpm 12.5.0. It adds only the Vite Plus executable directory to supported shell startup files; it does not replace system Node or change another package manager's settings. Load the generated shell environment before running `vp`; a new terminal will load it automatically.
+Install Vite Plus 1.0.0-rc.0 from the exact [official installer source](https://github.com/voidzero-dev/vite-plus/blob/173e734826cdf79ef05ba91390c3508be5ebba3b/packages/cli/install.sh). The installer manages the project-pinned Node 24.19.0 runtime and pnpm 12.5.0. It adds only the Vite Plus executable directory to supported shell startup files; it does not replace system Node or change another package manager's settings. Load the generated shell environment before running `vp`; a new terminal will load it automatically.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/voidzero-dev/vite-plus/b2d15e3899dcc8adedfd45d98de9d30046a624f4/packages/cli/install.sh | VP_VERSION=0.3.0 VP_NODE_MANAGER=yes bash
+curl -fsSL https://raw.githubusercontent.com/voidzero-dev/vite-plus/173e734826cdf79ef05ba91390c3508be5ebba3b/packages/cli/install.sh | VP_VERSION=1.0.0-rc.0 VP_NODE_MANAGER=yes bash
 . "${XDG_CONFIG_HOME:-$HOME/.config}/vite-plus/env"
 git clone https://github.com/alundgren/parcel-hopscotch-playground.git
 cd parcel-hopscotch-playground
@@ -20,6 +20,8 @@ vp install --frozen-lockfile
 vp exec playwright install --with-deps chromium
 vp run dev
 ```
+
+For an existing Vite+ installation, run `vp upgrade 1.0.0-rc.0` before installing the project dependencies.
 
 Open `http://127.0.0.1:5173`. The Vite client proxies the Effect Node server on port 3000. `vp run dev:server` and `vp run start` load the ignored `.env.local` file automatically. An exported process variable takes precedence over the same key in that file.
 
@@ -36,46 +38,44 @@ To run the deliberate live checks, set `AGENT_PROVIDER_MODE=live` and put `OPENR
 
 ```bash
 vp run check
+vp run test:browser
 vp run test:e2e
 vp run proof:visual
-vp run proof:video
 vp run benchmark:providers -- --mode fixture --output-dir /tmp/parcel-provider-benchmark-fixture
 ```
 
 ### Headless visual proof on a development VM
 
-Provision Python 3 and the repository's pinned Playwright Chromium with its system
-libraries in the development VM image. After installing project dependencies, run
-`vp exec playwright install --with-deps chromium` as the development user, with
-sudo available for system packages. Keep the browser cache available to that user.
-Repeat the install when the pinned Playwright version changes. CI already runs
-this command. Chromium is a development dependency; the production Docker image
-does not need it.
+Install the repository's pinned Chromium and its system libraries with
+`vp exec playwright install --with-deps chromium`. Keep its cache accessible to
+the development user and repeat the install when Playwright changes. CI runs the
+same command. The production image does not need a browser or Python.
 
-Use `vp run proof:visual` for the Work, Explore, Audit, prepared-batch, and acknowledgement comparisons at
-1440×1000 and 320×900. Playwright starts the app with disposable SQLite data and
-serves the prototype and assets from `docs` at
-`http://127.0.0.1:4174/design/approved-prototype.html` using Python 3. Both servers
-bind to loopback and Playwright stops them on exit. Ports 4173 and 4174 must be free.
-The script waits for the expected UI state, fonts, and images before capture.
+`vp run test:browser` uses Vitest 5 Browser Mode to render the application with
+its real styles at 1440×1000 and 320×900. Typed fixture data keeps the tests
+repeatable and avoids paid inference. Tests interact with the rendered UI and
+check important controls for contrast and layout errors.
 
-Before UI edits, capture and inspect the relevant reference images. After edits,
-rerun the proof and inspect the labeled comparisons with an image-viewing tool.
-Extend the proof for any affected states it does not cover. Use the same viewport
-and browser settings for the reference and application. Run `vp run proof:video`
-for the existing demonstration flows, or record the affected flow in another
-Playwright test. Screenshots, comparisons, and videos are saved in `test-results`;
-preserve the required files before another run replaces that directory. Attach
-comparisons and videos to the PR with `gh pr create --attach` or
-`gh pr comment --attach`, and explain any deliberate differences.
+`vp run proof:visual` also retains named PNG checkpoints and a Vitest HTML report
+with Trace View history under `artifacts/visual/`. Inspect the PNGs with an
+image-viewing tool. Trace View helps explain actions and assertions; its DOM
+reconstruction does not replace inspection of the rendered pixels.
 
-This workflow runs entirely in the VM without a desktop, browser extension, or
-owner computer connection. If capture or inspection fails, record the exact error
-and leave visual approval pending. A security rejection must be reported, not
-retried through alternative access routes.
+For UI changes, show application states before or after the change. Capture both
+when that helps explain it, using matching viewports and browser settings. For a
+new feature, capture its working states. Wait for fonts, assets, and the intended
+state before capture. Attach selected PNGs with `gh pr create --attach` or
+`gh pr comment --attach`. Videos are optional when timing or motion matters.
 
+`vp run test:e2e` retains Playwright for complete flows through real WebSockets,
+SQLite, reloads, and separate browser sessions. It starts a loopback-only server
+with disposable data and stops it on exit. Port 4173 must be free. Failure
+screenshots and traces go to `test-results/` with a report in `playwright-report/`.
 
-Playwright uses the scripted providers through the real WebSocket transport and SQLite repository. It records videos in `test-results/`. The visual command creates ten same-state comparisons against the unchanged approved prototype at 1440 by 1000 and 320 by 900. The video command records readable desktop and narrow demonstrations. Its pauses occur after the measured completion boundaries.
+See [browser testing](docs/browser-testing.md) for coverage, visual review,
+Trace View, and timing commands. If capture or inspection fails, record the exact
+error and leave visual approval pending. Report security rejections and stop the
+rejected operation.
 
 The retained [acceptance report](docs/acceptance-report.md) documents 36 browser cases and separate server-turn, Send-to-completed-work and Accept-to-visible samples. The [live benchmark report](docs/benchmarks/2026-09-22-live/README.md) retains the single authorized 28-request run. Jev sent no token cap; its question, choice, request and response byte, and timeout bounds are recorded in the report correction. The 64-token cap applies only to Ministral constrained requests. Those historical benchmark scenarios requested at most 256 tokens. Current agent turns allow 4,096 output tokens per request, up to eight model requests per turn and six tool calls per request. Chat responses are limited to 2 MiB and 120 seconds per provider attempt; Jev keeps its separate limits. One of two live tool scenarios remained incomplete and is reported that way.
 
@@ -114,7 +114,7 @@ The command first refuses non-Unix Docker endpoints. It builds a temporary image
 
 For the bind check, a short-lived root helper inside the local Docker engine changes only the verifier-created temporary directory to UID/GID 1000, then restores its original host ownership before cleanup. The application containers still run as the nonroot `node` user.
 
-The image uses the exact Vite Plus 0.3.0 builder index and Node 24.19.0 Bookworm slim runtime index recorded in the [operator guide](docs/operator-guide.md). The Dockerfile compiles the application and installs a fresh production-only dependency tree on the builder platform. The current production graph has no target-dependent native package. Recheck that fact before copying dependencies if the graph changes. See the operator guide for the ARM64 artifact inspection and execution limit.
+The image uses the exact Vite Plus 1.0.0-rc.0 builder index and Node 24.19.0 Bookworm slim runtime index recorded in the [operator guide](docs/operator-guide.md). The Dockerfile compiles the application and installs a fresh production-only dependency tree on the builder platform. The current production graph has no target-dependent native package. Recheck that fact before copying dependencies if the graph changes. See the operator guide for the ARM64 artifact inspection and execution limit.
 
 ## Operation and data
 

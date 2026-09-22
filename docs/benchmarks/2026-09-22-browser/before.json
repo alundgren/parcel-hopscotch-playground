@@ -1,0 +1,153 @@
+{
+  "revision": "71f5ae0e79617412bfaa5a9df96cbb64f59b73ad",
+  "node": "v24.19.0",
+  "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+  "cpuCount": 4,
+  "runs": [
+    {
+      "suite": "unit",
+      "command": [
+        "vp",
+        "run",
+        "test:unit"
+      ],
+      "iteration": 1,
+      "seconds": 8.969,
+      "exitCode": 0
+    },
+    {
+      "suite": "unit",
+      "command": [
+        "vp",
+        "run",
+        "test:unit"
+      ],
+      "iteration": 2,
+      "seconds": 8.473,
+      "exitCode": 0
+    },
+    {
+      "suite": "unit",
+      "command": [
+        "vp",
+        "run",
+        "test:unit"
+      ],
+      "iteration": 3,
+      "seconds": 9.143,
+      "exitCode": 0
+    },
+    {
+      "suite": "integration",
+      "command": [
+        "vp",
+        "run",
+        "test:integration"
+      ],
+      "iteration": 1,
+      "seconds": 45.777,
+      "exitCode": 0
+    },
+    {
+      "suite": "integration",
+      "command": [
+        "vp",
+        "run",
+        "test:integration"
+      ],
+      "iteration": 2,
+      "seconds": 48.296,
+      "exitCode": 0
+    },
+    {
+      "suite": "integration",
+      "command": [
+        "vp",
+        "run",
+        "test:integration"
+      ],
+      "iteration": 3,
+      "seconds": 45.869,
+      "exitCode": 0
+    },
+    {
+      "suite": "e2e",
+      "command": [
+        "vp",
+        "run",
+        "test:e2e"
+      ],
+      "iteration": 1,
+      "seconds": 239.568,
+      "exitCode": 0
+    },
+    {
+      "suite": "e2e",
+      "command": [
+        "vp",
+        "run",
+        "test:e2e"
+      ],
+      "iteration": 2,
+      "seconds": 243.649,
+      "exitCode": 0
+    },
+    {
+      "suite": "e2e",
+      "command": [
+        "vp",
+        "run",
+        "test:e2e"
+      ],
+      "iteration": 3,
+      "seconds": 242.904,
+      "exitCode": 0
+    },
+    {
+      "suite": "proof",
+      "command": [
+        "vp",
+        "run",
+        "proof:visual"
+      ],
+      "iteration": 1,
+      "seconds": 47.334,
+      "exitCode": 0
+    },
+    {
+      "suite": "proof",
+      "command": [
+        "vp",
+        "run",
+        "proof:visual"
+      ],
+      "iteration": 2,
+      "seconds": 48.615,
+      "exitCode": 0
+    },
+    {
+      "suite": "proof",
+      "command": [
+        "vp",
+        "run",
+        "proof:visual"
+      ],
+      "iteration": 3,
+      "seconds": 47.455,
+      "exitCode": 0
+    }
+  ],
+  "vitePlus": "0.3.0",
+  "vitest": "4.1.11",
+  "playwright": "1.62.1",
+  "cpu": "DO-Premium-AMD",
+  "memoryGiB": 8,
+  "workers": 1,
+  "ci": false,
+  "testCounts": {
+    "unit": 94,
+    "integration": 69,
+    "e2e": 38,
+    "proof": 4
+  }
+}

@@ -10,7 +10,7 @@ Build the complete Parcel Hopscotch app in the private `alundgren/parcel-hopscot
 
 Bracken & Beam is a fictional homewares fulfilment desk. Seed around 24 orders covering address, stock/substitution, missing bundle components, parcel weight, delayed carrier scans, and potential duplicates. Deterministic, repeatable scenario events simulate automated work. Provide conventional UI controls as well as agent access. Exclude real shipping, payments, refunds, and customer messaging.
 
-There are three main screens: Work, Explore, and Audit. Follow the approved prototype and branding. Work includes queue, details, review, receipts, Undo, and tutorial overlays. Explore provides four example scenarios and a filterable catalogue of actual tools. Audit explains inference and resulting app activity using compact expandable rows.
+There are three main screens: Work, Explore, and Audit. Follow the visual guidance in `ux.md` and the application branding. Work includes queue, details, review, receipts, Undo, and tutorial overlays. Explore provides four example scenarios and a filterable catalogue of actual tools. Audit explains inference and resulting app activity using compact expandable rows.
 
 Ministral handles conversation and bounded tool use. Jev handles constrained classification of notes and conditional consent. Code owns arithmetic, stock, policy eligibility, permissions, transitions, and transaction checks. Include complete address, substitution, and batch tutorials, advancing on real app events. A user can learn a task and then complete a similar case independently.
 
@@ -40,9 +40,9 @@ The OpenRouter key is a server secret. Audit allows curated request and response
 
 ## Delivery and validation
 
-Use TypeScript, React, Vite Plus 0.3.0, Node 24.19.0, pnpm 12.5.0, Effect 4, SQLite, and shadcn. Run project commands through Vite Plus, keep exact compatible dependency pins, and commit the pnpm lockfile. Keep reusable inference, typed tool execution, realtime transport, and UI guidance separate from the fictional fulfilment rules without building a general agent framework.
+Use TypeScript, React, Vite Plus 1.0.0-rc.0, Node 24.19.0, pnpm 12.5.0, Effect 4, SQLite, and shadcn. Run project commands through Vite Plus, keep exact compatible dependency pins, and commit the pnpm lockfile. Keep reusable inference, typed tool execution, realtime transport, and UI guidance separate from the fictional fulfilment rules without building a general agent framework.
 
-Provide unit tests for validation, policies, identity isolation, transactions, resets, tool dispatch, provider parsing, and failure behavior. Playwright uses deterministic providers and real app transport, records video, and exercises the main flows on desktop and narrow screens. Every UI PR attaches side-by-side reference/implementation proof using `gh --attach`. CI runs without paid inference or private credentials. Live checks and benchmarks run explicitly with the local server secret.
+Provide unit tests for validation, policies, identity isolation, transactions, resets, tool dispatch, provider parsing, and failure behavior. Vitest Browser Mode tests actual rendered components and captures meaningful PNG checkpoints for visual inspection. Playwright uses deterministic providers and real app transport for complete flows on desktop and narrow screens, retaining traces on failure. Every UI PR attaches application screenshots using `gh --attach`. Show before or after states, or the new feature when there is no earlier state. Record video when motion needs review. CI runs without paid inference or private credentials. Live checks and benchmarks run explicitly with the local server secret.
 
 Prepare a single root Dockerfile and persistent SQLite volume for Piploy, with loopback host-port exposure for the tunnel. Production registration, tunnel configuration, public visibility, and deployment happen after the owner's audit.
 

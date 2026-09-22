@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { OrderSummary, WorkspaceSnapshot } from "../../src/shared/contracts";
 import { resolveSelectedOrder } from "../../src/client/App";
 import {

@@ -1,6 +1,6 @@
 # Parcel Hopscotch
 
-Read `docs/build-agreement.md` before changing behavior. For UI work, also read `ux.md` and inspect `docs/design/approved-prototype.html` using headless Playwright in the development environment, as described below. Read `docs/architecture.md` when changing module responsibilities, inference, persistence, or transport.
+Read `docs/build-agreement.md` before changing behavior. For UI work, also read `ux.md` and inspect the rendered application using the headless browser workflow below. Read `docs/architecture.md` when changing module responsibilities, inference, persistence, or transport.
 
 ## Delivery
 
@@ -12,32 +12,35 @@ Prove each acceptance criterion before completion review. Keep the reviewed targ
 
 ## UI inspection and visual proof
 
-Use the repository's Playwright installation through shell commands. Serve
-`docs/design/approved-prototype.html` and its required assets through a temporary
-HTTP server bound to `127.0.0.1`. Run the application locally with disposable test
-data. This workflow must work on a VM without a desktop session, browser
-extension, or connection to the owner's computer.
+Use Vitest Browser Mode for rendered UI tests and checkpoint screenshots. Render
+actual React components with the application CSS and disposable, typed test data.
+Keep Playwright for complete flows through the server, SQLite, WebSockets,
+multiple sessions, reloads, and browser navigation. Temporary servers must bind
+to `127.0.0.1` and stop after capture. This must work on a VM without a desktop,
+browser extension, or connection to the owner's computer.
 
-Before changing the UI, read `ux.md`, capture the relevant prototype states, and
-inspect the screenshots with the available image-viewing tool. After
-implementation, capture the application in the same states, viewport sizes, and
-browser configuration. Wait for fonts, assets, and the intended state to finish
-rendering before capture.
+Capture meaningful states of the application, such as the initial view, a filled
+field, a review awaiting acceptance, an error, and the saved result. Evidence may
+show the app before or after a change. When both help explain the change, use the
+same viewport and browser settings and label them Before and After. For a new
+feature, show its working states. Wait for the intended state, fonts, images,
+and rendering before capture.
 
-Inspect the resulting images. Create labeled side-by-side comparisons of the
-approved prototype and actual application. Explain deliberate differences
-required by the issue. An application screenshot alone does not establish visual
-approval.
+Inspect the PNG files with an image-viewing tool. Check text contrast, clipping,
+overlap, spacing, sizing, reachable actions, and desktop and narrow layouts.
+DOM assertions and reconstructed Trace View snapshots alone do not establish
+visual approval. Use rendered geometry and contrast assertions for important
+controls alongside screenshot inspection. Extend the tests for affected states.
 
-Record the affected application flow with Playwright video. Attach the comparisons
-and recording to the PR using `gh pr create --attach` or `gh pr comment --attach`.
+Attach selected screenshots using `gh pr create --attach` or
+`gh pr comment --attach`, and describe what they demonstrate. Vitest's HTML report
+retains Trace View interaction and assertion history. Keep Playwright traces on
+failure. Video is optional when timing or motion matters to the change.
 
-Reuse existing proof scripts where available. See the visual proof workflow in
-`README.md` for commands and VM provisioning. Stop temporary servers after capture.
-If capture or image inspection is unavailable, report the exact failure and keep
-visual approval pending. If a tool rejects an operation for security reasons,
-report that rejection and stop that operation. Do not retry it through another
-browser, proxy, tunnel, or remote service.
+See `README.md` and `docs/browser-testing.md` for commands and artifact paths.
+If capture or inspection fails, record the exact error and keep visual approval
+pending. If a tool rejects an operation for security reasons, report it and stop
+that operation. Do not retry through another browser, proxy, tunnel, or service.
 
 ## Engineering
 

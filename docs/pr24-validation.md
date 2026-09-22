@@ -41,24 +41,6 @@ Validation uses Node 24.19.0 and Playwright 1.62.1 through Vite Plus.
 - Final proof captures Work, Explore, Audit, proposal review, and the acknowledgement at 1440×1000 and 320×900. Playwright also records the proposal-to-acceptance flow and the model-selected consent flow.
 - Runner syntax, no-inference preflight, missing-dedicated-key behavior, and offline setup-failure, exhausted-credit, truncation, and highlight assertions passed. The preflight records zero provider attempts and explicitly reports live acceptance as not run.
 
-## Visual comparison notes
-
-The approved prototype is unchanged. Both it and the application are served over
-loopback HTTP by temporary servers managed by Playwright. The capture waits for
-the intended state, fonts, images and rendering frames. Comparisons label the
-reference and implementation and use matching viewport and browser settings.
-
-The actual queue contains the agreed 24 seeded orders and six eligible changes;
-the prototype illustrates four orders and two changes. The larger review therefore
-scrolls. Separate acknowledgement comparisons show the chat at narrow widths.
-The application keeps its existing connection indicator and recovery controls.
-Explore shows 16 actual tools instead of the prototype's 14 illustrative entries.
-The consent card names BB-1076 so the model can look up the relevant evidence.
-Audit shows retained request IDs, actual recorded tool outcomes and completed-work
-measurements instead of the prototype's illustrative timings and first-output
-metric. These differences preserve the approved colors, work/chat layout,
-review-before-acceptance behavior, and narrow-screen ordering.
-
 ## Owner live run and runner corrections
 
 The first owner run returned 27 passes and 13 failures, with no reported output
@@ -146,11 +128,7 @@ The retained failures established:
   has not had a paid verification run.
 
 The final offline check passed 163 tests, typechecking, and production build.
-Playwright captured the updated overview flow and prototype/application
-comparisons at 1440×1000 and 320×900; all four selected tests passed. The Explore
-comparisons and the recording were inspected. The longer overview card and read
-tool descriptions deliberately explain the task and returned facts while keeping
-the approved visual treatment. Files are under `artifacts/overview-proof/`.
+Playwright captured the updated overview flow at 1440×1000 and 320×900; all four selected tests passed. The screenshots and recording were inspected. Files are under `artifacts/overview-proof/`.
 The owner then explicitly authorized one additional run. The final suite passed
 40/40 cases, including both overview fact checks and repeated coverage of all
 16 tools. Evidence is retained at `artifacts/live/2026-09-22T19-04-03.714Z/`.

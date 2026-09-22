@@ -47,7 +47,7 @@ At `6a6d2f5`, `pnpm check` passed TypeScript, all 130 unit/integration tests and
 
 Root independently passed three real Chromium checks: reopening the order after a narrow evidence-step reload, recovering the exact teaching receipt after unrelated acceptance, and returning from an unrelated final-practice receipt before completing through the saved practice receipt. The implementation source used for these checks matches the final correction. The committed tests make these cases portable.
 
-The PR contains labeled approved/actual desktop and narrow comparisons and six tutorial recordings. They use the unchanged approved prototype from bootstrap `3ce3912accaee54f2c353ff9b00d6e8022eeec72`. All six videos decoded at their intended 1440 by 1000 or 320 by 900 resolution, and sampled frames were inspected. Guidance stays in normal layout so evidence and acceptance remain reachable.
+The PR contains six tutorial recordings. All six videos decoded at their intended 1440 by 1000 or 320 by 900 resolution, and sampled frames were inspected. Guidance stays in normal layout so evidence and acceptance remain reachable.
 
 1. Read the live issue, PR and checks, then review the full diff from the fixed base, this history, repository guidance and attached visual evidence.
 2. Confirm R3's fix and the earlier recovery paths in the remaining combined review. Record any new findings and dispositions. Make necessary corrections in this same PR, preserving the remaining review limit.

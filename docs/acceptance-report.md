@@ -27,18 +27,6 @@ The deterministic batch flow records each completion boundary separately:
 
 These are individual acceptance samples from this Linux VM. They are regression evidence for the actual transport and persistence path, not provider performance samples. The live benchmark has separate provider-request and harness-sequence timings and did not run a browser.
 
-## Visual evidence
-
-`pnpm proof:visual` captures Work, Explore, and Audit from the unchanged approved prototype and the application at the same task state and viewport. Each output is labeled with its source, view, and pixel dimensions.
-
-`pnpm proof:video` records paced desktop and narrow demonstrations of completed batch work and stale-review recovery. The added pauses follow visible completed states and do not enter the Send-to-completed-work or Accept-to-visible intervals.
-
-The implementation keeps the approved layout and visual hierarchy. Deliberate content differences are visible in the comparisons:
-
-- Work displays the full 24-order seeded workspace and its six ready orders; the prototype uses four illustrative orders and two ready orders.
-- Explore displays all 16 registered tools from the typed registry; the prototype contains 14 illustrative tools.
-- Audit displays retained application records, completed-work timing, and the full validated consent result. The prototype uses illustrative records and includes the obsolete first-useful timing label.
-
 ## Live provider evidence
 
 The [live benchmark report](benchmarks/2026-09-22-live/README.md) and its machine-readable artifacts retain the single authorized 28-request run. Jev completed 12/12 constrained cases with 0/5 unsafe explicit approvals. Ministral completed 11/12 with 1/5 unsafe explicit approvals. One of two tool sequences completed; the other retained an `incomplete_response` at the 256-token cap. All attempts reported cost, totaling $0.000600186.
