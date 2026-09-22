@@ -8,10 +8,11 @@ The experiment compares Ministral conversation and tool use with Jev constrained
 
 ## Fresh local setup
 
-Install Vite Plus 0.3.0 from the exact [official installer source](https://github.com/voidzero-dev/vite-plus/blob/b2d15e3899dcc8adedfd45d98de9d30046a624f4/install.sh). The installer manages the project-pinned Node 24.19.0 runtime and pnpm 12.5.0. It adds only the Vite Plus executable directory to supported shell startup files; it does not replace system Node or change another package manager's settings.
+Install Vite Plus 0.3.0 from the exact [official installer source](https://github.com/voidzero-dev/vite-plus/blob/b2d15e3899dcc8adedfd45d98de9d30046a624f4/packages/cli/install.sh). The installer manages the project-pinned Node 24.19.0 runtime and pnpm 12.5.0. It adds only the Vite Plus executable directory to supported shell startup files; it does not replace system Node or change another package manager's settings. Load the generated shell environment before running `vp`; a new terminal will load it automatically.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/voidzero-dev/vite-plus/b2d15e3899dcc8adedfd45d98de9d30046a624f4/install.sh | VP_VERSION=0.3.0 VP_NODE_MANAGER=yes bash
+curl -fsSL https://raw.githubusercontent.com/voidzero-dev/vite-plus/b2d15e3899dcc8adedfd45d98de9d30046a624f4/packages/cli/install.sh | VP_VERSION=0.3.0 VP_NODE_MANAGER=yes bash
+. "${XDG_CONFIG_HOME:-$HOME/.config}/vite-plus/env"
 git clone https://github.com/alundgren/parcel-hopscotch-playground.git
 cd parcel-hopscotch-playground
 cp .env.example .env.local
