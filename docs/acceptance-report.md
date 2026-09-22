@@ -31,6 +31,8 @@ These are individual acceptance samples from this Linux VM. They are regression 
 
 `pnpm proof:visual` captures Work, Explore, and Audit from the unchanged approved prototype and the application at the same task state and viewport. Each output is labeled with its source, view, and pixel dimensions.
 
+`pnpm proof:video` records paced desktop and narrow demonstrations of completed batch work and stale-review recovery. The added pauses follow visible completed states and do not enter the Send-to-completed-work or Accept-to-visible intervals.
+
 The implementation keeps the approved layout and visual hierarchy. Deliberate content differences are visible in the comparisons:
 
 - Work displays the full 24-order seeded workspace and its six ready orders; the prototype uses four illustrative orders and two ready orders.

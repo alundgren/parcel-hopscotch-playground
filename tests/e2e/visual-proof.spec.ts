@@ -6,6 +6,7 @@ import { expect, test, type Browser, type Page, type TestInfo } from "@playwrigh
 type MainView = "Work" | "Explore" | "Audit";
 
 const capture = async (page: Page, path: string) => {
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path, animations: "disabled" });
 };
 
@@ -17,8 +18,9 @@ const comparison = async (
   actualPath: string,
 ) => {
   const viewport = testInfo.project.use.viewport ?? { width: 1440, height: 1000 };
+  const captionHeight = viewport.width <= 560 ? 64 : 32;
   const [reference, actual] = await Promise.all([readFile(referencePath), readFile(actualPath)]);
-  const context = await browser.newContext({ viewport: { width: viewport.width * 2 + 48, height: viewport.height + 80 } });
+  const context = await browser.newContext({ viewport: { width: viewport.width * 2 + 48, height: viewport.height + captionHeight + 32 } });
   const page = await context.newPage();
   try {
     await page.setContent(`<!doctype html>
@@ -27,7 +29,7 @@ const comparison = async (
         body { margin: 0; padding: 16px; background: #d9ddd8; color: #334e5b; font: 600 16px system-ui, sans-serif; }
         main { display: grid; grid-template-columns: ${viewport.width}px ${viewport.width}px; gap: 16px; }
         figure { margin: 0; }
-        figcaption { height: 32px; padding: 4px 8px; }
+        figcaption { height: ${captionHeight}px; padding: 4px 8px; }
         img { display: block; width: ${viewport.width}px; height: ${viewport.height}px; object-fit: cover; object-position: top left; }
       </style></head><body><main>
         <figure><figcaption>Approved reference · ${view} · ${viewport.width}×${viewport.height}</figcaption><img src="data:image/png;base64,${reference.toString("base64")}"></figure>
@@ -49,6 +51,9 @@ test("captures approved and actual Work, Explore, and Audit at the project viewp
   await page.goto("/");
   await expect(page.getByTestId("connection-status")).toContainText("Connected");
   await expect(page.getByRole("button", { name: "All 24" })).toBeVisible();
+  await page.getByPlaceholder("Message...").fill("What needs my attention?");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByText("I grouped the current queue and opened Work so you can review what is ready and what still needs a decision.")).toBeVisible();
 
   const actualPaths = new Map<MainView, string>();
   const workPath = testInfo.outputPath(`actual-work-${testInfo.project.name}.png`);

@@ -40,6 +40,14 @@ pnpm proof:visual
 
 Playwright writes the comparisons, raw screenshots, and videos to `test-results/`. The command waits for the real workspace and tool catalogue before capture.
 
+Create readable desktop and narrow demonstrations of completed batch work and stale-review recovery with:
+
+```bash
+pnpm proof:video
+```
+
+This adds pauses after completed states are visible. The pauses occur outside the Send-to-completed-work and Accept-to-visible measurement intervals.
+
 Exercise the complete bounded provider benchmark without paid requests with:
 
 ```bash

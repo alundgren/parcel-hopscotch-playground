@@ -17,25 +17,34 @@ const send = async (page: Page, message: string) => {
   await page.getByRole("button", { name: "Send message" }).click();
 };
 
+const demonstrationPause = async (page: Page) => {
+  if (process.env.PROOF_DEMO === "true") await page.waitForTimeout(1_200);
+};
+
 test("rejects a stale batch in the browser without applying any reviewed order", async ({ page, context }, testInfo) => {
   await context.setExtraHTTPHeaders({ [identityHeader]: projectIdentity(testInfo, "stale") });
   await openWorkspace(page);
   const secondPage = await context.newPage();
   try {
     await openWorkspace(secondPage);
+    await demonstrationPause(page);
     await page.getByRole("button", { name: "Review ready orders" }).click();
     await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
     await expect(page.getByText("BB-1051", { exact: true })).toBeVisible();
+    await demonstrationPause(page);
 
     await secondPage.getByRole("button", { name: "Advance stock scenario" }).click();
     await expect(secondPage.getByRole("status")).toContainText("Scenario advanced: sage mug stock changed.");
+    await demonstrationPause(secondPage);
 
     await page.getByRole("button", { name: /Accept \d+ changes/ }).click();
     await expect(page.getByRole("status")).toContainText("Stock for MUG-SAGE changed after review. Nothing was applied.");
     await expect(page.getByText("Accepted by you")).toHaveCount(0);
+    await demonstrationPause(page);
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByRole("button", { name: "All 24" })).toBeVisible();
     await expect(page.locator("#target-order-BB-1063 .status")).toHaveText("Ready");
+    await demonstrationPause(page);
   } finally {
     await secondPage.close();
   }
@@ -126,15 +135,18 @@ test("isolates turns, provider failures, audit history, accepted work, and reset
 test("records server-turn, browser completed-work, and accept-to-visible measurements separately", async ({ page, context }, testInfo) => {
   await context.setExtraHTTPHeaders({ [identityHeader]: projectIdentity(testInfo, "metrics") });
   await openWorkspace(page);
+  await demonstrationPause(page);
 
   await send(page, "Prepare all the green orders as a batch.");
   await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
   await expect(page.getByText("The eligible orders are ready for your review. Nothing changes until you accept the batch.")).toBeVisible();
   const turnId = await page.locator('[data-chat-role="user"]').last().getAttribute("data-chat-turn");
   expect(turnId).not.toBeNull();
+  await demonstrationPause(page);
 
   await page.getByRole("button", { name: /Accept \d+ changes/ }).click();
   await expect(page.getByText("Accepted by you")).toBeVisible();
+  await demonstrationPause(page);
   await page.getByRole("button", { name: "Audit", exact: true }).click();
   const search = page.getByLabel("Search audit history");
   await search.fill(turnId!);
@@ -149,6 +161,7 @@ test("records server-turn, browser completed-work, and accept-to-visible measure
   await detail.getByRole("tab", { name: "Application result" }).click();
   const acceptVisible = detail.locator("summary strong").filter({ hasText: /^Accept to visible · / });
   await expect(acceptVisible).toBeVisible();
+  await demonstrationPause(page);
 
   const evidence = {
     project: testInfo.project.name,
