@@ -130,8 +130,9 @@ describe("provider benchmark reporting", () => {
     const orderOutput = { order: { id: "BB-1042" } };
     expect(scenarioResponseHasExpectedFacts("getOrder", "BB-1042 needs review because the number is 41.", orderOutput)).toBe(true);
     expect(scenarioResponseHasExpectedFacts("getOrder", "The order is ready.", orderOutput)).toBe(false);
-    const listOutput = { orders: [{ id: "BB-1051" }] };
-    expect(scenarioResponseHasExpectedFacts("listOrders", "BB-1051 is ready for review.", listOutput)).toBe(true);
-    expect(scenarioResponseHasExpectedFacts("listOrders", "BB-1051 needs attention.", listOutput)).toBe(false);
+    const listOutput = { orders: [{ id: "BB-1051" }, { id: "BB-1063" }] };
+    expect(scenarioResponseHasExpectedFacts("listOrders", "BB-1051 and BB-1063 are ready for review.", listOutput)).toBe(true);
+    expect(scenarioResponseHasExpectedFacts("listOrders", "BB-1051 is ready for review.", listOutput)).toBe(false);
+    expect(scenarioResponseHasExpectedFacts("listOrders", "BB-1051 and BB-1063 need attention.", listOutput)).toBe(false);
   });
 });

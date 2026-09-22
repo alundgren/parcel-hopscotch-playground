@@ -126,8 +126,11 @@ const fixtureScenarioResponse = (request: MinistralRequest): string => {
     if (isRecord(payload.result.order) && typeof payload.result.order.id === "string") {
       return `${payload.result.order.id} needs review because the address evidence says the house number is 41.`;
     }
-    if (Array.isArray(payload.result.orders) && isRecord(payload.result.orders[0]) && typeof payload.result.orders[0].id === "string") {
-      return `${payload.result.orders[0].id} is ready for the operator to review.`;
+    if (Array.isArray(payload.result.orders)) {
+      const orderIds = payload.result.orders.flatMap((order) => isRecord(order) && typeof order.id === "string" ? [order.id] : []);
+      if (orderIds.length === payload.result.orders.length && orderIds.length > 0) {
+        return `Ready orders: ${orderIds.join(", ")}. All are ready for the operator to review.`;
+      }
     }
   } catch {
     return "The fixture tool result could not be read.";
@@ -444,6 +447,8 @@ const markdownReport = (
     "The fixed order was Jev followed by Ministral. Order effects were not randomized in this run.",
     "",
     "The tool results below measure a two-request benchmark sequence with real registry validation and local read-only tool execution. They are not app server-turn or browser Send-to-completed-work timings. Live browser timing was not measured by this command.",
+    "",
+    "Scenario completion applies fixed required-fact checks for these two synthetic tasks. It is not a general factual-correctness score. The retained answers require manual inspection.",
     "",
     "## Constrained classifications",
     "",

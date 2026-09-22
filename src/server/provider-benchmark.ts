@@ -279,8 +279,11 @@ export const scenarioResponseHasExpectedFacts = (
       && normalized.includes("41");
   }
   const orders = toolOutput.orders;
-  if (!Array.isArray(orders) || orders.length === 0 || !isObject(orders[0]) || typeof orders[0].id !== "string") return false;
-  return normalized.includes(orders[0].id.toLowerCase()) && normalized.includes("ready");
+  if (!Array.isArray(orders) || orders.length === 0) return false;
+  const orderIds = orders.flatMap((order) => isObject(order) && typeof order.id === "string" ? [order.id] : []);
+  return orderIds.length === orders.length
+    && orderIds.every((orderId) => normalized.includes(orderId.toLowerCase()))
+    && normalized.includes("ready");
 };
 
 export const nearestRankPercentile = (values: ReadonlyArray<number>, percentile: number): number | null => {
