@@ -105,6 +105,8 @@ const scriptedMinistral = (): MinistralAdapter => ({
       const failed = toolMessages.some((message) => message.role === "tool" && message.content.includes('"ok":false'));
       const content = failed
         ? "I could not finish every requested step. The completed results remain visible, and you can retry the missing step."
+        : text.includes("tutorial") || text.includes("teach") || text.includes("learn")
+          ? "The tutorial is ready. Your verified work advances it, and you can dismiss it at any time."
         : text.includes("reset")
           ? "The reset is ready for your review. Nothing changes until you accept it."
           : text.includes("audit")
@@ -121,7 +123,11 @@ const scriptedMinistral = (): MinistralAdapter => ({
     }
     const id = () => `call_${randomUUID()}`;
     const orderMatch = /bb-\d{4}/i.exec(text)?.[0]?.toUpperCase() ?? selectedOrderFromMessages(request.messages) ?? "BB-1042";
-    const toolCalls = text.includes("reset")
+    const toolCalls = text.includes("stop") && text.includes("tutorial")
+      ? [{ id: id(), name: "stopTutorial", arguments: {} }]
+      : text.includes("tutorial") || text.includes("teach") || text.includes("learn")
+        ? [{ id: id(), name: "startTutorial", arguments: { tutorialId: text.includes("substitut") || text.includes("replacement") ? "substitution-review" : text.includes("batch") ? "batch-approval" : "address-correction" } }]
+      : text.includes("reset")
       ? [{ id: id(), name: "prepareReset", arguments: {} }]
       : text.includes("audit")
         ? [{ id: id(), name: "navigate", arguments: { view: "audit" } }]

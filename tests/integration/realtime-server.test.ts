@@ -269,6 +269,72 @@ describe("realtime server", () => {
     first.socket.close();
   });
 
+  it("rejects a delayed tutorial action after reconnect and accepts the current step", async () => {
+    const first = await connect("tutorial-replay@example.test");
+    const turnId = "turn_12345678-tutorial-replay";
+    const tutorialStarted = new Promise<Extract<ServerMessage, { type: "agent_state" }>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out starting the tutorial.")), 10_000);
+      let completionSent = false;
+      const listener = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as ServerMessage;
+        if (message.type === "error") {
+          clearTimeout(timeout);
+          first.socket.off("message", listener);
+          reject(new Error(`${message.code}: ${message.message}`));
+          return;
+        }
+        if (message.type !== "agent_state") return;
+        if (message.state.activeTurn?.phase === "Rendering answer" && message.state.tutorial !== null && !completionSent) {
+          completionSent = true;
+          first.socket.send(JSON.stringify({ type: "agent_complete_ack", requestId: "tutorial-start-complete", generation: 1, turnId, durationMs: 1 }));
+          return;
+        }
+        if (completionSent && message.state.activeTurn === null && message.state.tutorial !== null) {
+          clearTimeout(timeout);
+          first.socket.off("message", listener);
+          resolve(message);
+        }
+      };
+      first.socket.on("message", listener);
+    });
+    first.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "tutorial-start", generation: 1, turnId, message: "Teach me the batch approval tutorial.", ...workContext }));
+    const startedState = (await tutorialStarted).state;
+    const started = startedState.tutorial!;
+
+    const ready = nextMessage(first.socket, (message) => message.type === "command_result" && message.requestId === "tutorial-ready-one");
+    first.socket.send(JSON.stringify({ type: "tutorial_action", requestId: "tutorial-ready-one", generation: 1, tutorialId: started.id, tutorialInstanceId: started.instanceId, expectedStep: 0, action: "ready_filter_selected" }));
+    await expect(ready).resolves.toMatchObject({ type: "command_result", state: { tutorial: { step: 1 } } });
+
+    const prepared = nextMessage(first.socket, (message) => message.type === "command_result" && message.requestId === "tutorial-prepare");
+    first.socket.send(JSON.stringify({ type: "prepare_batch", requestId: "tutorial-prepare", generation: 1 }));
+    const preparedResult = await prepared;
+    if (preparedResult.type !== "command_result" || preparedResult.result.kind !== "proposal") throw new Error("Tutorial batch proposal was not returned.");
+    const accepted = nextMessage(first.socket, (message) => message.type === "command_result" && message.requestId === "tutorial-accept");
+    first.socket.send(JSON.stringify({ type: "accept_proposal", requestId: "tutorial-accept", generation: 1, proposalId: preparedResult.result.proposal.id, idempotencyKey: "tutorial-replay-key" }));
+    const acceptedResult = await accepted;
+    if (acceptedResult.type !== "command_result" || acceptedResult.result.kind !== "receipt") throw new Error("Tutorial receipt was not returned.");
+    expect(acceptedResult.state.tutorial?.step).toBe(3);
+
+    const receipt = nextMessage(first.socket, (message) => message.type === "command_result" && message.requestId === "tutorial-receipt");
+    first.socket.send(JSON.stringify({ type: "tutorial_action", requestId: "tutorial-receipt", generation: 1, tutorialId: started.id, tutorialInstanceId: started.instanceId, expectedStep: 3, action: "receipt_confirmed", receiptId: acceptedResult.result.receipt.id }));
+    await expect(receipt).resolves.toMatchObject({ type: "command_result", state: { tutorial: { step: 4, phase: "practice" } } });
+
+    const closed = new Promise<void>((resolve) => first.socket.once("close", () => resolve()));
+    first.socket.close();
+    await closed;
+    const replacement = await connect("tutorial-replay@example.test");
+    expect(replacement.snapshot).toMatchObject({ type: "snapshot", state: { tutorial: { instanceId: started.instanceId, step: 4 } } });
+
+    const stale = nextMessage(replacement.socket, (message) => message.type === "command_result" && message.requestId === "tutorial-stale-ready");
+    replacement.socket.send(JSON.stringify({ type: "tutorial_action", requestId: "tutorial-stale-ready", generation: 1, tutorialId: started.id, tutorialInstanceId: started.instanceId, expectedStep: 0, action: "ready_filter_selected" }));
+    await expect(stale).resolves.toMatchObject({ type: "command_result", result: { kind: "tutorial", message: "That action is not the current tutorial step.", advanced: false }, state: { tutorial: { step: 4 } } });
+
+    const current = nextMessage(replacement.socket, (message) => message.type === "command_result" && message.requestId === "tutorial-current-ready");
+    replacement.socket.send(JSON.stringify({ type: "tutorial_action", requestId: "tutorial-current-ready", generation: 1, tutorialId: started.id, tutorialInstanceId: started.instanceId, expectedStep: 4, action: "ready_filter_selected" }));
+    await expect(current).resolves.toMatchObject({ type: "command_result", result: { kind: "tutorial", advanced: true }, state: { tutorial: { step: 5 } } });
+    replacement.socket.close();
+  });
+
   it("runs a correlated multi-tool turn, waits for UI acknowledgements, measures render completion, and deduplicates the turn ID", async () => {
     const connection = await connect("agent@example.test");
     const sibling = await connect("agent@example.test");

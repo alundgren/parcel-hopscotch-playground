@@ -121,6 +121,11 @@ export const toolHandlers: ToolHandlers = {
     const result = await context.requestUi({ kind: "highlight", targetId });
     return { ok: result.applied, message: result.message };
   },
+  startTutorial: async (context, input) => Effect.runPromise(context.repository.startTutorial(context.identity, context.generation, (input as { tutorialId: "address-correction" | "substitution-review" | "batch-approval" }).tutorialId)),
+  stopTutorial: async (context) => {
+    await Effect.runPromise(context.repository.stopTutorial(context.identity, context.generation));
+    return { ok: true, message: "Tutorial dismissed. Accepted work is unchanged." };
+  },
   prepareAddressCorrection: async (context, input) => {
     const orderId = (input as { orderId: string }).orderId;
     if ((await findOrder(context, orderId)).family !== "address") throw new ToolExecutionError("invalid_arguments", "That order is not an address exception.");
