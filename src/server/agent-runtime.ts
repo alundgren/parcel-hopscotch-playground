@@ -14,7 +14,7 @@ import { makeMinistralAdapter } from "./providers/ministral.js";
 import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, ToolExecutionError, type AgentUiRequest } from "./tool-registry.js";
 import { toolHandlers } from "./tool-handlers.js";
 
-const maximumToolRounds = 3;
+const maximumToolRounds = 8;
 const maximumCallsPerRound = 6;
 const uiTimeoutMs = 5_000;
 const finalAcknowledgementTimeoutMs = 5_000;
@@ -205,7 +205,7 @@ const unavailableJev: JevAdapter = {
 const adaptersFor = (config: ServerConfig): { readonly ministral: MinistralAdapter; readonly jev: JevAdapter } => {
   if (config.agentMode === "scripted") return { ministral: scriptedMinistral(), jev: scriptedJev() };
   if (config.agentMode === "live" && config.openRouterApiKey !== null) {
-    const adapterConfig = { apiKey: config.openRouterApiKey, timeoutMs: 20_000, maximumConcurrency: 2 };
+    const adapterConfig = { apiKey: config.openRouterApiKey, maximumConcurrency: providerBounds.maximumConcurrency };
     return { ministral: makeMinistralAdapter(adapterConfig), jev: makeJevAdapter(adapterConfig) };
   }
   return { ministral: unavailableMinistral, jev: unavailableJev };
@@ -321,7 +321,7 @@ export const makeAgentCoordinator = (
     priorTurns: ReadonlyArray<ReadonlyArray<ChatMessage>>,
     currentHistory: ReadonlyArray<ChatMessage>,
   ): MinistralRequest => {
-    const requestFor = (messages: ReadonlyArray<ChatMessage>): MinistralRequest => ({ messages, tools: modelTools, toolChoice: "auto", maxOutputTokens: 256 });
+    const requestFor = (messages: ReadonlyArray<ChatMessage>): MinistralRequest => ({ messages, tools: modelTools, toolChoice: "auto", maxOutputTokens: providerBounds.maximumOutputTokens });
     const fits = (messages: ReadonlyArray<ChatMessage>): boolean =>
       messages.length <= 32 && jsonBytes(buildMinistralWireRequest(requestFor(messages))) <= providerBounds.maximumContextBytes;
     const currentGroups = historyGroups(currentHistory);
@@ -642,7 +642,7 @@ export const makeAgentCoordinator = (
           if (providerError !== null) throw providerError;
         }
       }
-      throw new Error("The turn reached the three-round tool limit.");
+      throw new Error("The turn reached the eight-request tool limit.");
     } catch (error) {
       clearPendingCompletion(active);
       if (active.cancelled || (error instanceof Error && error.message === "cancelled")) {

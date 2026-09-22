@@ -1,5 +1,6 @@
 import {
   MINISTRAL_MODEL,
+  providerBounds,
   type ChatMessage,
   type MinistralRequest,
 } from "./contracts.js";
@@ -82,7 +83,7 @@ export const buildMinistralWireRequest = (
     model: MINISTRAL_MODEL,
     messages: request.messages.map(serializeMessage),
     stream: true,
-    max_tokens: request.maxOutputTokens ?? 256,
+    max_tokens: request.maxOutputTokens ?? providerBounds.maximumOutputTokens,
     tools: (request.tools ?? []).map((tool) => ({
       type: "function",
       function: {

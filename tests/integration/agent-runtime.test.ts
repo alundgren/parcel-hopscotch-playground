@@ -621,7 +621,7 @@ describe("agent runtime", () => {
     }));
   });
 
-  it("stops after three tool rounds and retains completed tool outcomes when a later provider request fails", async () => {
+  it("stops after eight model requests and retains completed tool outcomes when a later provider request fails", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");
     let rounds = 0;
@@ -631,10 +631,11 @@ describe("agent runtime", () => {
       const coordinator = makeAgentCoordinator(config, { ministral: endless, jev: unusedJev });
       yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: "turn_12345678-rounds", requestId: "request-rounds", message: "Keep calling tools forever.", viewContext: { view: "work", focus: null }, connectionId: "connection-rounds", send: async () => undefined }));
       const failed = yield* Effect.promise(() => waitForTurn(repository, "turn_12345678-rounds", ["failed"]));
-      expect(rounds).toBe(3);
-      expect(failed.history.filter((message) => message.role === "tool")).toHaveLength(3);
+      expect(rounds).toBe(8);
+      expect(failed.history.filter((message) => message.role === "tool").at(-1)).toMatchObject({ toolCallId: "call_8" });
+      expect(jsonBytes(failed.history)).toBeLessThanOrEqual(32 * 1024);
       const attempts = yield* repository.providerAttempts(identity, 10);
-      expect(attempts.filter((attempt) => attempt.turnId === "turn_12345678-rounds")).toHaveLength(3);
+      expect(attempts.filter((attempt) => attempt.turnId === "turn_12345678-rounds")).toHaveLength(8);
     }));
 
     rounds = 0;

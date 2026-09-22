@@ -68,6 +68,30 @@ const contentStream = (content = "Done 🪵") =>
 const request = { messages: [{ role: "user" as const, content: "Finish." }] };
 
 describe("Ministral OpenRouter adapter", () => {
+  it("allows 4,096 output tokens and a complete stream with one envelope per token", async () => {
+    const frames = Array.from({ length: 4_096 }, () => ({
+      id: "gen_long", model: "mistralai/ministral-3b-2512", provider: "Mistral",
+      choices: [{ index: 0, delta: { content: "word " }, finish_reason: null }],
+    }));
+    const bytes = sse(...frames, {
+      id: "gen_long", model: "mistralai/ministral-3b-2512", provider: "Mistral",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 8, completion_tokens: 4_096, total_tokens: 4_104 },
+    }, "[DONE]");
+    expect(bytes.byteLength).toBeGreaterThan(256 * 1024);
+    const fetcher = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body)).max_tokens).toBe(4_096);
+      return response(bytes);
+    });
+    const adapter = makeMinistralAdapter({ apiKey: "synthetic-key" }, fetcher);
+    const result = await Effect.runPromise(adapter.complete(request));
+    expect(result.content).toBe("word ".repeat(4_096));
+    expect(result.metadata.usage.outputTokens).toBe(4_096);
+    await expect(Effect.runPromise(adapter.complete({ ...request, maxOutputTokens: 4_097 })))
+      .rejects.toMatchObject({ code: "invalid_request" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts every byte split, multibyte content, CRLF, and the documented repeated terminal usage frame", async () => {
     const bytes = contentStream();
     for (let split = 1; split < bytes.byteLength; split += 1) {
