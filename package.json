@@ -19,6 +19,7 @@
     "test:integration": "vitest run tests/integration",
     "test:e2e": "playwright test",
     "smoke:providers": "tsx src/server/provider-smoke.ts",
+    "smoke:agent": "tsx src/server/provider-smoke.ts",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
   "dependencies": {

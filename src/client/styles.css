@@ -72,6 +72,7 @@ button { color: inherit; }
 h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-weight: 650; letter-spacing: -.015em; }
 
 .queue-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 0 14px; border-bottom: 1px solid var(--line); }
+.queue-toolbar > span { display: flex; align-items: center; gap: 12px; }
 .filters { display: flex; gap: 8px; }
 .filters .button { padding: 7px 12px; }
 .filters .button[aria-pressed="true"] { background: #e8ece9; }
@@ -91,8 +92,14 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
 .status-waiting { color: var(--muted); }
 
 .chat-panel { height: calc(100vh - 104px); min-height: 520px; max-height: 700px; padding: 26px 22px 20px; background: var(--chat); color: var(--blue); display: flex; flex-direction: column; }
-.chat-copy { margin: 46px 2px auto; font-size: 16px; line-height: 1.6; }
-.chat-copy p { margin: 0 0 22px; }
+.chat-messages { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: flex-start; gap: 18px; padding: 0 0 24px; scrollbar-width: thin; scrollbar-color: var(--blue-line) transparent; }
+.chat-message { max-width: 92%; margin: 0; line-height: 1.6; white-space: pre-wrap; }
+.chat-user { align-self: flex-end; padding: 10px 14px; border-radius: 12px; background: #c1d2da; }
+.chat-assistant { padding: 0 2px; }
+.turn-progress { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.turn-progress .button { margin-left: 4px; color: var(--blue); }
+.progress-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); animation: progress-pulse 1.1s ease-in-out infinite alternate; }
+.chat-error { margin: 0; color: #8f3a2d; line-height: 1.5; }
 .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 7px; border: 1px solid var(--blue-line); border-radius: 11px; background: var(--paper); }
 .composer input { min-width: 0; border: 0; background: transparent; color: var(--text); padding: 5px 8px; outline: 0; }
 
@@ -123,7 +130,7 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
 .effect-list li { margin: 7px 0; }
 .omissions { margin: 20px 0; color: var(--muted); font-size: 14px; }
 .omissions p { margin: 7px 0; }
-.proposal-actions { position: sticky; bottom: -1px; display: flex; gap: 10px; align-items: center; margin-top: 26px; padding: 14px 0 1px; background: var(--paper); }
+.proposal-actions { display: flex; gap: 10px; align-items: center; margin-top: 26px; padding: 14px 0 1px; background: var(--paper); }
 .danger-action { background: #8f3a2d; color: var(--paper); }
 .workspace-controls { display: flex; justify-content: space-between; gap: 18px; padding-top: 13px; border-top: 1px solid var(--line); font-size: 14px; }
 .workspace-controls > span { display: flex; gap: 18px; }
@@ -140,6 +147,7 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
 .address-action { background: var(--blue); color: var(--paper); }
 
 .loading-panel p { color: var(--muted); }
+.agent-highlight { outline: 4px solid #7f9caa !important; outline-offset: 5px; border-radius: 8px; background: #e5eef2 !important; transition: outline-color .2s ease, background-color .2s ease; }
 .empty-route { min-height: 420px; padding: 36px 30px; }
 .empty-route p { max-width: 560px; color: var(--muted); }
 
@@ -153,6 +161,7 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
   .work-layout { display: flex; flex-direction: column; gap: 18px; }
   .work-panel, .order-detail { height: 560px; min-height: 0; max-height: none; padding: 22px 16px 14px; }
   .queue-toolbar { align-items: flex-start; flex-direction: column; padding: 18px 0 12px; gap: 10px; }
+  .queue-toolbar > span { align-items: flex-start; flex-direction: column; gap: 4px; }
   .review-status { display: none; }
   .order-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 16px 0; }
   .order-id { grid-column: 1; }
@@ -170,3 +179,5 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+@keyframes progress-pulse { from { opacity: .35; } to { opacity: 1; } }
