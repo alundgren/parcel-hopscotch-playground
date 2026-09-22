@@ -81,3 +81,27 @@ headless acceptance/receipt flow with zero provider requests. The final screensh
 was inspected. Missing dedicated credentials returned exit code 1 even with the
 ordinary application key set to a dummy value. Retained databases and traces were
 confirmed gitignored. No application UI changed in this runner update.
+
+## Second owner live run
+
+The retained run `2026-09-22T18-42-15.592Z` passed 36 of 40 cases. Both Undo
+cases and all batch cases passed; there were no database lock failures, unknown
+cost attempts, or reported truncations. Reported cost was $0.00403886 across 96
+provider attempts. The four failures were:
+
+- Both highlight cases read the order, then tried to highlight its evidence
+  without opening the order. The browser correctly reported the target missing.
+- One overview listed only ready orders and omitted queue grouping.
+- One overview failed input validation for `listOrders`. The adapter still
+  omitted the rejected arguments, so their exact defect cannot be established.
+
+The general model instructions now distinguish data lookup from opening a view,
+require successful order navigation before highlighting evidence, and describe
+unfiltered listings and status grouping for a queue overview. Rejected calls now
+retain JSON arguments through existing credential redaction, allowing the next
+schema error to be diagnosed without accepting invalid arguments. A regression
+test proves both rejection and redaction. These are prompt and diagnostic changes;
+no successful paid rerun is claimed. The full offline check passed 162 tests,
+typechecking, and production build.
+The existing scripted browser workflow for opening and highlighting evidence,
+preparing a batch, and preparing reset also passed at desktop and narrow widths.

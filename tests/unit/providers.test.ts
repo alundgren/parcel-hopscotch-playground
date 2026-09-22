@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatTool, FetchLike, JevRequest } from "../../src/server/providers/contracts";
+import { ProviderError, type ChatTool, type FetchLike, type JevRequest } from "../../src/server/providers/contracts";
 import { buildMinistralWireRequest } from "../../src/server/providers/chat-request";
 import { readBoundedBody } from "../../src/server/providers/http";
 import { makeJevAdapter, parseJevResponse } from "../../src/server/providers/jev";
@@ -211,6 +211,25 @@ describe("Ministral OpenRouter adapter", () => {
       { role: "assistant", content: null, toolCalls: [{ id: oversizedId, name: "getOrder", arguments: {} }] },
       { role: "tool", toolCallId: oversizedId, content: "{}" },
     ] })).toThrow(/invalid metadata/i);
+  });
+
+  it("retains redacted invalid tool arguments without accepting the call", () => {
+    const tools: ReadonlyArray<ChatTool> = [{
+      name: "listOrders", description: "List orders.", parameters: { type: "object" }, validateArguments: () => false,
+    }];
+    const bytes = sse(
+      { id: "x", model: "m", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "c", type: "function", function: {
+        name: "listOrders", arguments: JSON.stringify({ status: "invented", authorization: "private-value", query: "sk-or-v1-private-value" }),
+      } }] }, finish_reason: "tool_calls" }] }, "[DONE]",
+    );
+    let failure: unknown;
+    try { parseMinistralStream(bytes, { ...request, tools }, 1, null); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(ProviderError);
+    expect((failure as ProviderError).message).toContain("did not match its declared input");
+    expect((failure as ProviderError).safeResponse).toMatchObject({ toolCalls: [{
+      id: "c", name: "listOrders", arguments: { status: "invented", authorization: "[redacted]", query: "[redacted]" },
+    }] });
+    expect(JSON.stringify((failure as ProviderError).safeResponse)).not.toContain("private-value");
   });
 
   it.each([

@@ -347,7 +347,11 @@ export const parseMinistralStream = (
         providerRequestId: safeIdentifier(providerRequestId),
         generationId: safeIdentifier(generationId),
         content: content.join(""),
-        toolCalls: [...toolFragments.values()].map((call) => ({ id: call.id, name: call.name })),
+        toolCalls: [...toolFragments.values()].map((call) => {
+          let argumentsValue: unknown = null;
+          try { argumentsValue = JSON.parse(call.arguments); } catch { /* Incomplete JSON is not retained as an unstructured secret-bearing string. */ }
+          return { id: call.id, name: call.name, arguments: argumentsValue };
+        }),
         finishReason,
         usage,
       },
