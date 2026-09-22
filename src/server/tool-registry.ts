@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import type { AgentUiOperation, ReviewedProposal } from "../shared/contracts.js";
-import { OrderStatus, ResolutionFamily, ReviewedProposal as ReviewedProposalSchema } from "../shared/contracts.js";
+import { OrderStatus, ResolutionFamily, ReviewedProposal as ReviewedProposalSchema, TutorialId, TutorialState } from "../shared/contracts.js";
 import type { RequestIdentity } from "./identity.js";
 import type { WorkspaceRepositoryService } from "./persistence.js";
 import { ProviderError, type JevRequest, type JevResult } from "./providers/contracts.js";
@@ -101,6 +101,18 @@ const specs = {
     category: "Guide", purpose: "Point to evidence", allowedEffects: ["highlight_registered_target"],
     example: { arguments: { target: "orderEvidence", orderId: "BB-1042" }, result: { ok: true, message: "Highlighted the evidence." } },
     input: Schema.Struct({ target: Schema.Literals(["workQueue", "readyFilter", "chatComposer", "orderRow", "orderEvidence"]), orderId: Schema.optionalKey(Identifier) }), output: ResultMessage,
+  },
+  startTutorial: {
+    description: "Start one bounded application tutorial for the current workspace. Real user actions advance it.",
+    category: "Guide", purpose: "Teach a task", allowedEffects: ["start_bounded_tutorial"],
+    example: { arguments: { tutorialId: "address-correction" }, result: { id: "address-correction", instanceId: "tutorial_example", step: 0, totalSteps: 8, phase: "teaching" } },
+    input: Schema.Struct({ tutorialId: TutorialId }), output: TutorialState,
+  },
+  stopTutorial: {
+    description: "Dismiss the current tutorial without changing accepted work.",
+    category: "Guide", purpose: "End the guidance", allowedEffects: ["stop_tutorial_guidance"],
+    example: { arguments: {}, result: { ok: true, message: "Tutorial dismissed." } },
+    input: EmptyInput, output: ResultMessage,
   },
   prepareAddressCorrection: {
     description: "Prepare the authoritative address correction for an address order. The user must accept the preview.",

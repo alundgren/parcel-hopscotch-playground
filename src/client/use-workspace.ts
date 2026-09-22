@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Schema } from "effect";
-import { ServerMessageSchema, WorkspaceSnapshot as WorkspaceSnapshotSchema, type AgentUiOperation, type AgentViewContext, type CommandResult, type ServerMessage, type WorkspaceCommand, type WorkspaceSnapshot } from "../shared/contracts";
+import { ServerMessageSchema, WorkspaceSnapshot as WorkspaceSnapshotSchema, type AgentUiOperation, type AgentViewContext, type CommandResult, type ServerMessage, type TutorialId, type WorkspaceCommand, type WorkspaceSnapshot } from "../shared/contracts";
 
 export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline" | "retired";
 type WorkspaceEvent = Extract<ServerMessage, { readonly type: "event" }>;
@@ -26,7 +26,11 @@ type CommandInput =
   | { readonly type: "prepare_undo"; readonly receiptId: string }
   | { readonly type: "prepare_reset" }
   | { readonly type: "accept_proposal"; readonly proposalId: string; readonly idempotencyKey: string }
-  | { readonly type: "advance_scenario"; readonly scenario: "stock_change" };
+  | { readonly type: "advance_scenario"; readonly scenario: "stock_change" }
+  | { readonly type: "stop_tutorial" }
+  | { readonly type: "tutorial_action"; readonly tutorialId: TutorialId; readonly tutorialInstanceId: string; readonly expectedStep: number; readonly action: "order_selected"; readonly orderId: string }
+  | { readonly type: "tutorial_action"; readonly tutorialId: TutorialId; readonly tutorialInstanceId: string; readonly expectedStep: number; readonly action: "ready_filter_selected" }
+  | { readonly type: "tutorial_action"; readonly tutorialId: TutorialId; readonly tutorialInstanceId: string; readonly expectedStep: number; readonly action: "receipt_confirmed"; readonly receiptId: string };
 export interface PendingCommand { readonly resolve: (result: CommandResult) => void; readonly reject: (error: Error) => void }
 type CommandResultMessage = Extract<ServerMessage, { readonly type: "command_result" }>;
 export const settleCommandResult = (

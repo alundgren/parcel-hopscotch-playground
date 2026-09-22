@@ -33,6 +33,7 @@ const snapshot = (sequence: number, generation = 1): WorkspaceSnapshot => ({
   chat: [],
   activeTurn: null,
   agentMode: "unavailable",
+  tutorial: null,
 });
 
 const event = (sequence: number, generation = 1) => ({

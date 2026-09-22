@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { tutorialIds } from "./tutorials.js";
 
 export const OrderStatus = Schema.Literals(["ready", "review", "waiting"]);
 export type OrderStatus = typeof OrderStatus.Type;
@@ -37,6 +38,20 @@ export const CommandReceipt = Schema.Struct({
 });
 export type CommandReceipt = typeof CommandReceipt.Type;
 
+export const TutorialId = Schema.Literals(tutorialIds);
+export type TutorialId = typeof TutorialId.Type;
+export const TutorialState = Schema.Struct({
+  id: TutorialId,
+  instanceId: Schema.String,
+  title: Schema.String,
+  step: Schema.Int,
+  totalSteps: Schema.Int,
+  phase: Schema.Literals(["teaching", "practice", "complete"]),
+  instruction: Schema.String,
+  targetId: Schema.String,
+});
+export type TutorialState = typeof TutorialState.Type;
+
 export const WorkspaceSnapshot = Schema.Struct({
   generation: Schema.Int, sequence: Schema.Int, orders: Schema.Array(OrderSummary),
   latestReceipt: Schema.NullOr(CommandReceipt),
@@ -60,6 +75,7 @@ export const WorkspaceSnapshot = Schema.Struct({
     measurement: Schema.Literals(["pending", "complete", "incomplete"]),
   })),
   agentMode: Schema.Literals(["live", "scripted", "unavailable"]),
+  tutorial: Schema.NullOr(TutorialState),
 });
 export type WorkspaceSnapshot = typeof WorkspaceSnapshot.Type;
 
@@ -69,7 +85,14 @@ export const PrepareUndoMessage = Schema.Struct({ type: Schema.Literal("prepare_
 export const PrepareResetMessage = Schema.Struct({ type: Schema.Literal("prepare_reset"), requestId: Schema.String, generation: Schema.Int });
 export const AcceptProposalMessage = Schema.Struct({ type: Schema.Literal("accept_proposal"), requestId: Schema.String, generation: Schema.Int, proposalId: Schema.String, idempotencyKey: Schema.String });
 export const AdvanceScenarioMessage = Schema.Struct({ type: Schema.Literal("advance_scenario"), requestId: Schema.String, generation: Schema.Int, scenario: Schema.Literal("stock_change") });
-export type WorkspaceCommand = typeof PrepareResolutionMessage.Type | typeof PrepareBatchMessage.Type | typeof PrepareUndoMessage.Type | typeof PrepareResetMessage.Type | typeof AcceptProposalMessage.Type | typeof AdvanceScenarioMessage.Type;
+export const StopTutorialMessage = Schema.Struct({ type: Schema.Literal("stop_tutorial"), requestId: Schema.String, generation: Schema.Int });
+const TutorialActionRevision = { tutorialId: TutorialId, tutorialInstanceId: Schema.String, expectedStep: Schema.Int };
+export const TutorialActionMessage = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("tutorial_action"), requestId: Schema.String, generation: Schema.Int, ...TutorialActionRevision, action: Schema.Literal("order_selected"), orderId: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("tutorial_action"), requestId: Schema.String, generation: Schema.Int, ...TutorialActionRevision, action: Schema.Literal("ready_filter_selected") }),
+  Schema.Struct({ type: Schema.Literal("tutorial_action"), requestId: Schema.String, generation: Schema.Int, ...TutorialActionRevision, action: Schema.Literal("receipt_confirmed"), receiptId: Schema.String }),
+]);
+export type WorkspaceCommand = typeof PrepareResolutionMessage.Type | typeof PrepareBatchMessage.Type | typeof PrepareUndoMessage.Type | typeof PrepareResetMessage.Type | typeof AcceptProposalMessage.Type | typeof AdvanceScenarioMessage.Type | typeof StopTutorialMessage.Type | typeof TutorialActionMessage.Type;
 
 export const HelloMessage = Schema.Struct({ type: Schema.Literal("hello"), requestId: Schema.String, clientId: Schema.String, knownGeneration: Schema.Int, knownSequence: Schema.Int });
 export const SnapshotRequest = Schema.Struct({ type: Schema.Literal("request_snapshot"), requestId: Schema.String });
@@ -112,6 +135,7 @@ export const ClientMessage = Schema.Union([
   HelloMessage, SnapshotRequest, PingRequest, PrepareResolutionMessage,
   PrepareBatchMessage, PrepareUndoMessage, PrepareResetMessage,
   AcceptProposalMessage, AdvanceScenarioMessage, SendAgentTurnMessage,
+  StopTutorialMessage, TutorialActionMessage,
   CancelAgentTurnMessage, AgentUiAcknowledgementMessage,
   AgentCompleteAcknowledgementMessage, CommandVisibleAcknowledgementMessage,
 ]);
@@ -120,11 +144,13 @@ export type ClientMessage = typeof ClientMessage.Type;
 export type CommandResult =
   | { readonly kind: "proposal"; readonly proposal: ReviewedProposal }
   | { readonly kind: "receipt"; readonly receipt: CommandReceipt }
-  | { readonly kind: "scenario"; readonly message: string };
+  | { readonly kind: "scenario"; readonly message: string }
+  | { readonly kind: "tutorial"; readonly message: string };
 export const CommandResultSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("proposal"), proposal: ReviewedProposal }),
   Schema.Struct({ kind: Schema.Literal("receipt"), receipt: CommandReceipt }),
   Schema.Struct({ kind: Schema.Literal("scenario"), message: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("tutorial"), message: Schema.String }),
 ]);
 export const AgentUiOperationSchema = Schema.Union([
   Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("navigate"), view: Schema.Literals(["work", "explore", "audit", "order"]), orderId: Schema.optionalKey(Schema.String) }),

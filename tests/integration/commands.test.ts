@@ -8,12 +8,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ServerConfig } from "../../src/server/config";
 import { resolveIdentity } from "../../src/server/identity";
 import { runWithWorkspaceRepository, WorkspaceRepository, type WorkspaceRepositoryService } from "../../src/server/persistence";
+import type { TutorialState } from "../../src/shared/contracts";
 
 const paths: Array<string> = [];
 const config: ServerConfig = { environment: "production", host: "127.0.0.1", port: 0, publicOrigin: "https://parcel.example.test", databasePath: ":memory:", allowDevelopmentIdentity: false, developmentEmail: null, agentMode: "unavailable", openRouterApiKey: null };
 const identity = (email: string) => Effect.runSync(resolveIdentity(["Cf-Access-Authenticated-User-Email", email], config));
 const workspace = async () => { const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-commands-")); paths.push(directory); return join(directory, "workspace.sqlite"); };
 const useRepository = <A>(filename: string, run: (repository: WorkspaceRepositoryService) => Effect.Effect<A, unknown>) => runWithWorkspaceRepository(filename, Effect.flatMap(WorkspaceRepository, run));
+const tutorialRevision = (state: TutorialState) => ({ tutorialId: state.id, tutorialInstanceId: state.instanceId, expectedStep: state.step });
 const raceWorker = (filename: string, email: string, action: "accept" | "scenario", proposalId: string, gate: string) => new Promise<{ ok: boolean; kind?: string; code?: string }>((resolve, reject) => {
   const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "tests/fixtures/command-race-worker.ts", filename, email, action, proposalId, gate], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
   let stdout = ""; let stderr = "";
@@ -25,6 +27,126 @@ const raceWorker = (filename: string, email: string, action: "accept" | "scenari
 afterEach(async () => { await Promise.all(paths.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
 describe("reviewed fulfilment commands", () => {
+  it("advances tutorial progress only for the expected owner, generation, order and action", async () => {
+    const filename = await workspace();
+    const user = identity("tutorial-owner@example.test");
+    const other = identity("tutorial-other@example.test");
+
+    await useRepository(filename, (repository) => Effect.gen(function* () {
+      yield* repository.snapshot(user);
+      yield* repository.snapshot(other);
+      const started = yield* repository.startTutorial(user, 1, "address-correction");
+      expect(started).toMatchObject({ step: 0, phase: "teaching" });
+
+      const otherAction = yield* repository.recordTutorialAction(other, 1, { ...tutorialRevision(started), kind: "order_selected", orderId: "BB-1042" });
+      expect(otherAction.advanced).toBe(false);
+      expect(otherAction.snapshot.tutorial).toBeNull();
+
+      const unrelated = yield* repository.recordTutorialAction(user, 1, { ...tutorialRevision(started), kind: "order_selected", orderId: "BB-1102" });
+      expect(unrelated.advanced).toBe(false);
+      expect(unrelated.snapshot.tutorial?.step).toBe(0);
+
+      const selected = yield* repository.recordTutorialAction(user, 1, { ...tutorialRevision(started), kind: "order_selected", orderId: "BB-1042" });
+      expect(selected.advanced).toBe(true);
+      expect(selected.snapshot.tutorial?.step).toBe(1);
+
+      const duplicate = yield* repository.recordTutorialAction(user, 1, { ...tutorialRevision(started), kind: "order_selected", orderId: "BB-1042" });
+      expect(duplicate.advanced).toBe(false);
+      expect(duplicate.snapshot.tutorial?.step).toBe(1);
+
+      yield* repository.stopTutorial(user, 1);
+      expect((yield* repository.snapshot(user)).tutorial).toBeNull();
+      const resumed = yield* repository.startTutorial(user, 1, "address-correction");
+      expect(resumed).toMatchObject({ instanceId: started.instanceId, step: 1 });
+
+      const wrong = yield* repository.prepareResolution(user, 1, "BB-1102");
+      expect((yield* repository.snapshot(user)).tutorial?.step).toBe(1);
+      yield* repository.accept(user, 1, wrong.id, "wrong-tutorial-key");
+      expect((yield* repository.snapshot(user)).tutorial?.step).toBe(1);
+
+      const proposal = yield* repository.prepareResolution(user, 1, "BB-1042");
+      expect((yield* repository.snapshot(user)).tutorial?.step).toBe(2);
+      const commit = yield* repository.accept(user, 1, proposal.id, "address-tutorial-key");
+      expect(commit.snapshot.tutorial?.step).toBe(3);
+
+      const receiptStep = commit.snapshot.tutorial!;
+      const wrongReceipt = yield* repository.recordTutorialAction(user, 1, { ...tutorialRevision(receiptStep), kind: "receipt_confirmed", receiptId: (yield* repository.accept(user, 1, wrong.id, "wrong-tutorial-key")).receipt.id });
+      expect(wrongReceipt.advanced).toBe(false);
+      const confirmed = yield* repository.recordTutorialAction(user, 1, { ...tutorialRevision(receiptStep), kind: "receipt_confirmed", receiptId: commit.receipt.id });
+      expect(confirmed.advanced).toBe(true);
+      expect(confirmed.snapshot.tutorial).toMatchObject({ step: 4, phase: "practice" });
+    }));
+
+    await useRepository(filename, (repository) => Effect.gen(function* () {
+      expect((yield* repository.snapshot(user)).tutorial).toMatchObject({ id: "address-correction", step: 4 });
+      const reset = yield* repository.prepareReset(user, 1);
+      const commit = yield* repository.accept(user, 1, reset.id, "tutorial-reset-key");
+      expect(commit.snapshot).toMatchObject({ generation: 2, tutorial: null });
+    }));
+
+    await expect(useRepository(filename, (repository) => repository.recordTutorialAction(user, 1, { tutorialId: "address-correction", tutorialInstanceId: "stale-instance", expectedStep: 4, kind: "order_selected", orderId: "BB-1072" }))).rejects.toMatchObject({ code: "generation_changed" });
+  });
+
+  it("uses separate tutorial batch groups and preserves ordinary all-ready batches", async () => {
+    const filename = await workspace();
+    const guided = identity("batch-tutorial@example.test");
+    const ordinary = identity("ordinary-batch@example.test");
+
+    await useRepository(filename, (repository) => Effect.gen(function* () {
+      yield* repository.snapshot(guided);
+      const started = yield* repository.startTutorial(guided, 1, "batch-approval");
+      const beforeReady = yield* Effect.result(repository.prepareBatch(guided, 1));
+      expect(beforeReady).toMatchObject({ _tag: "Failure", failure: { code: "tutorial_step_required" } });
+      yield* repository.recordTutorialAction(guided, 1, { ...tutorialRevision(started), kind: "ready_filter_selected" });
+      const teaching = yield* repository.prepareBatch(guided, 1);
+      expect(teaching.changes.map((change) => change.orderId)).toEqual(["BB-1051", "BB-1063", "BB-1090"]);
+      expect(teaching.omissions).toContainEqual({ orderId: "BB-1084", reason: "Outside this tutorial group." });
+      const repeatedTeaching = yield* repository.prepareBatch(guided, 1);
+      expect(repeatedTeaching.changes.map((change) => change.orderId)).toEqual(["BB-1051", "BB-1063", "BB-1090"]);
+      const teachingCommit = yield* repository.accept(guided, 1, teaching.id, "batch-teaching-key");
+      expect(teachingCommit.snapshot.tutorial?.step).toBe(3);
+      const teachingReceipt = yield* repository.recordTutorialAction(guided, 1, { ...tutorialRevision(teachingCommit.snapshot.tutorial!), kind: "receipt_confirmed", receiptId: teachingCommit.receipt.id });
+      yield* repository.recordTutorialAction(guided, 1, { ...tutorialRevision(teachingReceipt.snapshot.tutorial!), kind: "ready_filter_selected" });
+
+      const practice = yield* repository.prepareBatch(guided, 1);
+      expect(practice.changes.map((change) => change.orderId)).toEqual(["BB-1084", "BB-1110", "BB-1112"]);
+      const repeatedPractice = yield* repository.prepareBatch(guided, 1);
+      expect(repeatedPractice.changes.map((change) => change.orderId)).toEqual(["BB-1084", "BB-1110", "BB-1112"]);
+      const practiceCommit = yield* repository.accept(guided, 1, practice.id, "batch-practice-key");
+      const completed = yield* repository.recordTutorialAction(guided, 1, { ...tutorialRevision(practiceCommit.snapshot.tutorial!), kind: "receipt_confirmed", receiptId: practiceCommit.receipt.id });
+      expect(completed.snapshot.tutorial).toMatchObject({ step: 8, phase: "complete" });
+      yield* repository.stopTutorial(guided, 1);
+      expect((yield* repository.snapshot(guided)).tutorial).toBeNull();
+
+      yield* repository.snapshot(ordinary);
+      const allReady = yield* repository.prepareBatch(ordinary, 1);
+      expect(allReady.changes.map((change) => change.orderId)).toEqual(["BB-1051", "BB-1063", "BB-1090", "BB-1084", "BB-1110", "BB-1112"]);
+    }));
+  });
+
+  it("rejects restarting a dismissed lesson when its remaining work changed outside the lesson", async () => {
+    const filename = await workspace();
+    const user = identity("tutorial-restart-conflict@example.test");
+    const unavailable = identity("tutorial-practice-conflict@example.test");
+
+    await useRepository(filename, (repository) => Effect.gen(function* () {
+      yield* repository.snapshot(user);
+      const started = yield* repository.startTutorial(user, 1, "address-correction");
+      const selected = yield* repository.recordTutorialAction(user, 1, { ...tutorialRevision(started), kind: "order_selected", orderId: "BB-1042" });
+      yield* repository.stopTutorial(user, 1);
+      const proposal = yield* repository.prepareResolution(user, 1, "BB-1042");
+      yield* repository.accept(user, 1, proposal.id, "outside-tutorial-key");
+      const restart = yield* Effect.result(repository.startTutorial(user, 1, "address-correction"));
+      expect(restart).toMatchObject({ _tag: "Failure", failure: { code: "tutorial_unavailable" } });
+      expect(selected.snapshot.tutorial?.step).toBe(1);
+
+      yield* repository.snapshot(unavailable);
+      const practice = yield* repository.prepareResolution(unavailable, 1, "BB-1072");
+      yield* repository.accept(unavailable, 1, practice.id, "practice-before-tutorial-key");
+      const unavailableStart = yield* Effect.result(repository.startTutorial(unavailable, 1, "address-correction"));
+      expect(unavailableStart).toMatchObject({ _tag: "Failure", failure: { code: "tutorial_unavailable" } });
+    }));
+  });
   it("prepares and accepts deterministic reviewed changes for all six exception families", async () => {
     const filename = await workspace();
     const user = identity("families@example.test");
@@ -236,7 +358,7 @@ describe("reviewed fulfilment commands", () => {
     }));
     const seededState = new DatabaseSync(filename);
     seededState.prepare("INSERT INTO chat_messages (id, user_id, generation, role, body, created_at) VALUES ('chat-before-reset', ?, 1, 'user', 'hello', ?)").run(first.id, new Date().toISOString());
-    seededState.prepare("INSERT INTO tutorial_state (user_id, generation, tutorial_id, step) VALUES (?, 1, 'address-correction', 2)").run(first.id);
+    seededState.prepare("INSERT INTO tutorial_state (user_id, generation, tutorial_id, instance_id, step, active) VALUES (?, 1, 'address-correction', 'tutorial-before-reset', 2, 1)").run(first.id);
     seededState.close();
     const reset = await useRepository(filename, (repository) => Effect.gen(function* () {
       const proposal = yield* repository.prepareReset(first, 1);

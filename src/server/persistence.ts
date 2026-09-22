@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
-import type { AgentViewContext, CommandReceipt, OrderStatus, ReviewedProposal, WorkspaceSnapshot } from "../shared/contracts.js";
+import type { AgentViewContext, CommandReceipt, OrderStatus, ReviewedProposal, TutorialId, TutorialState, WorkspaceSnapshot } from "../shared/contracts.js";
 import type { ChatMessage } from "./providers/contracts.js";
 import { targets } from "../shared/targets.js";
+import { tutorialBatchOrderIds, tutorialPublicState, tutorialRequiredOrderIds, tutorialStepMatches, type TutorialProgressEvent } from "../shared/tutorials.js";
 import { evaluateResolution, initialStateFor, materializeResolution, resolutionBlockReason, resolutionFacts, type InventoryCondition, type OrderBusinessState, type ResolutionPolicy } from "./fulfilment.js";
 import type { RequestIdentity } from "./identity.js";
 import { seedOrders } from "./seeds.js";
@@ -20,6 +21,13 @@ interface StoredReceipt { readonly public: CommandReceipt; readonly applied: Rea
 
 export interface CommandCommit { readonly receipt: CommandReceipt; readonly snapshot: WorkspaceSnapshot; readonly generationChanged: boolean }
 export interface ScenarioCommit { readonly message: string; readonly snapshot: WorkspaceSnapshot }
+export interface TutorialCommit { readonly advanced: boolean; readonly snapshot: WorkspaceSnapshot }
+interface TutorialActionRevision { readonly tutorialId: TutorialId; readonly tutorialInstanceId: string; readonly expectedStep: number }
+export type TutorialClientAction = TutorialActionRevision & (
+  | { readonly kind: "order_selected"; readonly orderId: string }
+  | { readonly kind: "ready_filter_selected" }
+  | { readonly kind: "receipt_confirmed"; readonly receiptId: string }
+);
 export interface AgentTurnRecord {
   readonly id: string;
   readonly generation: number;
@@ -56,6 +64,9 @@ export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly prepareBatch: (identity: RequestIdentity, generation: number) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
   readonly prepareUndo: (identity: RequestIdentity, generation: number, receiptId: string) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
   readonly prepareReset: (identity: RequestIdentity, generation: number) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
+  readonly startTutorial: (identity: RequestIdentity, generation: number, tutorialId: TutorialId) => Effect.Effect<TutorialState, WorkspaceCommandError>;
+  readonly stopTutorial: (identity: RequestIdentity, generation: number) => Effect.Effect<void, WorkspaceCommandError>;
+  readonly recordTutorialAction: (identity: RequestIdentity, generation: number, action: TutorialClientAction) => Effect.Effect<TutorialCommit, WorkspaceCommandError | WorkspaceStoreError>;
   readonly accept: (identity: RequestIdentity, generation: number, proposalId: string, idempotencyKey: string) => Effect.Effect<CommandCommit, WorkspaceCommandError | WorkspaceStoreError>;
   readonly advanceScenario: (identity: RequestIdentity, generation: number) => Effect.Effect<ScenarioCommit, WorkspaceCommandError | WorkspaceStoreError>;
   readonly createAgentTurn: (identity: RequestIdentity, generation: number, turnId: string, requestId: string, connectionId: string, message: string) => Effect.Effect<{ readonly created: boolean; readonly turn: AgentTurnRecord }, WorkspaceCommandError>;
@@ -128,7 +139,7 @@ const migrate = (database: DatabaseSync) => {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS agent_turns_user_started ON agent_turns (user_id, generation, started_at DESC);
-    CREATE TABLE IF NOT EXISTS tutorial_state (user_id TEXT NOT NULL, generation INTEGER NOT NULL, tutorial_id TEXT NOT NULL, step INTEGER NOT NULL, PRIMARY KEY (user_id, generation, tutorial_id), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS tutorial_state (user_id TEXT NOT NULL, generation INTEGER NOT NULL, tutorial_id TEXT NOT NULL, instance_id TEXT NOT NULL, step INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (user_id, generation, tutorial_id), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS audit_records (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL, body_json TEXT NOT NULL, completed_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS provider_attempts (
       id TEXT PRIMARY KEY,
@@ -167,6 +178,12 @@ const migrate = (database: DatabaseSync) => {
   if (!columns.some((column) => column.name === "completed")) database.exec("ALTER TABLE orders ADD COLUMN completed INTEGER NOT NULL DEFAULT 0");
   if (!columns.some((column) => column.name === "resolved")) database.exec("ALTER TABLE orders ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0");
   if (!columns.some((column) => column.name === "state_json")) database.exec("ALTER TABLE orders ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'");
+  const tutorialColumns = database.prepare("PRAGMA table_info(tutorial_state)").all() as Array<{ name: string }>;
+  if (!tutorialColumns.some((column) => column.name === "instance_id")) database.exec("ALTER TABLE tutorial_state ADD COLUMN instance_id TEXT");
+  if (!tutorialColumns.some((column) => column.name === "active")) database.exec("ALTER TABLE tutorial_state ADD COLUMN active INTEGER NOT NULL DEFAULT 1");
+  const missingInstances = database.prepare("SELECT rowid FROM tutorial_state WHERE instance_id IS NULL OR instance_id = ''").all() as Array<{ rowid: number }>;
+  const setInstance = database.prepare("UPDATE tutorial_state SET instance_id = ? WHERE rowid = ?");
+  for (const row of missingInstances) setInstance.run(`tutorial_${randomUUID()}`, row.rowid);
 };
 
 const seedUser = (database: DatabaseSync, userId: string) => {
@@ -198,6 +215,37 @@ const appendEvent = (database: DatabaseSync, userId: string, generation: number,
   const sequence = sequenceFor(database, userId, generation) + 1;
   database.prepare("INSERT INTO scenario_events (user_id, generation, sequence, kind, payload_json, occurred_at) VALUES (?, ?, ?, ?, ?, ?)").run(userId, generation, sequence, kind, JSON.stringify(payload), new Date().toISOString());
   return sequence;
+};
+
+interface TutorialRow { readonly tutorial_id: TutorialId; readonly instance_id: string; readonly step: number; readonly active: number }
+const activeTutorialRow = (database: DatabaseSync, userId: string, generation: number): TutorialRow | null =>
+  (database.prepare("SELECT tutorial_id, instance_id, step, active FROM tutorial_state WHERE user_id = ? AND generation = ? AND active = 1 ORDER BY rowid DESC LIMIT 1").get(userId, generation) as TutorialRow | undefined) ?? null;
+const tutorialRow = (database: DatabaseSync, userId: string, generation: number, tutorialId: TutorialId): TutorialRow | null =>
+  (database.prepare("SELECT tutorial_id, instance_id, step, active FROM tutorial_state WHERE user_id = ? AND generation = ? AND tutorial_id = ?").get(userId, generation, tutorialId) as TutorialRow | undefined) ?? null;
+
+const tutorialCanResume = (database: DatabaseSync, userId: string, tutorialId: TutorialId, step: number): boolean => {
+  const required = tutorialRequiredOrderIds[tutorialId];
+  const remaining = tutorialId === "batch-approval"
+    ? step <= 2 ? required : step >= 3 && step <= 6 ? required.slice(3) : []
+    : step <= 2 ? required : step >= 3 && step <= 6 ? required.slice(1) : [];
+  return remaining.every((orderId) => {
+    const row = rowFor(database, userId, orderId);
+    return row !== undefined && Number(row.completed) === 0 && Number(row.resolved) === 0;
+  });
+};
+
+const advanceTutorial = (
+  database: DatabaseSync,
+  userId: string,
+  generation: number,
+  event: TutorialProgressEvent,
+): boolean => {
+  const current = activeTutorialRow(database, userId, generation);
+  if (current === null || !tutorialStepMatches(current.tutorial_id, Number(current.step), event)) return false;
+  const nextStep = Number(current.step) + 1;
+  database.prepare("UPDATE tutorial_state SET step = ? WHERE user_id = ? AND generation = ? AND tutorial_id = ? AND instance_id = ? AND active = 1").run(nextStep, userId, generation, current.tutorial_id, current.instance_id);
+  appendEvent(database, userId, generation, "tutorial.progressed", { tutorialId: current.tutorial_id, tutorialInstanceId: current.instance_id, step: nextStep });
+  return true;
 };
 
 type AttemptRow = {
@@ -355,6 +403,7 @@ const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMo
   }
   const active = database.prepare("SELECT * FROM agent_turns WHERE user_id = ? AND generation = ? AND status IN ('running', 'waiting_for_ui') ORDER BY started_at DESC LIMIT 1").get(user.id, user.generation) as AgentTurnRow | undefined;
   const pendingProposal = database.prepare("SELECT payload_json FROM proposals WHERE user_id = ? AND generation = ? AND status = 'pending' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(user.id, user.generation) as { payload_json: string } | undefined;
+  const tutorial = activeTutorialRow(database, user.id, user.generation);
   return {
     generation: user.generation,
     sequence: sequenceFor(database, user.id, user.generation),
@@ -380,6 +429,7 @@ const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMo
       return { id: turn.id, generation: turn.generation, status: turn.status, phase: turn.phase, error: turn.error, startedAt: turn.startedAt, finishedAt: turn.finishedAt, completeDurationMs: turn.completeDurationMs, measurement: turn.measurement };
     })(),
     agentMode,
+    tutorial: tutorial === null ? null : tutorialPublicState(tutorial.tutorial_id, Number(tutorial.step), tutorial.instance_id),
   };
 };
 
@@ -419,21 +469,78 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
   const command = <A>(run: () => A) => Effect.try({ try: run, catch: (error) => error instanceof WorkspaceCommandError ? error : fail("command_failed", String(error)) });
   const snapshot: WorkspaceRepositoryService["snapshot"] = (identity, now) => Effect.try({ try: () => readSnapshot(database, identity, agentMode, now), catch: (error) => new WorkspaceStoreError({ message: `Could not read the workspace: ${String(error)}` }) });
   const orderIds: WorkspaceRepositoryService["orderIds"] = (identity) => snapshot(identity).pipe(Effect.map((state) => state.orders.map((order) => order.id)));
+  const startTutorial: WorkspaceRepositoryService["startTutorial"] = (identity, generation, tutorialId) => command(() => transact(database, () => {
+    const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
+    const saved = tutorialRow(database, user.id, generation, tutorialId);
+    if (saved !== null) {
+      const currentState = tutorialPublicState(tutorialId, Number(saved.step), saved.instance_id);
+      if (currentState.phase !== "complete" && !tutorialCanResume(database, user.id, tutorialId, Number(saved.step))) {
+        throw fail("tutorial_unavailable", "This lesson's remaining records changed outside the guided steps. Reset your demo before restarting it.");
+      }
+      database.prepare("UPDATE tutorial_state SET active = 0 WHERE user_id = ? AND generation = ?").run(user.id, generation);
+      database.prepare("UPDATE tutorial_state SET active = 1 WHERE user_id = ? AND generation = ? AND tutorial_id = ?").run(user.id, generation, tutorialId);
+      appendEvent(database, user.id, generation, "tutorial.resumed", { tutorialId, tutorialInstanceId: saved.instance_id, step: Number(saved.step) });
+      return currentState;
+    }
+    if (!tutorialCanResume(database, user.id, tutorialId, 0)) throw fail("tutorial_unavailable", "This lesson needs unchanged practice records. Reset your demo before starting it.");
+    const instanceId = `tutorial_${randomUUID()}`;
+    database.prepare("UPDATE tutorial_state SET active = 0 WHERE user_id = ? AND generation = ?").run(user.id, generation);
+    database.prepare("INSERT INTO tutorial_state (user_id, generation, tutorial_id, instance_id, step, active) VALUES (?, ?, ?, ?, 0, 1)").run(user.id, generation, tutorialId, instanceId);
+    appendEvent(database, user.id, generation, "tutorial.started", { tutorialId, tutorialInstanceId: instanceId });
+    return tutorialPublicState(tutorialId, 0, instanceId);
+  }));
+  const stopTutorial: WorkspaceRepositoryService["stopTutorial"] = (identity, generation) => command(() => transact(database, () => {
+    const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
+    const current = activeTutorialRow(database, user.id, generation);
+    if (current === null) return;
+    database.prepare("UPDATE tutorial_state SET active = 0 WHERE user_id = ? AND generation = ? AND tutorial_id = ? AND instance_id = ?").run(user.id, generation, current.tutorial_id, current.instance_id);
+    appendEvent(database, user.id, generation, "tutorial.stopped", { tutorialId: current.tutorial_id, tutorialInstanceId: current.instance_id, step: Number(current.step) });
+  }));
+  const recordTutorialAction: WorkspaceRepositoryService["recordTutorialAction"] = (identity, generation, action) => command(() => transact(database, () => {
+    const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
+    const current = activeTutorialRow(database, user.id, generation);
+    if (current === null || current.tutorial_id !== action.tutorialId || current.instance_id !== action.tutorialInstanceId || Number(current.step) !== action.expectedStep) {
+      return { advanced: false, snapshot: readSnapshot(database, identity, agentMode) };
+    }
+    let event: TutorialProgressEvent;
+    if (action.kind === "order_selected") {
+      const order = rowFor(database, user.id, action.orderId);
+      if (order === undefined || Number(order.completed) !== 0) throw fail("order_not_found", "That tutorial order is not in this workspace.");
+      event = action;
+    } else if (action.kind === "ready_filter_selected") {
+      event = action;
+    } else {
+      const row = database.prepare("SELECT payload_json FROM receipts WHERE id = ? AND user_id = ? AND generation = ?").get(action.receiptId, user.id, generation) as { payload_json: string } | undefined;
+      if (row === undefined) throw fail("receipt_not_found", "That receipt is not available in this workspace.");
+      const receipt = (JSON.parse(row.payload_json) as StoredReceipt).public;
+      if (receipt.kind !== "accept") throw fail("receipt_not_supported", "Only an accepted work receipt can advance a tutorial.");
+      event = { kind: "receipt_confirmed", receiptKind: "accept", orderIds: receipt.changes.map((change) => change.orderId) };
+    }
+    const advanced = advanceTutorial(database, user.id, generation, event);
+    return { advanced, snapshot: readSnapshot(database, identity, agentMode) };
+  }));
   const prepareResolution: WorkspaceRepositoryService["prepareResolution"] = (identity, generation, orderId) => command(() => transact(database, () => {
     const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
     const evaluated = preparePolicy(database, user.id, orderId);
     const title = seedOrders.find((item) => item.id === orderId)?.family === "address" ? "Check address" : `Review ${orderId}`;
     const policies = evaluated.ready ? [evaluated.policy] : [];
     const publicProposal = makePublic(generation, "resolution", title, policies, evaluated.ready ? [] : [{ orderId, reason: evaluated.reason }], evaluated.ready ? [] : [evaluated.reason], evaluated.ready);
-    return storeProposal(database, user.id, { public: publicProposal, policies });
+    const proposal = storeProposal(database, user.id, { public: publicProposal, policies });
+    if (proposal.ready) advanceTutorial(database, user.id, generation, { kind: "proposal_prepared", proposalKind: "resolution", orderIds: proposal.changes.map((change) => change.orderId) });
+    return proposal;
   }));
   const prepareBatch: WorkspaceRepositoryService["prepareBatch"] = (identity, generation) => command(() => transact(database, () => {
     const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
     const rows = database.prepare("SELECT order_id, item, issue, status, family, version, completed, resolved, state_json FROM orders WHERE user_id = ? ORDER BY seed_position").all(user.id) as Array<{ order_id: string; item: string; issue: string; status: OrderStatus; family: WorkspaceSnapshot["orders"][number]["family"]; version: number; completed: number; resolved: number; state_json: string }>;
-    const included = rows.filter((row) => row.status === "ready" && Number(row.completed) === 0);
+    const activeTutorial = activeTutorialRow(database, user.id, generation);
+    if (activeTutorial?.tutorial_id === "batch-approval" && (Number(activeTutorial.step) === 0 || Number(activeTutorial.step) === 4)) {
+      throw fail("tutorial_step_required", "Open Ready before preparing this tutorial group.");
+    }
+    const tutorialOrderIds = activeTutorial === null ? null : tutorialBatchOrderIds(activeTutorial.tutorial_id, Number(activeTutorial.step));
+    const included = rows.filter((row) => row.status === "ready" && Number(row.completed) === 0 && (tutorialOrderIds === null || tutorialOrderIds.includes(row.order_id)));
     if (included.length === 0) throw fail("nothing_ready", "No orders currently pass the ready checks.");
     const policies: Array<PreparedPolicy> = [];
-    const omissions = rows.filter((row) => row.status !== "ready" && Number(row.completed) === 0).map((row) => ({ orderId: row.order_id, reason: row.issue }));
+    const omissions = rows.filter((row) => Number(row.completed) === 0 && !included.includes(row)).map((row) => ({ orderId: row.order_id, reason: tutorialOrderIds !== null && !tutorialOrderIds.includes(row.order_id) ? "Outside this tutorial group." : row.issue }));
     for (const row of included) {
       if (Number(row.resolved) !== 0) {
         const current = JSON.parse(row.state_json) as OrderBusinessState;
@@ -446,7 +553,9 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     }
     if (policies.length === 0) throw fail("nothing_ready", "No orders currently pass the ready checks.");
     const publicProposal = makePublic(generation, "batch", `Review ${policies.length} changes`, policies, omissions, [`${policies.length} orders will move to packing.`, `${omissions.length} orders are left out.`]);
-    return storeProposal(database, user.id, { public: publicProposal, policies });
+    const proposal = storeProposal(database, user.id, { public: publicProposal, policies });
+    advanceTutorial(database, user.id, generation, { kind: "proposal_prepared", proposalKind: "batch", orderIds: proposal.changes.map((change) => change.orderId) });
+    return proposal;
   }));
   const prepareUndo: WorkspaceRepositoryService["prepareUndo"] = (identity, generation, receiptId) => command(() => transact(database, () => {
     const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
@@ -533,6 +642,9 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     database.prepare("INSERT INTO receipts (id, user_id, generation, proposal_id, idempotency_key, payload_json, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(publicReceipt.id, user.id, generation, proposalId, idempotencyKey, JSON.stringify(receiptPayload), publicReceipt.committedAt);
     database.prepare("UPDATE proposals SET status = 'accepted' WHERE id = ? AND user_id = ?").run(proposalId, user.id);
     if (stored.undoReceiptId !== undefined) database.prepare("UPDATE receipts SET undone_by = ? WHERE id = ? AND user_id = ?").run(publicReceipt.id, stored.undoReceiptId, user.id);
+    if (stored.public.kind === "resolution" || stored.public.kind === "batch") {
+      advanceTutorial(database, user.id, generation, { kind: "proposal_accepted", proposalKind: stored.public.kind, orderIds: stored.public.changes.map((change) => change.orderId) });
+    }
     database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, ?, 'command', ?, ?)").run(`audit_${randomUUID()}`, user.id, generation, JSON.stringify({ proposalId, receiptId: publicReceipt.id, sequence }), publicReceipt.committedAt);
     return { receipt: publicReceipt, snapshot: readSnapshot(database, identity, agentMode), generationChanged: false };
   }));
@@ -786,7 +898,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     }
     return rows.length;
   });
-  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, resolveAgentViewContext, completeAgentMeasurement, recordCommandMeasurement, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
+  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, startTutorial, stopTutorial, recordTutorialAction, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, resolveAgentViewContext, completeAgentMeasurement, recordCommandMeasurement, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
 })));
 
 export const workspacePersistenceLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMode"] = "unavailable") => repositoryLayer(filename, agentMode);

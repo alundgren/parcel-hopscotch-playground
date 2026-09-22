@@ -392,6 +392,40 @@ export const runWorkspaceSocket = (
           if (recorded._tag === "Failure") yield* send({ type: "error", requestId: message.value.requestId, code: recorded.failure.code, message: recorded.failure.message });
           return;
         }
+        if (message.value.type === "stop_tutorial") {
+          const stopped = yield* Effect.result(repository.stopTutorial(identity, message.value.generation));
+          if (stopped._tag === "Failure") {
+            yield* send({ type: "error", requestId: message.value.requestId, code: stopped.failure.code, message: stopped.failure.message });
+            return;
+          }
+          const state = yield* repository.snapshot(identity).pipe(Effect.orDie);
+          const commandResult = { kind: "tutorial" as const, message: "Tutorial dismissed. Accepted work is unchanged." };
+          yield* send({ type: "command_result", requestId: message.value.requestId, result: commandResult, state });
+          yield* hub.publish(identity.id, state.generation, state.sequence, "workspace.committed", { state, result: commandResult });
+          return;
+        }
+        if (message.value.type === "tutorial_action") {
+          const revision = {
+            tutorialId: message.value.tutorialId,
+            tutorialInstanceId: message.value.tutorialInstanceId,
+            expectedStep: message.value.expectedStep,
+          };
+          const action = message.value.action === "order_selected"
+            ? { ...revision, kind: "order_selected" as const, orderId: message.value.orderId }
+            : message.value.action === "receipt_confirmed"
+              ? { ...revision, kind: "receipt_confirmed" as const, receiptId: message.value.receiptId }
+              : { ...revision, kind: "ready_filter_selected" as const };
+          const recorded = yield* Effect.result(repository.recordTutorialAction(identity, message.value.generation, action));
+          if (recorded._tag === "Failure") {
+            const failure = recorded.failure;
+            yield* send({ type: "error", requestId: message.value.requestId, code: failure._tag === "WorkspaceCommandError" ? failure.code : "store_error", message: failure.message });
+            return;
+          }
+          const commandResult = { kind: "tutorial" as const, message: recorded.success.advanced ? "Tutorial advanced." : "That action is not the current tutorial step." };
+          yield* send({ type: "command_result", requestId: message.value.requestId, result: commandResult, state: recorded.success.snapshot });
+          if (recorded.success.advanced) yield* hub.publish(identity.id, recorded.success.snapshot.generation, recorded.success.snapshot.sequence, "workspace.committed", { state: recorded.success.snapshot, result: commandResult });
+          return;
+        }
         if (message.value.type === "prepare_resolution") {
           const result = yield* Effect.result(repository.prepareResolution(identity, message.value.generation, message.value.orderId));
           if (result._tag === "Failure") {
