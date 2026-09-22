@@ -427,12 +427,19 @@ describe("realtime server", () => {
     const recovered = nextMessage(replacement.socket, (message) => message.type === "agent_state" && message.state.activeTurn === null && message.state.chat.some((item) => item.turnId === "turn_12345678-reconnect" && item.role === "assistant"));
     await expect(recovered).resolves.toMatchObject({ type: "agent_state", state: { activeTurn: null } });
 
-    const database = new DatabaseSync(databasePath);
-    const attempts = database.prepare("SELECT COUNT(*) AS count FROM provider_attempts WHERE turn_id = ?").get("turn_12345678-reconnect") as { count: number };
-    const turn = database.prepare("SELECT status, measurement FROM agent_turns WHERE id = ?").get("turn_12345678-reconnect") as { status: string; measurement: string };
-    expect(Number(attempts.count)).toBe(2);
-    expect(turn).toEqual({ status: "complete", measurement: "incomplete" });
-    database.close();
-    replacement.socket.close();
+    try {
+      const database = new DatabaseSync(databasePath);
+      try {
+        database.exec("PRAGMA busy_timeout = 5000");
+        const attempts = database.prepare("SELECT COUNT(*) AS count FROM provider_attempts WHERE turn_id = ?").get("turn_12345678-reconnect") as { count: number };
+        const turn = database.prepare("SELECT status, measurement FROM agent_turns WHERE id = ?").get("turn_12345678-reconnect") as { status: string; measurement: string };
+        expect(Number(attempts.count)).toBe(2);
+        expect(turn).toEqual({ status: "complete", measurement: "incomplete" });
+      } finally {
+        database.close();
+      }
+    } finally {
+      replacement.socket.close();
+    }
   });
 });
