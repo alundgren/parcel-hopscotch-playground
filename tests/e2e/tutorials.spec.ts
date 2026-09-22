@@ -91,6 +91,16 @@ test("teaches address correction and completes a separate case without agent ass
 
   await reviewIndividual(page, "BB-1072");
   await acceptIndividual(page);
+  await expect(coach(page)).toHaveAttribute("data-tutorial-step", "7");
+  await page.reload();
+  await expect(page.getByTestId("connection-status")).toContainText("Connected");
+  await page.locator("#target-order-BB-1088").click();
+  await page.getByRole("button", { name: "Review change" }).click();
+  await acceptIndividual(page);
+  await page.locator("#target-receipt-back").click();
+  await expect(coach(page)).toHaveAttribute("data-tutorial-step", "7");
+  await page.getByRole("button", { name: "Continue tutorial receipt" }).click();
+  await expect(page.getByText("BB-1072", { exact: true })).toBeVisible();
   await page.locator("#target-receipt-back").click();
   await expect(coach(page)).toHaveAttribute("data-tutorial-phase", "complete");
   await expect(coach(page)).toContainText("Practice complete. You corrected a second address from evidence to receipt.");

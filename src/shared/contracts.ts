@@ -147,12 +147,12 @@ export type CommandResult =
   | { readonly kind: "proposal"; readonly proposal: ReviewedProposal }
   | { readonly kind: "receipt"; readonly receipt: CommandReceipt }
   | { readonly kind: "scenario"; readonly message: string }
-  | { readonly kind: "tutorial"; readonly message: string };
+  | { readonly kind: "tutorial"; readonly message: string; readonly advanced: boolean };
 export const CommandResultSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("proposal"), proposal: ReviewedProposal }),
   Schema.Struct({ kind: Schema.Literal("receipt"), receipt: CommandReceipt }),
   Schema.Struct({ kind: Schema.Literal("scenario"), message: Schema.String }),
-  Schema.Struct({ kind: Schema.Literal("tutorial"), message: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("tutorial"), message: Schema.String, advanced: Schema.Boolean }),
 ]);
 export const AgentUiOperationSchema = Schema.Union([
   Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("navigate"), view: Schema.Literals(["work", "explore", "audit", "order"]), orderId: Schema.optionalKey(Schema.String) }),

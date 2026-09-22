@@ -327,11 +327,11 @@ describe("realtime server", () => {
 
     const stale = nextMessage(replacement.socket, (message) => message.type === "command_result" && message.requestId === "tutorial-stale-ready");
     replacement.socket.send(JSON.stringify({ type: "tutorial_action", requestId: "tutorial-stale-ready", generation: 1, tutorialId: started.id, tutorialInstanceId: started.instanceId, expectedStep: 0, action: "ready_filter_selected" }));
-    await expect(stale).resolves.toMatchObject({ type: "command_result", result: { kind: "tutorial", message: "That action is not the current tutorial step." }, state: { tutorial: { step: 4 } } });
+    await expect(stale).resolves.toMatchObject({ type: "command_result", result: { kind: "tutorial", message: "That action is not the current tutorial step.", advanced: false }, state: { tutorial: { step: 4 } } });
 
     const current = nextMessage(replacement.socket, (message) => message.type === "command_result" && message.requestId === "tutorial-current-ready");
     replacement.socket.send(JSON.stringify({ type: "tutorial_action", requestId: "tutorial-current-ready", generation: 1, tutorialId: started.id, tutorialInstanceId: started.instanceId, expectedStep: 4, action: "ready_filter_selected" }));
-    await expect(current).resolves.toMatchObject({ type: "command_result", state: { tutorial: { step: 5 } } });
+    await expect(current).resolves.toMatchObject({ type: "command_result", result: { kind: "tutorial", advanced: true }, state: { tutorial: { step: 5 } } });
     replacement.socket.close();
   });
 

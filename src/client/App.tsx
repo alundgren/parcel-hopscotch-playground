@@ -242,10 +242,12 @@ export default function App() {
     if (receipt === null) return;
     const tutorial = snapshot?.tutorial;
     const finalPracticeStep = tutorial !== null && tutorial !== undefined && tutorial.step === tutorial.totalSteps - 1;
+    let tutorialCompleted = false;
     if (tutorial !== null && tutorial !== undefined) {
-      await perform(() => runCommand({ type: "tutorial_action", tutorialId: tutorial.id, tutorialInstanceId: tutorial.instanceId, expectedStep: tutorial.step, action: "receipt_confirmed", receiptId: receipt.id }));
+      const result = await perform(() => runCommand({ type: "tutorial_action", tutorialId: tutorial.id, tutorialInstanceId: tutorial.instanceId, expectedStep: tutorial.step, action: "receipt_confirmed", receiptId: receipt.id }));
+      tutorialCompleted = finalPracticeStep && result?.kind === "tutorial" && result.advanced;
     }
-    if (!finalPracticeStep) setReceipt(null);
+    if (!tutorialCompleted) setReceipt(null);
   };
   const recoveryText = snapshot?.tutorialReceipt !== null && snapshot?.tutorialReceipt !== undefined
     ? snapshot.tutorialReceipt.id === snapshot.latestReceipt?.id ? "The receipt for this step is saved. Return to Work and use View last receipt." : "The receipt for this step is saved. Return to Work and use Continue tutorial receipt."

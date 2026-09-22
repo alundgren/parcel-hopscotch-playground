@@ -399,7 +399,7 @@ export const runWorkspaceSocket = (
             return;
           }
           const state = yield* repository.snapshot(identity).pipe(Effect.orDie);
-          const commandResult = { kind: "tutorial" as const, message: "Tutorial dismissed. Accepted work is unchanged." };
+          const commandResult = { kind: "tutorial" as const, message: "Tutorial dismissed. Accepted work is unchanged.", advanced: false };
           yield* send({ type: "command_result", requestId: message.value.requestId, result: commandResult, state });
           yield* hub.publish(identity.id, state.generation, state.sequence, "workspace.committed", { state, result: commandResult });
           return;
@@ -421,7 +421,7 @@ export const runWorkspaceSocket = (
             yield* send({ type: "error", requestId: message.value.requestId, code: failure._tag === "WorkspaceCommandError" ? failure.code : "store_error", message: failure.message });
             return;
           }
-          const commandResult = { kind: "tutorial" as const, message: recorded.success.advanced ? "Tutorial advanced." : "That action is not the current tutorial step." };
+          const commandResult = { kind: "tutorial" as const, message: recorded.success.advanced ? "Tutorial advanced." : "That action is not the current tutorial step.", advanced: recorded.success.advanced };
           yield* send({ type: "command_result", requestId: message.value.requestId, result: commandResult, state: recorded.success.snapshot });
           if (recorded.success.advanced) yield* hub.publish(identity.id, recorded.success.snapshot.generation, recorded.success.snapshot.sequence, "workspace.committed", { state: recorded.success.snapshot, result: commandResult });
           return;
