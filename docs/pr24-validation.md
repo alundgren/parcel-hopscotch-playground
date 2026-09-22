@@ -39,7 +39,7 @@ Validation uses Node 24.19.0 and Playwright 1.62.1 through Vite Plus.
 - `vp run test:e2e`: 38 desktop and narrow browser cases passed.
 - Targeted runtime regressions passed again after the consent trace lookup was made independent of Audit pagination.
 - Final proof captures Work, Explore, Audit, proposal review, and the acknowledgement at 1440×1000 and 320×900. Playwright also records the proposal-to-acceptance flow and the model-selected consent flow.
-- External runner syntax, no-inference preflight, and missing-dedicated-key behavior passed. The preflight records zero provider attempts and explicitly reports live acceptance as not run.
+- External runner syntax, no-inference preflight, missing-dedicated-key behavior, and offline setup-failure, exhausted-credit, truncation, and highlight assertions passed. The preflight records zero provider attempts and explicitly reports live acceptance as not run.
 
 ## Visual comparison notes
 

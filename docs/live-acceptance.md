@@ -13,6 +13,9 @@ vp env exec --node 24.19.0 node ~/.local/share/parcel-hopscotch-live/pr24/run.mj
   --check --repo "$PWD" --output /tmp/parcel-live-preflight.json
 ```
 
+The separate `--self-test` option checks failure reporting, setup credit exhaustion,
+truncation, and the requested highlight target without a server or inference.
+
 This starts the built app over loopback with disposable SQLite data and unavailable
 providers. It checks Chromium, the 16-tool catalogue, and read-only evidence
 queries. A successful preflight reports live tests as **not run**.
