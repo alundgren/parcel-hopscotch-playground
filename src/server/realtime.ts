@@ -383,7 +383,8 @@ export const runWorkspaceSocket = (
             yield* send({ type: "error", requestId: message.value.requestId, code: completed.failure.code, message: completed.failure.message });
             return;
           }
-          yield* send({ type: "agent_state", state: yield* repository.snapshot(identity).pipe(Effect.orDie) });
+          const state = yield* repository.snapshot(identity).pipe(Effect.orDie);
+          yield* hub.publishAgent(identity.id, message.value.generation, state);
           return;
         }
         if (message.value.type === "command_visible_ack") {

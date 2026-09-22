@@ -6,8 +6,9 @@ import type { RequestIdentity } from "./identity.js";
 import type { AgentTurnRecord, ResolvedAgentViewContext, WorkspaceRepositoryService } from "./persistence.js";
 import type { RealtimeHubService } from "./realtime.js";
 import { runAuditedJev, runAuditedMinistral } from "./providers/audit.js";
-import { JEV_MODEL, MINISTRAL_MODEL, ProviderError, type ChatMessage, type JevAdapter, type JevRequest, type JevResult, type MinistralAdapter, type MinistralRequest, type MinistralResult, type ProviderMetadata } from "./providers/contracts.js";
-import { providerFailure } from "./providers/http.js";
+import { JEV_MODEL, MINISTRAL_MODEL, ProviderError, providerBounds, type ChatMessage, type JevAdapter, type JevRequest, type JevResult, type MinistralAdapter, type MinistralRequest, type MinistralResult, type ProviderMetadata } from "./providers/contracts.js";
+import { buildMinistralWireRequest } from "./providers/chat-request.js";
+import { jsonBytes, providerFailure } from "./providers/http.js";
 import { makeJevAdapter } from "./providers/jev.js";
 import { makeMinistralAdapter } from "./providers/ministral.js";
 import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, ToolExecutionError, type AgentUiRequest } from "./tool-registry.js";
@@ -17,7 +18,6 @@ const maximumToolRounds = 3;
 const maximumCallsPerRound = 6;
 const uiTimeoutMs = 5_000;
 const finalAcknowledgementTimeoutMs = 5_000;
-const historyBytes = 24 * 1024;
 const maximumToolResultBytes = 4 * 1024;
 const encoder = new TextEncoder();
 
@@ -103,21 +103,7 @@ const scriptedMinistral = (): MinistralAdapter => ({
       const toolCallIndex = request.messages.findLastIndex((message) => message.role === "assistant" && message.toolCalls !== undefined);
       const toolMessages = request.messages.slice(toolCallIndex + 1).filter((message) => message.role === "tool");
       const failed = toolMessages.some((message) => message.role === "tool" && message.content.includes('"ok":false'));
-      let consentSummary: string | null = null;
-      if (text.includes("consent")) {
-        try {
-          const parsed = JSON.parse(last.content) as { result?: { consent?: string; evidence?: string; alternatives?: ReadonlyArray<{ label: string; probability: number }> } };
-          const consent = parsed.result?.consent;
-          const evidence = parsed.result?.evidence;
-          const alternatives = parsed.result?.alternatives;
-          if (consent !== undefined && evidence !== undefined && alternatives !== undefined) {
-            consentSummary = `Evidence: \"${evidence}\"\nConsent: ${consent}. Alternatives: ${alternatives.map((item) => `${item.label} ${Math.round(item.probability * 100)}%`).join(", ")}. ${consent === "explicit" ? "Application policy still decides whether a proposal is eligible." : "This remains for human review."}`;
-          }
-        } catch {
-          consentSummary = null;
-        }
-      }
-      const content = consentSummary ?? (failed
+      const content = failed
         ? "I could not finish every requested step. The completed results remain visible, and you can retry the missing step."
         : text.includes("reset")
           ? "The reset is ready for your review. Nothing changes until you accept it."
@@ -127,7 +113,9 @@ const scriptedMinistral = (): MinistralAdapter => ({
               ? "I opened Explore. Return to Work to continue the conversation."
               : text.includes("green") || text.includes("ready") || text.includes("batch")
                 ? "The eligible orders are ready for your review. Nothing changes until you accept the batch."
-                : "I found the order and showed the relevant evidence.")
+                : text.includes("consent")
+                  ? "This remains for human review."
+                  : "I found the order and showed the relevant evidence."
       const response = { content, toolCalls: [] };
       return { kind: "chat", content, toolCalls: [], finishReason: "stop", metadata: metadata(MINISTRAL_MODEL, request, response), safeRequest: request, safeResponse: response };
     }
@@ -211,16 +199,40 @@ const safeToolFailure = (error: unknown) => JSON.stringify({
 const isProviderError = (error: unknown): error is ProviderError =>
   error instanceof ProviderError || (typeof error === "object" && error !== null && "_tag" in error && error._tag === "ProviderError");
 
-const trimHistory = (system: ChatMessage, groups: ReadonlyArray<ReadonlyArray<ChatMessage>>, current: ReadonlyArray<ChatMessage>) => {
-  const selected: Array<ReadonlyArray<ChatMessage>> = [];
-  let size = encoder.encode(JSON.stringify([system, ...current])).byteLength;
-  for (const group of [...groups].reverse()) {
-    const groupSize = encoder.encode(JSON.stringify(group)).byteLength;
-    if (size + groupSize > historyBytes) break;
-    selected.unshift(group);
-    size += groupSize;
+const historyGroups = (messages: ReadonlyArray<ChatMessage>): Array<Array<ChatMessage>> => {
+  const groups: Array<Array<ChatMessage>> = [];
+  for (let index = 0; index < messages.length;) {
+    const message = messages[index]!;
+    if (message.role === "assistant" && message.toolCalls !== undefined) {
+      const group: Array<ChatMessage> = [message];
+      index += 1;
+      while (index < messages.length && messages[index]?.role === "tool") group.push(messages[index++]!);
+      groups.push(group);
+    } else {
+      groups.push([message]);
+      index += 1;
+    }
   }
-  return [system, ...selected.flat(), ...current];
+  return groups;
+};
+
+const compactToolGroup = (group: ReadonlyArray<ChatMessage>): Array<ChatMessage> => group.map((message) => message.role === "tool"
+  ? { role: "tool" as const, toolCallId: message.toolCallId, content: JSON.stringify({ ok: true, truncated: true, result: { summary: "This completed tool result was compacted to keep the next bounded model request valid." } }) }
+  : message);
+
+const consentDisclosure = (output: unknown): string | null => {
+  if (typeof output !== "object" || output === null) return null;
+  const value = output as { consent?: unknown; evidence?: unknown; alternatives?: unknown };
+  if (typeof value.consent !== "string" || typeof value.evidence !== "string" || !Array.isArray(value.alternatives)) return null;
+  const alternatives = value.alternatives.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const alternative = entry as { label?: unknown; probability?: unknown };
+    if (typeof alternative.label !== "string" || typeof alternative.probability !== "number" || !Number.isFinite(alternative.probability)) return [];
+    const percentage = Number((alternative.probability * 100).toFixed(2));
+    return [`${alternative.label} ${percentage}%`];
+  });
+  if (alternatives.length !== value.alternatives.length) return null;
+  return `Evidence: \"${value.evidence.replace(/\s+/g, " ").trim()}\" Consent: ${value.consent}. Alternatives: ${alternatives.join(", ")}.`;
 };
 
 export const makeAgentCoordinator = (
@@ -236,10 +248,49 @@ export const makeAgentCoordinator = (
   const completionConnections = new Map<string, PendingCompletion>();
   const finalAckMs = suppliedTimeouts?.finalAcknowledgementMs ?? finalAcknowledgementTimeoutMs;
 
+  const boundedRequest = (
+    system: ChatMessage,
+    applicationContext: ChatMessage,
+    priorTurns: ReadonlyArray<ReadonlyArray<ChatMessage>>,
+    currentHistory: ReadonlyArray<ChatMessage>,
+  ): MinistralRequest => {
+    const requestFor = (messages: ReadonlyArray<ChatMessage>): MinistralRequest => ({ messages, tools: modelTools, toolChoice: "auto", maxOutputTokens: 256 });
+    const fits = (messages: ReadonlyArray<ChatMessage>): boolean =>
+      messages.length <= 32 && jsonBytes(buildMinistralWireRequest(requestFor(messages))) <= providerBounds.maximumContextBytes;
+    const currentGroups = historyGroups(currentHistory);
+    const first = currentGroups.shift() ?? [];
+    const retained: Array<ReadonlyArray<ChatMessage>> = [];
+    let omittedCurrent = false;
+    for (const original of currentGroups.reverse()) {
+      let group = original;
+      const candidate = [system, applicationContext, ...first, ...group, ...retained.flat()];
+      if (retained.length === 0 && !fits(candidate)) group = compactToolGroup(group);
+      const next = [system, applicationContext, ...first, ...group, ...retained.flat()];
+      if (!fits(next)) {
+        omittedCurrent = true;
+        break;
+      }
+      retained.unshift(group);
+    }
+    const omitted: ChatMessage = { role: "system", content: "Earlier completed tool outcomes from this active turn were omitted to keep this request within its fixed context limit." };
+    const selectedPrior: Array<ReadonlyArray<ChatMessage>> = [];
+    for (const prior of [...priorTurns].reverse()) {
+      const candidate = [system, applicationContext, ...selectedPrior.flat(), ...(omittedCurrent ? [omitted] : []), ...first, ...retained.flat()];
+      const withPrior = [system, applicationContext, ...prior, ...candidate.slice(2)];
+      if (!fits(withPrior)) break;
+      selectedPrior.unshift(prior);
+    }
+    const messages = [system, applicationContext, ...selectedPrior.flat(), ...(omittedCurrent ? [omitted] : []), ...first, ...retained.flat()];
+    if (!fits(messages)) throw providerFailure("invalid_request", "The current correlated tool results exceeded the bounded model context.");
+    return requestFor(messages);
+  };
+
   const sendState = async (active: ActiveTurn, repository: WorkspaceRepositoryService) => {
     const state = await Effect.runPromise(repository.snapshot(active.identity));
+    if (state.generation !== active.generation || (active.cancelled && state.activeTurn?.id === active.turnId)) return;
     await Effect.runPromise(active.hub.publishAgent(active.identity.id, active.generation, state, active.connectionId));
-    if (!active.connected) return;
+    const current = await Effect.runPromise(repository.snapshot(active.identity));
+    if (!active.connected || current.generation !== active.generation || state.sequence < current.sequence || (active.cancelled && state.activeTurn?.id === active.turnId)) return;
     await Promise.race([
       active.send({ type: "agent_state", state }).catch(() => undefined),
       new Promise<void>((resolve) => setTimeout(resolve, 250)),
@@ -276,6 +327,9 @@ export const makeAgentCoordinator = (
     const id = `operation_${randomUUID()}`;
     const full = { ...operation, id, turnId: active.turnId, generation: active.generation } as AgentUiOperation;
     await update(active, repository, history, "waiting_for_ui", operation.kind === "highlight" ? "Highlighting" : operation.kind === "navigate" ? "Opening" : "Showing proposal", operation.kind === "present_proposal" ? { proposalId: operation.proposalId } : {});
+    if (active.cancelled) throw new Error("cancelled");
+    await ensureCurrentGeneration(active, repository);
+    if (active.cancelled) throw new Error("cancelled");
     const outcome = active.connected ? await new Promise<"applied" | "missing">((resolve) => {
       active.operations.set(id, { connectionId: active.connectionId, resolve });
       const timer = setTimeout(() => {
@@ -288,6 +342,8 @@ export const makeAgentCoordinator = (
       });
     }) : "missing";
     active.operations.delete(id);
+    if (active.cancelled) throw new Error("cancelled");
+    await ensureCurrentGeneration(active, repository);
     active.uiMissing ||= outcome === "missing";
     await update(active, repository, history, "running", "Working");
     return outcome === "applied"
@@ -328,15 +384,19 @@ export const makeAgentCoordinator = (
 
   const runTurn = async (active: ActiveTurn, repository: WorkspaceRepositoryService, hub: RealtimeHubService, initial: AgentTurnRecord, viewContext: ResolvedAgentViewContext) => {
     let history = [...initial.history];
+    const disclosures: Array<string> = [];
     try {
       const priorGroups = await Effect.runPromise(repository.agentHistories(active.identity, active.generation, active.turnId, 6));
-      const system: ChatMessage = { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Use only the registered tools. Never accept or commit a proposal. Prepare exact previews for the person to review. Application policy owns stock, arithmetic, permissions, and eligibility. Keep answers concise. A work item named in the latest user message overrides the selected application context. If a tool reports a missing UI target or another recoverable result, say what remains available. For consent checks, repeat the selected evidence and every returned alternative with its probability so the person can review the classification." };
+      const system: ChatMessage = { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Use only the registered tools. Never accept or commit a proposal. Prepare exact previews for the person to review. Application policy owns stock, arithmetic, permissions, and eligibility. Keep answers concise. A work item named in the latest user message overrides the selected application context. If a tool reports a missing UI target or another recoverable result, say what remains available. The application displays validated consent evidence and every returned alternative directly; do not repeat them unless the person asks." };
       const applicationContext: ChatMessage = { role: "system", content: `${contextPrefix}${JSON.stringify(viewContext)}` };
       for (let round = 0; round < maximumToolRounds; round += 1) {
         if (active.cancelled) throw new Error("cancelled");
         await ensureCurrentGeneration(active, repository);
         await update(active, repository, history, "running", round === 0 ? "Thinking" : "Checking results");
-        const request: MinistralRequest = { messages: trimHistory(system, priorGroups, [applicationContext, ...history]), tools: modelTools, toolChoice: "auto", maxOutputTokens: 256 };
+        if (active.cancelled) throw new Error("cancelled");
+        await ensureCurrentGeneration(active, repository);
+        if (active.cancelled) throw new Error("cancelled");
+        const request = boundedRequest(system, applicationContext, priorGroups, history);
         const result = await providerResult(active, runAuditedMinistral({
           repository, identity: active.identity, generation: active.generation,
           requestId: `${active.turnId}:chat:${round + 1}`, turnId: active.turnId,
@@ -345,11 +405,15 @@ export const makeAgentCoordinator = (
         if (!result.ok) throw result.error;
         if (active.cancelled) throw new Error("cancelled");
         await ensureCurrentGeneration(active, repository);
-        const assistant: ChatMessage = { role: "assistant", content: result.value.content || null, ...(result.value.toolCalls.length === 0 ? {} : { toolCalls: result.value.toolCalls }) };
+        const returnedContent = result.value.content.trim();
+        const finalContent = result.value.toolCalls.length === 0 && disclosures.length > 0
+          ? `${disclosures.join(" ")} ${returnedContent}`.trim()
+          : result.value.content;
+        const assistant: ChatMessage = { role: "assistant", content: finalContent || null, ...(result.value.toolCalls.length === 0 ? {} : { toolCalls: result.value.toolCalls }) };
         history.push(assistant);
         if (result.value.toolCalls.length === 0) {
-          const content = result.value.content.trim();
-          if (content.length === 0) throw new Error("The provider returned no final answer.");
+          if (returnedContent.length === 0) throw new Error("The provider returned no final answer.");
+          const content = finalContent.trim();
           if (!active.uiMissing) waitForFinalRender(active, repository, history);
           await update(
             active,
@@ -364,6 +428,8 @@ export const makeAgentCoordinator = (
         if (result.value.toolCalls.length > maximumCallsPerRound) throw new Error("The provider requested too many tools in one round.");
         for (const call of result.value.toolCalls) {
           if (active.cancelled) throw new Error("cancelled");
+          await ensureCurrentGeneration(active, repository);
+          if (active.cancelled) throw new Error("cancelled");
           const tool = findRegisteredTool(registry, call.name);
           let content: string;
           let providerError: ProviderError | null = null;
@@ -375,6 +441,9 @@ export const makeAgentCoordinator = (
                 repository, identity: active.identity, generation: active.generation,
                 turnId: active.turnId, requestId: call.id,
                 runJev: async (jevRequest: JevRequest) => {
+                  if (active.cancelled) throw new Error("cancelled");
+                  await ensureCurrentGeneration(active, repository);
+                  if (active.cancelled) throw new Error("cancelled");
                   active.jevCount += 1;
                   const jev = await providerResult(active, runAuditedJev({
                     repository, identity: active.identity, generation: active.generation,
@@ -387,8 +456,15 @@ export const makeAgentCoordinator = (
                 },
                 requestUi: (operation) => requestUi(active, repository, history, operation),
               }, call.arguments);
+              if (active.cancelled) throw new Error("cancelled");
+              await ensureCurrentGeneration(active, repository);
+              if (call.name === "checkConsent") {
+                const disclosure = consentDisclosure(output);
+                if (disclosure !== null && !disclosures.includes(disclosure)) disclosures.push(disclosure);
+              }
               content = safeToolResult(call.name, output);
             } catch (error) {
+              if (active.cancelled || (error instanceof Error && error.message === "cancelled")) throw error;
               content = safeToolFailure(error);
               if (isProviderError(error)) providerError = error;
             }
@@ -402,14 +478,16 @@ export const makeAgentCoordinator = (
     } catch (error) {
       clearPendingCompletion(active);
       if (active.cancelled || (error instanceof Error && error.message === "cancelled")) {
-        history.push({ role: "assistant", content: "Cancelled. Any proposal already shown is still available for your review." });
+        const message = `${disclosures.join(" ")} Cancelled. Any proposal already shown is still available for your review.`.trim();
+        history.push({ role: "assistant", content: message });
         await update(active, repository, history, "cancelled", "Cancelled", { finished: true, measurement: "incomplete" }).catch(() => undefined);
       } else {
-        const message = error instanceof Error && error.message.includes("reset")
+        const failure = error instanceof Error && error.message.includes("reset")
           ? "This turn stopped because the workspace was reset."
           : isProviderError(error) && error.code === "credits_exhausted"
             ? "This turn stopped because the prepaid model credits are exhausted. No further model requests were made."
             : "I could not complete that turn. You can retry it, and any proposal already shown is still available for review.";
+        const message = `${disclosures.join(" ")} ${failure}`.trim();
         history.push({ role: "assistant", content: message });
         await update(active, repository, history, "failed", "Failed", { error: message, finished: true, measurement: "incomplete" }).catch(() => undefined);
       }

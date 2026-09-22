@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
 import type { AgentViewContext, CommandReceipt, OrderStatus, ReviewedProposal, WorkspaceSnapshot } from "../shared/contracts.js";
@@ -69,6 +69,16 @@ export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly recoverAgentTurns: () => Effect.Effect<number>;
 }
 export class WorkspaceRepository extends Context.Service<WorkspaceRepository, WorkspaceRepositoryService>()("parcel-hopscotch/WorkspaceRepository") {}
+
+const chatMessageId = (userId: string, generation: number, turnId: string, role: string): string => {
+  const namespace = createHash("sha256").update(`${userId}\0${generation}\0${turnId}\0${role}`).digest("hex").slice(0, 20);
+  return `${turnId}:${namespace}:${role}`;
+};
+
+const chatTurnId = (id: string): string => {
+  const separator = id.indexOf(":");
+  return separator === -1 ? id : id.slice(0, separator);
+};
 
 const statusLabels: Record<OrderStatus, string> = { ready: "Ready", review: "Review", waiting: "Waiting" };
 const ageLabel = (occurredAt: string, now: number): string => {
@@ -332,8 +342,7 @@ const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMo
   const messages = database.prepare("SELECT id, role, body, created_at FROM chat_messages WHERE user_id = ? AND generation = ? ORDER BY created_at DESC, rowid DESC LIMIT 60").all(user.id, user.generation) as Array<{ id: string; role: "user" | "assistant"; body: string; created_at: string }>;
   const messageGroups = new Map<string, Array<(typeof messages)[number]>>();
   for (const message of messages.reverse()) {
-    const separator = message.id.lastIndexOf(":");
-    const turnId = separator === -1 ? message.id : message.id.slice(0, separator);
+    const turnId = chatTurnId(message.id);
     messageGroups.set(turnId, [...(messageGroups.get(turnId) ?? []), message]);
   }
   const selectedMessages: Array<(typeof messages)[number]> = [];
@@ -361,7 +370,7 @@ const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMo
     currentProposal: pendingProposal === undefined ? null : (JSON.parse(pendingProposal.payload_json) as StoredProposal).public,
     chat: selectedMessages.map((message) => ({
       id: message.id,
-      turnId: message.id.includes(":") ? message.id.slice(0, message.id.lastIndexOf(":")) : message.id,
+      turnId: chatTurnId(message.id),
       role: message.role,
       content: message.body,
       createdAt: message.created_at,
@@ -660,7 +669,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
       turnId, user.id, generation, requestId, connectionId, JSON.stringify(history), startedAt,
     );
     database.prepare("INSERT INTO chat_messages (id, user_id, generation, role, body, created_at) VALUES (?, ?, ?, 'user', ?, ?)").run(
-      `${turnId}:user`, user.id, generation, message.trim(), startedAt,
+      chatMessageId(user.id, generation, turnId, "user"), user.id, generation, message.trim(), startedAt,
     );
     return { created: true, turn: agentTurnRecord(turnRow(user.id, generation, turnId)!) };
   }));
@@ -694,7 +703,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
         database.prepare(`INSERT INTO chat_messages (id, user_id, generation, role, body, created_at)
           VALUES (?, ?, ?, 'assistant', ?, ?)
           ON CONFLICT(id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at`).run(
-          `${turnId}:assistant`, user.id, generation, assistant.content.slice(0, 8_000), new Date().toISOString(),
+          chatMessageId(user.id, generation, turnId, "assistant"), user.id, generation, assistant.content.slice(0, 8_000), new Date().toISOString(),
         );
       }
     }
@@ -772,7 +781,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
       database.prepare(`INSERT INTO chat_messages (id, user_id, generation, role, body, created_at)
         VALUES (?, ?, ?, 'assistant', ?, ?)
         ON CONFLICT(id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at`).run(
-        `${row.id}:assistant`, row.user_id, row.generation, terminal, finishedAt,
+        chatMessageId(row.user_id, row.generation, row.id, "assistant"), row.user_id, row.generation, terminal, finishedAt,
       );
     }
     return rows.length;

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { OrderSummary, WorkspaceSnapshot } from "../../src/shared/contracts";
 import { resolveSelectedOrder } from "../../src/client/App";
 import {
+  acceptsAgentOperation,
+  acceptsWorkspaceState,
   decideWorkspaceEvent,
   isCurrentSocket,
 } from "../../src/client/use-workspace";
@@ -74,6 +76,17 @@ describe("client realtime state", () => {
     expect(isCurrentSocket(false, current, replaced)).toBe(false);
     expect(isCurrentSocket(true, current, current)).toBe(false);
     expect(isCurrentSocket(false, null, current)).toBe(false);
+  });
+
+  it("rejects delayed pre-reset snapshots and UI work", () => {
+    const reset = snapshot(0, 2);
+    expect(acceptsWorkspaceState(reset, snapshot(4, 1))).toBe(false);
+    expect(acceptsWorkspaceState(snapshot(2, 2), snapshot(1, 2))).toBe(false);
+    expect(acceptsWorkspaceState(snapshot(2, 2), snapshot(2, 2))).toBe(true);
+    expect(acceptsWorkspaceState(reset, snapshot(1, 2))).toBe(true);
+    expect(acceptsWorkspaceState(reset, snapshot(0, 3))).toBe(true);
+    expect(acceptsAgentOperation(reset, { id: "operation_old", turnId: "turn_12345678-old", generation: 1, kind: "navigate", view: "work" })).toBe(false);
+    expect(acceptsAgentOperation(reset, { id: "operation_current", turnId: "turn_12345678-current", generation: 2, kind: "navigate", view: "work" })).toBe(true);
   });
 });
 

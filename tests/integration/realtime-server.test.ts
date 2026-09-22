@@ -271,6 +271,7 @@ describe("realtime server", () => {
 
   it("runs a correlated multi-tool turn, waits for UI acknowledgements, measures render completion, and deduplicates the turn ID", async () => {
     const connection = await connect("agent@example.test");
+    const sibling = await connect("agent@example.test");
     const turnId = "turn_12345678-agent-test";
     const operations: Array<string> = [];
     let completionSent = false;
@@ -307,8 +308,12 @@ describe("realtime server", () => {
         }
       });
     });
+    const siblingCompleted = nextMessage(sibling.socket, (message) => message.type === "agent_state"
+      && message.state.activeTurn === null
+      && message.state.chat.some((item) => item.turnId === turnId && item.role === "assistant"));
     connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "start-agent", generation: 1, turnId, message: "Find BB-1042, open it, and highlight the evidence.", ...workContext }));
     const finalState = await completed;
+    await expect(siblingCompleted).resolves.toMatchObject({ type: "agent_state", state: { activeTurn: null } });
     expect(operations).toEqual(["navigate", "highlight"]);
     expect(finalState.state.chat.filter((item) => item.turnId === turnId).map((item) => item.role)).toEqual(["user", "assistant"]);
 
@@ -328,10 +333,19 @@ describe("realtime server", () => {
     expect(Number(after.count)).toBe(2);
     verify.close();
 
+    const siblingTurnId = "turn_12345678-agent-sibling";
+    const siblingAdmitted = nextMessage(sibling.socket, (message) => message.type === "agent_state" && message.state.activeTurn?.id === siblingTurnId);
+    sibling.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "start-agent-sibling", generation: 1, turnId: siblingTurnId, message: "Start a slow turn.", ...workContext }));
+    await siblingAdmitted;
+    const siblingCancelled = nextMessage(sibling.socket, (message) => message.type === "agent_state" && message.state.activeTurn === null && message.state.chat.some((item) => item.turnId === siblingTurnId && item.content.startsWith("Cancelled.")));
+    sibling.socket.send(JSON.stringify({ type: "cancel_agent_turn", requestId: "cancel-agent-sibling", generation: 1, turnId: siblingTurnId }));
+    await siblingCancelled;
+
     const rejected = nextMessage(connection.socket, (message) => message.type === "error" && message.code === "invalid_message");
     connection.socket.send(JSON.stringify({ type: "send_agent_turn", requestId: "identity-injection", generation: 1, turnId: "turn_87654321", message: "Show work", ...workContext, userId: "someone-else" }));
     await expect(rejected).resolves.toMatchObject({ type: "error", requestId: null, code: "invalid_message" });
     connection.socket.close();
+    sibling.socket.close();
   });
 
   it("cancels a running provider turn without applying a late result", async () => {

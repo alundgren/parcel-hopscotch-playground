@@ -170,6 +170,10 @@ test("uses the agent to inspect evidence, prepare a batch for human acceptance, 
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByText(/Consent: conditional/)).toBeVisible();
   await expect(page.getByText(/Alternatives: conditional 98%/)).toBeVisible();
+  await expect(page.getByText(/explicit 1%, unclear 1%/)).toBeVisible();
+  await expect(composer).toBeEnabled();
+  await page.getByText(/Evidence: "Sage might work/).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("agent-consent.png"), fullPage: true });
 
   await composer.fill("Prepare all the green orders as a batch.");
   await page.getByRole("button", { name: "Send message" }).click();

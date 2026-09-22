@@ -13,6 +13,12 @@ export const decideWorkspaceEvent = (current: WorkspaceSnapshot, event: Workspac
   return { kind: "refresh", optimistic: current };
 };
 export const isCurrentSocket = <SocketValue,>(disposed: boolean, current: SocketValue | null, candidate: SocketValue): boolean => !disposed && current === candidate;
+export const acceptsWorkspaceState = (current: WorkspaceSnapshot | null, incoming: WorkspaceSnapshot): boolean =>
+  current === null
+  || incoming.generation > current.generation
+  || (incoming.generation === current.generation && incoming.sequence >= current.sequence);
+export const acceptsAgentOperation = (current: WorkspaceSnapshot | null, operation: AgentUiOperation): boolean =>
+  current !== null && operation.generation === current.generation;
 
 type CommandInput =
   | { readonly type: "prepare_resolution"; readonly orderId: string }
@@ -69,17 +75,24 @@ export function useWorkspace() {
       if (!isCurrentSocket(disposedRef.current, socketRef.current, socket)) return;
       let message: ServerMessage;
       try { message = Schema.decodeUnknownSync(ServerMessageSchema, { onExcessProperty: "error" })(JSON.parse(String(event.data))) as ServerMessage; } catch { return; }
+      const applyState = (incoming: WorkspaceSnapshot): boolean => {
+        const current = stateRef.current;
+        if (!acceptsWorkspaceState(current, incoming)) return false;
+        if (current !== null && current.generation !== incoming.generation) setAgentOperation(null);
+        stateRef.current = incoming;
+        setSnapshot(incoming);
+        return true;
+      };
       if (message.type === "snapshot" || message.type === "command_result") {
-        stateRef.current = message.state; setSnapshot(message.state);
+        if (!applyState(message.state)) return;
         if (message.type === "command_result") { pendingRef.current.get(message.requestId)?.resolve(message.result); pendingRef.current.delete(message.requestId); }
         return;
       }
       if (message.type === "agent_state") {
-        stateRef.current = message.state; setSnapshot(message.state); return;
+        applyState(message.state); return;
       }
       if (message.type === "agent_ui_operation") {
-        const current = stateRef.current;
-        if (current !== null && message.operation.generation === current.generation) setAgentOperation(message.operation);
+        if (acceptsAgentOperation(stateRef.current, message.operation)) setAgentOperation(message.operation);
         return;
       }
       if (message.type === "error") {
@@ -89,7 +102,7 @@ export function useWorkspace() {
       }
       if (message.type !== "event") return;
       const pushed = committedState(message);
-      if (pushed !== null) { stateRef.current = pushed; setSnapshot(pushed); return; }
+      if (pushed !== null) { applyState(pushed); return; }
       const current = stateRef.current;
       if (current === null) return;
       const decision = decideWorkspaceEvent(current, message);

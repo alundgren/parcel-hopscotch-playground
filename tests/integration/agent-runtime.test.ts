@@ -9,7 +9,8 @@ import type { ServerConfig } from "../../src/server/config";
 import { resolveIdentity } from "../../src/server/identity";
 import { runWithWorkspaceRepository, WorkspaceRepository, type AgentTurnRecord, type WorkspaceRepositoryService } from "../../src/server/persistence";
 import type { ChatMessage, JevAdapter, MinistralAdapter, MinistralRequest, MinistralResult, ProviderMetadata } from "../../src/server/providers/contracts";
-import { providerFailure } from "../../src/server/providers/http";
+import { buildMinistralWireRequest } from "../../src/server/providers/chat-request";
+import { jsonBytes, providerFailure } from "../../src/server/providers/http";
 import type { RealtimeHubService } from "../../src/server/realtime";
 
 const paths: Array<string> = [];
@@ -201,10 +202,10 @@ describe("agent runtime", () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");
     let round = 0;
-    let nextRequest: MinistralRequest | null = null;
+    const requests: Array<MinistralRequest> = [];
     const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
-      if (round++ === 0) return result(Array.from({ length: 6 }, (_, index) => ({ id: `call_list_${index}`, name: "listOrders", arguments: {} })));
-      nextRequest = request;
+      requests.push(request);
+      if (round++ < 2) return result(Array.from({ length: 6 }, (_, index) => ({ id: `call_list_${round}_${index}`, name: "listOrders", arguments: {} })));
       return result([], "Done.");
     }) };
     await runWithWorkspaceRepository(filename, Effect.gen(function* () {
@@ -215,7 +216,11 @@ describe("agent runtime", () => {
       const terminal = yield* Effect.promise(() => waitForTurn(repository, firstTurn, ["waiting_for_ui"]));
       expect(terminal.phase).toBe("Rendering answer");
       expect(new TextEncoder().encode(JSON.stringify(terminal.history)).byteLength).toBeLessThan(28 * 1024);
-      for (const results of [toolPayloads(nextRequest?.messages ?? []), toolPayloads(terminal.history)]) {
+      expect(requests).toHaveLength(3);
+      expect(requests.every((request) => jsonBytes(buildMinistralWireRequest(request)) <= 32 * 1024)).toBe(true);
+      expect(toolPayloads(requests[1]!.messages).map(({ id }) => id)).toEqual(Array.from({ length: 6 }, (_, index) => `call_list_1_${index}`));
+      expect(toolPayloads(requests[2]!.messages).map(({ id }) => id)).toEqual(Array.from({ length: 6 }, (_, index) => `call_list_2_${index}`));
+      for (const results of [toolPayloads(requests[1]!.messages), toolPayloads(requests[2]!.messages), toolPayloads(terminal.history)]) {
         expect(results).toHaveLength(6);
         expect(results.every(({ payload }) => payload.truncated === undefined && payload.result?.count === 24 && payload.result.orders?.length === 24)).toBe(true);
         expect(results.every(({ payload }) => payload.result?.orders?.some((order) => order.id === "BB-1042" && order.status === "review"))).toBe(true);
@@ -225,6 +230,136 @@ describe("agent runtime", () => {
 
       const next = yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: "turn_12345678-after-size", requestId: "request-after-size", message: "Continue.", viewContext: workView, connectionId: "connection-after-size", send: async () => undefined }));
       expect(next.started).toBe(true);
+    }));
+  });
+
+  it("stops before provider or UI dispatch when cancellation lands during a phase update", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const filename = join(directory, "workspace.sqlite");
+    await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      let providerCalls = 0;
+      let releaseThinking: () => void = () => {};
+      let reachedThinking: () => void = () => {};
+      const thinkingGate = new Promise<void>((resolve) => { releaseThinking = resolve; });
+      const thinkingReached = new Promise<void>((resolve) => { reachedThinking = resolve; });
+      const delayedThinking = {
+        publishAudit: () => Effect.void,
+        publishAgent: (_userId: string, _generation: number, state: import("../../src/shared/contracts").WorkspaceSnapshot) => state.activeTurn?.phase === "Thinking"
+          ? Effect.promise(() => { reachedThinking(); return thinkingGate; })
+          : Effect.void,
+      } as unknown as RealtimeHubService;
+      const ministral: MinistralAdapter = { complete: () => Effect.sync(() => { providerCalls += 1; return result([], "Late."); }) };
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = "turn_12345678-cancel-thinking";
+      yield* Effect.promise(() => coordinator.start({ repository, hub: delayedThinking, identity, generation: 1, turnId, requestId: "request-cancel-thinking", message: "Do not dispatch after cancellation.", viewContext: workView, connectionId: "connection-cancel-thinking", send: async () => undefined }));
+      yield* Effect.promise(() => thinkingReached);
+      expect(yield* Effect.promise(() => coordinator.cancel(repository, identity, 1, turnId))).toBe(true);
+      releaseThinking();
+      const cancelled = yield* Effect.promise(() => waitForTurn(repository, turnId, ["cancelled"]));
+      expect(cancelled.measurement).toBe("incomplete");
+      expect(providerCalls).toBe(0);
+    }));
+
+    await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      let round = 0;
+      let releaseOpening: () => void = () => {};
+      let reachedOpening: () => void = () => {};
+      const openingGate = new Promise<void>((resolve) => { releaseOpening = resolve; });
+      const openingReached = new Promise<void>((resolve) => { reachedOpening = resolve; });
+      const delayedOpening = {
+        publishAudit: () => Effect.void,
+        publishAgent: (_userId: string, _generation: number, state: import("../../src/shared/contracts").WorkspaceSnapshot) => state.activeTurn?.phase === "Opening"
+          ? Effect.promise(() => { reachedOpening(); return openingGate; })
+          : Effect.void,
+      } as unknown as RealtimeHubService;
+      const ministral: MinistralAdapter = { complete: () => Effect.sync(() => round++ === 0
+        ? result([{ id: "call_open_cancel", name: "navigate", arguments: { view: "work" } }])
+        : result([], "Late.")) };
+      const sent: Array<ServerMessage> = [];
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = "turn_12345678-cancel-opening";
+      yield* Effect.promise(() => coordinator.start({ repository, hub: delayedOpening, identity, generation: 1, turnId, requestId: "request-cancel-opening", message: "Open work.", viewContext: workView, connectionId: "connection-cancel-opening", send: async (message) => { sent.push(message); } }));
+      yield* Effect.promise(() => openingReached);
+      expect(yield* Effect.promise(() => coordinator.cancel(repository, identity, 1, turnId))).toBe(true);
+      releaseOpening();
+      yield* Effect.promise(() => waitForTurn(repository, turnId, ["cancelled"]));
+      expect(sent.some((message) => message.type === "agent_ui_operation")).toBe(false);
+      expect(round).toBe(1);
+    }));
+  });
+
+  it("does not deliver a captured pre-reset state after delayed publication", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const filename = join(directory, "workspace.sqlite");
+    await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      let release: () => void = () => {};
+      let reached: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { reached = resolve; });
+      const delayedHub = {
+        publishAudit: () => Effect.void,
+        publishAgent: () => Effect.promise(() => { reached(); return gate; }),
+      } as unknown as RealtimeHubService;
+      let providerCalls = 0;
+      const ministral: MinistralAdapter = { complete: () => Effect.sync(() => { providerCalls += 1; return result([], "Late."); }) };
+      const sent: Array<ServerMessage> = [];
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = "turn_12345678-reset-delivery";
+      yield* Effect.promise(() => coordinator.start({ repository, hub: delayedHub, identity, generation: 1, turnId, requestId: "request-reset-delivery", message: "Inspect the queue.", viewContext: workView, connectionId: "connection-reset-delivery", send: async (message) => { sent.push(message); } }));
+      yield* Effect.promise(() => entered);
+      const sentBeforeReset = sent.length;
+      const proposal = yield* repository.prepareReset(identity, 1);
+      const committed = yield* repository.accept(identity, 1, proposal.id, "reset-delivery-key");
+      expect(committed.receipt.generation).toBe(2);
+      expect(yield* Effect.promise(() => coordinator.cancelGeneration(identity, 1))).toBe(true);
+      release();
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 30)));
+      expect(providerCalls).toBe(0);
+      expect(sent.slice(sentBeforeReset).filter((message) => message.type === "agent_state" && message.state.generation === 1)).toEqual([]);
+      expect((yield* repository.snapshot(identity)).generation).toBe(2);
+    }));
+  });
+
+  it("persists validated consent evidence and every alternative even when the model omits them", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const filename = join(directory, "workspace.sqlite");
+    let round = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => round++ === 0
+      ? result([{ id: "call_consent_visible", name: "checkConsent", arguments: { orderId: "BB-1076" } }])
+      : result([], "This remains for human review.")) };
+    const jev: JevAdapter = { decide: (request) => Effect.succeed({
+      kind: "decisions",
+      answers: { consent: { type: "choice", choice: "conditional", confidence: 0.98, probabilities: { conditional: 0.98, explicit: 0.01, unclear: 0.01 } } },
+      metadata,
+      safeRequest: request,
+      safeResponse: {},
+    }) };
+    await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev }, { finalAcknowledgementMs: 200 });
+      const turnId = "turn_12345678-consent-visible";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "request-consent-visible", message: "Does BB-1076 have explicit consent?", viewContext: workView, connectionId: "connection-consent-visible", send: async () => undefined }));
+      const terminal = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      const final = terminal.history.at(-1);
+      expect(final?.role === "assistant" ? final.content : null).toBe("Evidence: \"Sage might work, but can you send a picture first?\" Consent: conditional. Alternatives: conditional 98%, explicit 1%, unclear 1%. This remains for human review.");
+      expect((yield* repository.snapshot(identity)).chat.find((message) => message.turnId === turnId && message.role === "assistant")?.content).toBe(final?.role === "assistant" ? final.content : null);
+    }));
+  });
+
+  it("namespaces identical turn IDs for different authenticated owners", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const filename = join(directory, "workspace.sqlite");
+    const secondIdentity = Effect.runSync(resolveIdentity(["cf-access-authenticated-user-email", "another-owner@example.test"], config));
+    await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const turnId = "turn_12345678-shared";
+      yield* repository.createAgentTurn(identity, 1, turnId, "request-first-owner", "connection-first-owner", "First owner message.");
+      yield* repository.createAgentTurn(secondIdentity, 1, turnId, "request-second-owner", "connection-second-owner", "Second owner message.");
+      expect((yield* repository.snapshot(identity)).chat.find((message) => message.turnId === turnId)?.content).toBe("First owner message.");
+      expect((yield* repository.snapshot(secondIdentity)).chat.find((message) => message.turnId === turnId)?.content).toBe("Second owner message.");
     }));
   });
 
