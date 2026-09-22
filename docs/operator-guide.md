@@ -64,6 +64,8 @@ Registration and polling remain owner actions after the audit. The repository co
 
 Run `pnpm verify:container` against a local Unix-socket Docker engine. The verifier uses unique resource names and refuses a TCP endpoint before any Docker mutation. It checks the production identity contract with the scripted provider, so it makes no paid request.
 
+The verifier uses a short-lived root helper container to prepare only its own mode-0700 bind directory for UID/GID 1000. It restores the invoking host user's ownership before removing that directory. The application containers continue to run as the nonroot `node` user.
+
 The Node base index contains `linux/amd64` and `linux/arm64/v8` manifests. The Dockerfile builds TypeScript and Vite on `$BUILDPLATFORM`, then tells pnpm to prepare production dependencies for `$TARGETARCH`. Runtime SQLite uses Node's built-in `node:sqlite`; it does not use a native npm SQLite addon. The local VM can execute only amd64 containers. An arm64 OCI build proves Dockerfile resolution and output metadata but does not prove that the application executes on arm64. The owner should run the same verifier on the production architecture after the audit and before public traffic.
 
 ## Recovery and backup

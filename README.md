@@ -75,6 +75,8 @@ pnpm verify:container
 
 The command first refuses non-Unix Docker endpoints. It builds a temporary image for the local Docker engine's platform, publishes only on loopback, checks React, health, PID 1, UID/GID 1000, production identity rejection and acceptance, WebSocket operation, an accepted order change, SIGTERM shutdown, and named-volume plus bind-directory persistence after container replacement. It removes only its uniquely named containers, volume, bind directory and image.
 
+For the bind check, a short-lived root helper inside the local Docker engine changes only the verifier-created temporary directory to UID/GID 1000, then restores its original host ownership before cleanup. The application containers still run as the nonroot `node` user.
+
 The image uses the digest-pinned Node 26.7.0 Bookworm slim multi-platform index. Node 26 is supported through 2029-04-30 and is scheduled to become LTS on 2026-10-28. The Dockerfile compiles on the builder platform and prepares runtime dependencies for the target architecture. See the [owner handoff](docs/owner-handoff.md) for the exact arm64 build evidence and execution limit.
 
 ## Operation and data

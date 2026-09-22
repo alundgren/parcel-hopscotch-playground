@@ -38,6 +38,25 @@ The same PR retains four readable complete-flow recordings:
 
 The accepted prototype remains `docs/design/approved-prototype.html` from bootstrap commit `3ce3912accaee54f2c353ff9b00d6e8022eeec72`. Packaging does not alter app UI, so this work reuses the reviewed issue #9 comparisons and videos.
 
+## Packaging evidence
+
+The container and application artifact inputs were tested at source revision `489139312fc1dddf91c0df0319ada27d5541e527` on a headless Linux x86_64 VM. Later review corrections only changed the verifier, its tests and this documentation; they did not change the Dockerfile, package manifests, client/server source or runtime configuration used to produce these images.
+
+`pnpm verify:container` built `linux/amd64` image `sha256:93d36163faa394ad9c879d0edb49630d314c9b532efdb7ba5a08911c0cd50f90`. The production process ran as UID/GID 1000, served the React build and real health endpoint, enforced the trusted email header on WebSocket connections, accepted the `BB-1042` update and retained it after container replacement. Both a Docker named volume and an owner-only mode-0700 bind directory passed. Four SIGTERM checks closed through Effect in 227 to 260 milliseconds with its expected interruption exit 130. The verifier also confirmed loopback-only publication, PID 1, license files and the absence of development dependencies and baked OpenRouter credentials.
+
+An independent production-container browser check at the same revision observed Docker health `healthy`, completed a scripted agent turn through the trusted-header WebSocket, accepted the proposal and displayed the committed address with no page error. Its uniquely named local resources were removed after the check.
+
+The ARM64 build command was:
+
+```bash
+docker buildx build --platform linux/arm64 \
+  --output type=oci,dest=parcel-hopscotch-4891393-linux-arm64.oci.tar .
+```
+
+The resulting 96,363,008-byte OCI archive has SHA-256 `1b1117b585193393070f1ef5d7fbe61c18fbf7a9e47ae64cc2680459d9697b5a`. Its index declares `linux/arm64`, manifest `sha256:68a478c0c4cb08cdbe72e86032133feb2349c4595b10386e3ef7d04213bf1f2c` and config `sha256:a2e280965c2e0595fa2f3c4c0033b7f4d22a12a6317762b78c2d80a6d9576361`. Independent inspection verified every layer digest, the nonroot runtime user, an AArch64 Node executable, production dependency pruning and compiled server output. The AMD64 VM did not execute this ARM64 image, so the owner must run `pnpm verify:container` on the target architecture before public traffic.
+
+The packaging source PR retains the final reviewed revision, review dispositions, validation commands and CI results. These identifiers allow the owner to compare that record with the exact local artifacts summarized here.
+
 ## Measured results
 
 The [acceptance report](acceptance-report.md) covers 36 Playwright cases on a headless Linux x86_64 VM with four available CPUs, Node 24.21.0 and Chromium 151.0.7922.34. The browser and server ran on that same VM. Deterministic batch samples were:

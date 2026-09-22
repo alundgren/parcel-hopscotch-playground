@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 
 const repository = process.cwd();
@@ -13,8 +14,10 @@ const prefix = `parcel-hopscotch-verify-${suffix}`;
 const createdContainers = new Set();
 const createdVolumes = new Set();
 const createdDirectories = new Set();
+const preparedBindDirectories = new Map();
 let localDockerVerified = false;
 let imageCreated = false;
+let permissionHelperSequence = 0;
 
 const docker = (args, options = {}) => {
   const output = execFileSync("docker", args, {
@@ -39,11 +42,17 @@ const availablePort = () =>
     });
   });
 
-const waitForHealth = async (origin) => {
-  const deadline = Date.now() + 30_000;
+export const waitForHealth = async (
+  origin,
+  { deadlineMilliseconds = 30_000, requestTimeoutMilliseconds = 1_000 } = {},
+) => {
+  const deadline = Date.now() + deadlineMilliseconds;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${origin}/api/health`);
+      const remaining = deadline - Date.now();
+      const response = await fetch(`${origin}/api/health`, {
+        signal: AbortSignal.timeout(Math.max(1, Math.min(requestTimeoutMilliseconds, remaining))),
+      });
       if (response.ok && (await response.json()).status === "ok") return;
     } catch {
       // Docker has published the port but the application is still starting.
@@ -66,7 +75,7 @@ const nextMessage = (socket, predicate = () => true) =>
     socket.on("message", listener);
   });
 
-const connect = (port, email, duplicateEmail) =>
+export const connect = (port, email, duplicateEmail, { snapshotTimeoutMilliseconds = 8_000 } = {}) =>
   new Promise((resolve, reject) => {
     const headers = email === null
       ? undefined
@@ -79,16 +88,55 @@ const connect = (port, email, duplicateEmail) =>
       origin: `http://127.0.0.1:${port}`,
       headers,
     });
+    let settled = false;
+    const rejectConnection = (error, terminate = false) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (terminate) {
+        socket.once("error", () => undefined);
+        socket.terminate();
+      }
+      reject(error);
+    };
+    const timeout = setTimeout(() => {
+      rejectConnection(new Error("Timed out waiting for the initial WebSocket snapshot."), true);
+    }, snapshotTimeoutMilliseconds);
     socket.once("unexpected-response", (_request, response) => {
-      reject(Object.assign(new Error(`WebSocket rejected with ${response.statusCode}.`), {
+      rejectConnection(Object.assign(new Error(`WebSocket rejected with ${response.statusCode}.`), {
         status: response.statusCode,
-      }));
+      }), true);
     });
-    socket.once("error", reject);
+    socket.once("error", (error) => {
+      rejectConnection(error);
+    });
     socket.once("message", (data) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       resolve({ socket, snapshot: JSON.parse(data.toString()) });
     });
   });
+
+const setBindDirectoryOwner = (directory, uid, gid) => {
+  const helperName = `${prefix}-bind-permissions-${permissionHelperSequence += 1}`;
+  docker([
+    "run",
+    "--rm",
+    "--name",
+    helperName,
+    "--user",
+    "0:0",
+    "--mount",
+    `type=bind,source=${directory},target=/data`,
+    "--entrypoint",
+    "chown",
+    image,
+    "-R",
+    `${uid}:${gid}`,
+    "/data",
+  ]);
+};
 
 const expectRejected = async (promise, status) => {
   try {
@@ -261,6 +309,13 @@ const cleanup = async () => {
     try { docker(["volume", "rm", name]); } catch { /* retain the primary failure */ }
   }
   for (const directory of createdDirectories) {
+    const owner = preparedBindDirectories.get(directory);
+    if (owner !== undefined && imageCreated) {
+      try {
+        setBindDirectoryOwner(directory, owner.uid, owner.gid);
+        preparedBindDirectories.delete(directory);
+      } catch { /* retain the primary failure */ }
+    }
     await rm(directory, { recursive: true, force: true }).catch(() => undefined);
   }
   if (imageCreated) {
@@ -268,6 +323,7 @@ const cleanup = async () => {
   }
 };
 
+export const main = async () => {
 try {
   const explicitContext = process.env.DOCKER_CONTEXT;
   const context = explicitContext || docker(["context", "show"]);
@@ -302,8 +358,26 @@ try {
 
   const bindDirectory = await mkdtemp(join(tmpdir(), `${prefix}-bind-`));
   createdDirectories.add(bindDirectory);
+  const originalBindOwner = await stat(bindDirectory);
+  preparedBindDirectories.set(bindDirectory, {
+    uid: originalBindOwner.uid,
+    gid: originalBindOwner.gid,
+  });
+  const originalBindDirectoryOwner = `${originalBindOwner.uid}:${originalBindOwner.gid}`;
+  setBindDirectoryOwner(bindDirectory, 1000, 1000);
   const bindDirectoryStat = await stat(bindDirectory);
+  if (bindDirectoryStat.uid !== 1000 || bindDirectoryStat.gid !== 1000) {
+    throw new Error(`Bind directory is ${bindDirectoryStat.uid}:${bindDirectoryStat.gid}, expected 1000:1000.`);
+  }
   const bind = await verifyMount("bind", `type=bind,source=${bindDirectory},target=/data`);
+  setBindDirectoryOwner(bindDirectory, originalBindOwner.uid, originalBindOwner.gid);
+  preparedBindDirectories.delete(bindDirectory);
+  const restoredBindOwner = await stat(bindDirectory);
+  if (restoredBindOwner.uid !== originalBindOwner.uid || restoredBindOwner.gid !== originalBindOwner.gid) {
+    throw new Error(
+      `Bind directory owner restored to ${restoredBindOwner.uid}:${restoredBindOwner.gid}, expected ${originalBindDirectoryOwner}.`,
+    );
+  }
 
   console.log(JSON.stringify({
     checkedAt: new Date().toISOString(),
@@ -316,9 +390,11 @@ try {
     healthcheck: "configured and direct HTTP request passed",
     publishedAddress: "127.0.0.1 only",
     bindDirectory: {
+      originalOwner: originalBindDirectoryOwner,
       uid: bindDirectoryStat.uid,
       gid: bindDirectoryStat.gid,
       mode: (bindDirectoryStat.mode & 0o777).toString(8).padStart(3, "0"),
+      restoredOwner: `${restoredBindOwner.uid}:${restoredBindOwner.gid}`,
     },
     productionIdentity: {
       missing: "rejected 401",
@@ -330,4 +406,9 @@ try {
   }, null, 2));
 } finally {
   await cleanup();
+}
+};
+
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
 }
