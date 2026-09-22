@@ -1,12 +1,15 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { expect, test, type Browser, type Page, type TestInfo } from "@playwright/test";
 
 type MainView = "Work" | "Explore" | "Audit";
 
 const capture = async (page: Page, path: string) => {
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await Promise.all(Array.from(document.images, (image) => image.decode()));
+    window.scrollTo(0, 0);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  });
   await page.screenshot({ path, animations: "disabled" });
 };
 
@@ -36,7 +39,7 @@ const comparison = async (
         <figure><figcaption>Actual implementation · ${view} · ${viewport.width}×${viewport.height}</figcaption><img src="data:image/png;base64,${actual.toString("base64")}"></figure>
       </main></body></html>`);
     const path = testInfo.outputPath(`comparison-${view.toLowerCase()}-${testInfo.project.name}.png`);
-    await page.screenshot({ path, fullPage: true, animations: "disabled" });
+    await capture(page, path);
     await testInfo.attach(`${view} ${testInfo.project.name} comparison`, { path, contentType: "image/png" });
   } finally {
     await context.close();
@@ -77,9 +80,9 @@ test("captures approved and actual Work, Explore, and Audit at the project viewp
   await capture(page, auditPath);
   actualPaths.set("Audit", auditPath);
 
-  const referenceContext = await browser.newContext({ viewport });
+  const referenceContext = await browser.newContext({ ...testInfo.project.use, viewport });
   const referencePage = await referenceContext.newPage();
-  const prototypeUrl = pathToFileURL(resolve("docs/design/approved-prototype.html")).href;
+  const prototypeUrl = "http://127.0.0.1:4174/design/approved-prototype.html";
   try {
     for (const view of ["Work", "Explore", "Audit"] as const) {
       await referencePage.goto(prototypeUrl);
