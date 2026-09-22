@@ -42,6 +42,39 @@ vp run proof:video
 vp run benchmark:providers -- --mode fixture --output-dir /tmp/parcel-provider-benchmark-fixture
 ```
 
+### Headless visual proof on a development VM
+
+Provision Python 3 and the repository's pinned Playwright Chromium with its system
+libraries in the development VM image. After installing project dependencies, run
+`vp exec playwright install --with-deps chromium` as the development user, with
+sudo available for system packages. Keep the browser cache available to that user.
+Repeat the install when the pinned Playwright version changes. CI already runs
+this command. Chromium is a development dependency; the production Docker image
+does not need it.
+
+Use `vp run proof:visual` for the existing Work, Explore, and Audit comparisons at
+1440×1000 and 320×900. Playwright starts the app with disposable SQLite data and
+serves the prototype and assets from `docs` at
+`http://127.0.0.1:4174/design/approved-prototype.html` using Python 3. Both servers
+bind to loopback and Playwright stops them on exit. Ports 4173 and 4174 must be free.
+The script waits for the expected UI state, fonts, and images before capture.
+
+Before UI edits, capture and inspect the relevant reference images. After edits,
+rerun the proof and inspect the labeled comparisons with an image-viewing tool.
+Extend the proof for any affected states it does not cover. Use the same viewport
+and browser settings for the reference and application. Run `vp run proof:video`
+for the existing demonstration flows, or record the affected flow in another
+Playwright test. Screenshots, comparisons, and videos are saved in `test-results`;
+preserve the required files before another run replaces that directory. Attach
+comparisons and videos to the PR with `gh pr create --attach` or
+`gh pr comment --attach`, and explain any deliberate differences.
+
+This workflow runs entirely in the VM without a desktop, browser extension, or
+owner computer connection. If capture or inspection fails, record the exact error
+and leave visual approval pending. A security rejection must be reported, not
+retried through alternative access routes.
+
+
 Playwright uses the scripted providers through the real WebSocket transport and SQLite repository. It records videos in `test-results/`. The visual command creates six same-state comparisons against the unchanged approved prototype at 1440 by 1000 and 320 by 900. The video command records readable desktop and narrow demonstrations. Its pauses occur after the measured completion boundaries.
 
 The retained [acceptance report](docs/acceptance-report.md) documents 36 browser cases and separate server-turn, Send-to-completed-work and Accept-to-visible samples. The [live benchmark report](docs/benchmarks/2026-09-22-live/README.md) retains the single authorized 28-request run. Jev sent no token cap; its question, choice, request and response byte, and timeout bounds are recorded in the report correction. The 64-token cap applies only to Ministral constrained requests. Benchmark scenarios and ordinary agent turns request at most 256 tokens, while the provider adapter rejects values above 512. One of two live tool scenarios remained incomplete and is reported that way.
