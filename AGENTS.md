@@ -8,7 +8,7 @@ Implement the assigned GitHub issue in its own branch and worktree. The user aut
 
 Use the `implement-issue`, `github-use`, `code-guidance`, and applicable `ux-design` skills. Read the provided run packet for role settings, base revision, and scope. The issue agent owns its changes and PR. Resolve ordinary ambiguity with the orchestrator rather than asking an absent user.
 
-After issue #6, read `docs/agent-handoff.md` before selecting the next issue. It records the remaining order, verified constraints, and issue-specific risks.
+When continuing issue #6 or selecting later work, read `docs/agent-handoff.md` first. It records the open PR, pending review, remaining order, verified constraints, and issue-specific risks.
 
 UI PRs must attach side-by-side images of the approved reference and actual result using `gh pr create --attach` or `gh pr comment --attach`. Capture the same task state and viewport, label each image, and explain deliberate differences required by the issue. Attach Playwright video for the affected flow. An updated screenshot alone does not establish visual approval.
 
