@@ -1,0 +1,300 @@
+{
+  "schemaVersion": 1,
+  "manifest": {
+    "schemaVersion": 1,
+    "mode": "live",
+    "revision": "bfe74280c512ae8677260fc0d8844e750e1283be",
+    "dirty": false,
+    "fixtureDigest": "7cc2cc38f2425ab080d3c2e0d25457d1977221b01dd190b96f0ae0035f89d971",
+    "inputFiles": [
+      "benchmarks/constrained-inputs.json",
+      "benchmarks/constrained-expectations.json"
+    ],
+    "fixedModelOrder": [
+      "jev",
+      "ministral"
+    ],
+    "fixedFixtureOrder": [
+      "c01",
+      "c02",
+      "c03",
+      "c04",
+      "c05",
+      "c06",
+      "c07",
+      "c08",
+      "c09",
+      "c10",
+      "c11",
+      "c12"
+    ],
+    "limits": {
+      "constrainedFixtures": 12,
+      "constrainedModels": [
+        "jev",
+        "ministral"
+      ],
+      "constrainedRequests": 24,
+      "scenarioCount": 2,
+      "scenarioRequestsPerScenario": 2,
+      "maximumScenarioRequests": 4,
+      "maximumTotalRequests": 28,
+      "concurrency": 1,
+      "retries": 0,
+      "requestTimeoutMs": 20000,
+      "constrainedMaximumOutputTokens": 64,
+      "scenarioMaximumOutputTokens": 256,
+      "maximumRunDurationMs": 600000
+    },
+    "environment": {
+      "platform": "linux",
+      "architecture": "x64",
+      "availableCpus": 4,
+      "totalMemoryBytes": 8321531904,
+      "node": "v24.21.0",
+      "browser": null
+    },
+    "startedAt": "2026-09-22T10:32:27.455Z"
+  },
+  "completedAt": "2026-09-22T10:32:41.953Z",
+  "stopReason": "completed",
+  "attemptedRequests": 28,
+  "maximumRequests": 28,
+  "scenarios": [
+    {
+      "scenarioId": "s01",
+      "outcome": "success",
+      "durationMs": 2008.2423100000015,
+      "attemptedRequests": 2,
+      "completedRequests": 2,
+      "expectedTool": "getOrder",
+      "expectedArguments": {
+        "orderId": "BB-1042"
+      },
+      "selectedTool": "getOrder",
+      "selectedArguments": {
+        "orderId": "BB-1042"
+      },
+      "toolOutput": {
+        "order": {
+          "id": "BB-1042",
+          "item": "Woven basket",
+          "issue": "Street number needs checking.",
+          "status": "review",
+          "family": "address",
+          "version": 1,
+          "businessValue": "14 Willow Lane, Bath BA1 2AB",
+          "evidence": [
+            {
+              "label": "Customer message",
+              "value": "The number is 41, not 14. Everything else is right.",
+              "occurredAt": "2026-09-21T07:30:00.000Z",
+              "age": "27 hours ago"
+            }
+          ]
+        }
+      },
+      "finalResponse": "Here’s the summary of the evidence for **Order BB-1042** requiring review:\n\n### **Order Details**\n- **Item**: Woven basket\n- **Current Status**: **Review** (needs verification of address accuracy)\n- **Family**: Address\n- **Business Value**: 14 Willow Lane, Bath BA1 2AB\n\n### **Evidence of Concern**\n1. **Customer Discrepancy**\n   - **Label**: Customer message\n   - **Claim**: The street number is **41**, not **14** (all other details appear correct).\n   - **Timestamp**: 2026-09-21, 07:30 AM (27 hours old).\n   - **Implication**: The address in the system may be incorrect, potentially affecting delivery or customer experience.\n\n### **Next Steps**\n- Verify the correct street number with the customer or relevant records.\n- Update the order’s business value if necessary.\n- Confirm whether this is a one-off error or a pattern in address data.\n\nWould you like additional details on any part of this review?",
+      "failure": null
+    },
+    {
+      "scenarioId": "s02",
+      "outcome": "incomplete",
+      "durationMs": 1961.7764439999992,
+      "attemptedRequests": 2,
+      "completedRequests": 1,
+      "expectedTool": "listOrders",
+      "expectedArguments": {
+        "status": "ready"
+      },
+      "selectedTool": "listOrders",
+      "selectedArguments": {
+        "status": "ready"
+      },
+      "toolOutput": {
+        "count": 6,
+        "orders": [
+          {
+            "id": "BB-1051",
+            "item": "Stoneware mug",
+            "issue": "Blue unavailable. Sage replacement agreed.",
+            "status": "ready",
+            "family": "substitution"
+          },
+          {
+            "id": "BB-1063",
+            "item": "Linen throw",
+            "issue": "Stock received and reserved.",
+            "status": "ready",
+            "family": "substitution"
+          },
+          {
+            "id": "BB-1090",
+            "item": "Candle pair",
+            "issue": "Both candles are present and matched.",
+            "status": "ready",
+            "family": "bundle"
+          },
+          {
+            "id": "BB-1084",
+            "item": "Cotton bath set",
+            "issue": "Parcel weight matches the booking.",
+            "status": "ready",
+            "family": "weight"
+          },
+          {
+            "id": "BB-1110",
+            "item": "Woven floor mat",
+            "issue": "First carrier scan arrived.",
+            "status": "ready",
+            "family": "carrier"
+          },
+          {
+            "id": "BB-1112",
+            "item": "Linen napkin set",
+            "issue": "Similar order belongs to a different address.",
+            "status": "ready",
+            "family": "duplicate"
+          }
+        ]
+      },
+      "finalResponse": null,
+      "failure": "incomplete_response"
+    }
+  ],
+  "summary": {
+    "constrainedByModel": {
+      "jev": {
+        "plannedFixtures": 12,
+        "attempted": 12,
+        "skipped": 0,
+        "validResponses": 12,
+        "invalidResponses": 0,
+        "failures": 0,
+        "correct": 12,
+        "attemptedAccuracy": 1,
+        "responseOnlyAccuracy": 1,
+        "unsafeExplicitApprovals": {
+          "count": 0,
+          "denominator": 5,
+          "rate": 0,
+          "missingOrInvalid": 0
+        },
+        "validProviderResponseLatencyMs": {
+          "sampleCount": 12,
+          "percentileMethod": "nearest-rank",
+          "p50": 264.36821899999995,
+          "p95": 531.4498560000002
+        },
+        "correctCompletedWorkLatencyMs": {
+          "sampleCount": 12,
+          "percentileMethod": "nearest-rank",
+          "p50": 264.36821899999995,
+          "p95": 531.4498560000002
+        },
+        "usage": {
+          "inputTokens": {
+            "knownSubtotal": 6033,
+            "unknownCount": 0
+          },
+          "outputTokens": {
+            "knownSubtotal": 647,
+            "unknownCount": 0
+          },
+          "totalTokens": {
+            "knownSubtotal": 6680,
+            "unknownCount": 0
+          },
+          "costUsd": {
+            "knownSubtotal": 0.000253386,
+            "unknownCount": 0
+          }
+        }
+      },
+      "ministral": {
+        "plannedFixtures": 12,
+        "attempted": 12,
+        "skipped": 0,
+        "validResponses": 12,
+        "invalidResponses": 0,
+        "failures": 0,
+        "correct": 11,
+        "attemptedAccuracy": 0.9166666666666666,
+        "responseOnlyAccuracy": 0.9166666666666666,
+        "unsafeExplicitApprovals": {
+          "count": 1,
+          "denominator": 5,
+          "rate": 0.2,
+          "missingOrInvalid": 0
+        },
+        "validProviderResponseLatencyMs": {
+          "sampleCount": 12,
+          "percentileMethod": "nearest-rank",
+          "p50": 312.23960500000067,
+          "p95": 3374.331582
+        },
+        "correctCompletedWorkLatencyMs": {
+          "sampleCount": 11,
+          "percentileMethod": "nearest-rank",
+          "p50": 312.23960500000067,
+          "p95": 3374.331582
+        },
+        "usage": {
+          "inputTokens": {
+            "knownSubtotal": 2649,
+            "unknownCount": 0
+          },
+          "outputTokens": {
+            "knownSubtotal": 138,
+            "unknownCount": 0
+          },
+          "totalTokens": {
+            "knownSubtotal": 2787,
+            "unknownCount": 0
+          },
+          "costUsd": {
+            "knownSubtotal": 0.00022109999999999998,
+            "unknownCount": 0
+          }
+        }
+      }
+    },
+    "scenarioSequences": {
+      "planned": 2,
+      "attempted": 2,
+      "completed": 1,
+      "attemptedRequests": 4,
+      "completedRequests": 3,
+      "validProviderResponseLatencyMs": {
+        "sampleCount": 3,
+        "percentileMethod": "nearest-rank",
+        "p50": 340.71508899999935,
+        "p95": 1359.7507999999998
+      },
+      "completedSequenceLatencyMs": {
+        "sampleCount": 1,
+        "percentileMethod": "nearest-rank",
+        "p50": 2008.2423100000015,
+        "p95": 2008.2423100000015
+      },
+      "usage": {
+        "inputTokens": {
+          "knownSubtotal": 742,
+          "unknownCount": 0
+        },
+        "outputTokens": {
+          "knownSubtotal": 515,
+          "unknownCount": 0
+        },
+        "totalTokens": {
+          "knownSubtotal": 1257,
+          "unknownCount": 0
+        },
+        "costUsd": {
+          "knownSubtotal": 0.00012570000000000002,
+          "unknownCount": 0
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "capturedAt": "2026-09-22T10:32:01.550768+00:00",
+  "platform": "Linux",
+  "machine": "x86_64",
+  "kernel": "7.0.0-31-generic",
+  "cpus": 4,
+  "loadAverage": [
+    0.28466796875,
+    0.44677734375,
+    0.46435546875
+  ],
+  "conditions": "Owner confirmed local builds, tests, browser capture and container work paused before launch. Only source and documentation edits continued. Root synthetic checks had ended. Headless Linux VM; no browser participated in the CLI benchmark.",
+  "workloadPauseConfirmed": true,
+  "workloadsReleased": true,
+  "rootObservedRunningAt": "2026-09-22T10:32:40.693350+00:00",
+  "rootRecordedExitAt": "2026-09-22T10:33:10.085810+00:00",
+  "benchmarkStartedAt": "2026-09-22T10:32:27.455Z",
+  "benchmarkCompletedAt": "2026-09-22T10:32:41.953Z",
+  "timestampNote": "Use benchmark timestamps for the actual run interval; root observation timestamps are later orchestration notes."
+}

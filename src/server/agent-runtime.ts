@@ -112,6 +112,9 @@ const scriptedMinistral = (): MinistralAdapter => ({
     const last = request.messages.at(-1);
     const lastUser = [...request.messages].reverse().find((message) => message.role === "user");
     const text = lastUser?.role === "user" ? lastUser.content.toLowerCase() : "";
+    if (text.includes("simulate the provider failure fixture")) {
+      return yield* providerFailure("provider_error", "The deterministic provider failure fixture stopped this request.");
+    }
     if (text.includes("slow turn")) yield* Effect.sleep(600);
     if (last?.role === "tool") {
       const toolCallIndex = request.messages.findLastIndex((message) => message.role === "assistant" && message.toolCalls !== undefined);
