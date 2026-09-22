@@ -398,13 +398,18 @@ describe("Ministral OpenRouter adapter", () => {
     expect(buildMinistralWireRequest(history)).toEqual(sent);
   });
 
-  it("expires operations while they wait for a concurrency permit", async () => {
+  it("counts concurrency wait against each operation deadline", async () => {
     let fetches = 0;
+    const requestLifetimes: Array<number> = [];
     const adapter = makeMinistralAdapter(
-      { apiKey: "synthetic-key", maximumConcurrency: 1, timeoutMs: 10 },
+      { apiKey: "synthetic-key", maximumConcurrency: 1, timeoutMs: 50 },
       (_url, init) => {
         fetches += 1;
-        return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+        const startedAt = performance.now();
+        return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => {
+          requestLifetimes.push(performance.now() - startedAt);
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true }));
       },
     );
     const outcomes = await Effect.runPromise(Effect.all([
@@ -412,7 +417,10 @@ describe("Ministral OpenRouter adapter", () => {
       Effect.result(adapter.complete(request)),
     ], { concurrency: 2 }));
     expect(outcomes.every((outcome) => outcome._tag === "Failure")).toBe(true);
-    expect(fetches).toBe(1);
+    expect(fetches).toBeGreaterThanOrEqual(1);
+    expect(fetches).toBeLessThanOrEqual(2);
+    expect(requestLifetimes).toHaveLength(fetches);
+    if (requestLifetimes.length === 2) expect(requestLifetimes[1]).toBeLessThan(25);
   });
 
   it("rejects a completed stream with no content or tool call", () => {

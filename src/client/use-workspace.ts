@@ -76,7 +76,7 @@ export function useWorkspace() {
   const pendingRef = useRef(new Map<string, PendingCommand>());
   const turnStartedRef = useRef(new Map<string, number>());
   const auditPageRef = useRef<AuditPage | null>(null);
-  const pendingAuditPagesRef = useRef(new Map<string, { readonly append: boolean }>());
+  const pendingAuditPagesRef = useRef(new Map<string, { readonly appendAttempts: boolean; readonly appendMarkers: boolean }>());
   const pendingAuditDetailsRef = useRef(new Map<string, { readonly attemptId: string; readonly append: boolean }>());
   stateRef.current = snapshot;
   auditPageRef.current = auditPage;
@@ -135,9 +135,22 @@ export function useWorkspace() {
         if (pending === undefined) return;
         pendingAuditPagesRef.current.delete(message.requestId);
         const current = auditPageRef.current;
-        const next = pending.append && current !== null && current.query === message.page.query
-          ? { ...message.page, attempts: [...current.attempts, ...message.page.attempts.filter((attempt) => !current.attempts.some((existing) => existing.id === attempt.id))] }
-          : message.page;
+        const next = current !== null && current.query === message.page.query && pending.appendAttempts
+          ? {
+              ...message.page,
+              attempts: [...current.attempts, ...message.page.attempts.filter((attempt) => !current.attempts.some((existing) => existing.id === attempt.id))],
+              markers: current.markers,
+              markerNextCursor: current.markerNextCursor,
+            }
+          : current !== null && current.query === message.page.query && pending.appendMarkers
+            ? {
+                ...message.page,
+                attempts: current.attempts,
+                total: current.total,
+                nextCursor: current.nextCursor,
+                markers: [...current.markers, ...message.page.markers.filter((marker) => !current.markers.some((existing) => existing.id === marker.id))],
+              }
+            : message.page;
         auditPageRef.current = next;
         setAuditPage(next);
         setAuditLoading(false);
@@ -239,14 +252,14 @@ export function useWorkspace() {
     socket.send(JSON.stringify({ type: "command_visible_ack", requestId: requestId(), generation, receiptId, durationMs }));
   }, []);
 
-  const requestAudit = useCallback((query: string, cursor: string | null = null, append = false) => {
+  const requestAudit = useCallback((query: string, cursor: string | null = null, appendAttempts = false, markerCursor: string | null = null, appendMarkers = false) => {
     const socket = socketRef.current;
     if (socket === null || socket.readyState !== WebSocket.OPEN) { setAuditError("Reconnect to load Audit."); return; }
     const id = requestId();
-    pendingAuditPagesRef.current.set(id, { append });
+    pendingAuditPagesRef.current.set(id, { appendAttempts, appendMarkers });
     setAuditLoading(true);
     setAuditError(null);
-    socket.send(JSON.stringify({ type: "request_audit", requestId: id, query, cursor }));
+    socket.send(JSON.stringify({ type: "request_audit", requestId: id, query, cursor, markerCursor }));
   }, []);
 
   const requestAuditDetail = useCallback((attemptId: string, applicationCursor: string | null = null, append = false) => {

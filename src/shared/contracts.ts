@@ -136,6 +136,7 @@ export const CommandVisibleAcknowledgementMessage = Schema.Struct({
 export const AuditListRequest = Schema.Struct({
   type: Schema.Literal("request_audit"), requestId: Schema.String,
   query: Schema.String.check(Schema.isMaxLength(160)), cursor: Schema.NullOr(Schema.String.check(Schema.isMaxLength(512))),
+  markerCursor: Schema.NullOr(Schema.String.check(Schema.isMaxLength(512))),
 });
 export const AuditDetailRequest = Schema.Struct({
   type: Schema.Literal("request_audit_detail"), requestId: Schema.String,
@@ -197,6 +198,7 @@ export type AuditApplicationRecord = typeof AuditApplicationRecord.Type;
 export const AuditPage = Schema.Struct({
   query: Schema.String, attempts: Schema.Array(AuditAttemptSummary), total: Schema.Int,
   nextCursor: Schema.NullOr(Schema.String), markers: Schema.Array(AuditApplicationRecord),
+  markerNextCursor: Schema.NullOr(Schema.String),
 });
 export type AuditPage = typeof AuditPage.Type;
 export const AuditAttemptDetail = Schema.Struct({

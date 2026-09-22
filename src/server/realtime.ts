@@ -344,7 +344,7 @@ export const runWorkspaceSocket = (
           yield* hub.bindClient(identity.id, connectionId, message.value.clientId);
         }
         if (message.value.type === "request_audit") {
-          const page = yield* Effect.result(repository.auditPage(identity, message.value.query, message.value.cursor));
+          const page = yield* Effect.result(repository.auditPage(identity, message.value.query, message.value.cursor, 12, message.value.markerCursor));
           if (page._tag === "Failure") yield* send({ type: "error", requestId: message.value.requestId, code: page.failure.code, message: page.failure.message });
           else yield* send({ type: "audit_page", requestId: message.value.requestId, page: page.success });
           return;

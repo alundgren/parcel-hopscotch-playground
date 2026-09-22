@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 
 const sendMessage = async (page: import("@playwright/test").Page, message: string, captureTurn = false) => {
   const input = page.getByRole("textbox", { name: "Message", exact: true });
@@ -9,7 +10,7 @@ const sendMessage = async (page: import("@playwright/test").Page, message: strin
 };
 
 test("searches retained attempts, opens every detail tab, live-updates, and keeps reset history", async ({ page, context }, testInfo) => {
-  const runKey = `${testInfo.project.name}-${testInfo.retry}`;
+  const runKey = `${testInfo.project.name}-${testInfo.retry}-${randomUUID().slice(0, 8)}`;
   const marker = `trace-${runKey}-flow`;
   await page.goto("/");
   await expect(page.getByTestId("connection-status")).toContainText("Connected");
@@ -24,6 +25,7 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   await page.getByRole("button", { name: "Audit", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Audit" })).toBeVisible();
   const search = page.getByLabel("Search audit history");
+  await expect(search).toHaveAttribute("maxlength", "160");
   await search.fill(marker);
   await expect(page.locator("[data-attempt-id]")).toHaveCount(5);
   await expect(page.getByText("Fixture", { exact: true }).first()).toBeVisible();
@@ -33,6 +35,7 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   await expect(page.locator(".audit-count")).toHaveText(`${initialTotal + 6} requests`);
   await expect(page.locator("[data-attempt-id]")).toHaveCount(Math.min(initialTotal + 6, 12));
   await page.screenshot({ path: testInfo.outputPath(`actual-audit-collapsed-${testInfo.project.name}.png`), fullPage: true });
+  await page.waitForTimeout(1_200);
 
   await search.fill(`${turnId!} typesafe/jev-1.13 success`);
   await expect(page.getByText(/matching request/)).toBeVisible();
@@ -55,14 +58,23 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   await expect(page.getByText("Server turn", { exact: false })).toBeVisible();
   await expect(page.getByText("Browser send to completed work", { exact: false })).toBeVisible();
   await expect(page.getByText("Input unknown tokens", { exact: false })).toBeVisible();
-  await page.getByRole("tab", { name: "Response" }).click();
+  await expect(page.getByRole("button", { name: `Show all attempts for turn ${turnId!}` })).toBeVisible();
+  await page.getByRole("tab", { name: "Request" }).focus();
+  await page.getByRole("tab", { name: "Request" }).press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Response" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("tabpanel")).toContainText(/content|answers/);
   await page.getByRole("tab", { name: "Application result" }).click();
   await expect(page.getByRole("tabpanel")).toContainText(/Completed agent turn|Check replacement consent|completed/i);
   await page.getByRole("tabpanel").locator("summary").filter({ hasText: "Classify a note" }).click();
   await expect(page.getByRole("tabpanel")).toContainText('"result"');
+  await expect(page.getByRole("tabpanel")).toContainText(`Turn ${turnId!}`);
   await page.locator(".audit-scroll").evaluate((element) => { element.scrollLeft = 0; });
   await page.screenshot({ path: testInfo.outputPath(`actual-audit-expanded-${testInfo.project.name}.png`), fullPage: true });
+  await page.waitForTimeout(1_200);
+  await page.getByRole("button", { name: `Show all attempts for turn ${turnId!}` }).click();
+  await expect(search).toHaveValue(turnId!);
+  await expect(page.locator(".audit-view")).toHaveAttribute("data-audit-query", turnId!);
+  await expect(page.locator("[data-attempt-id]")).toHaveCount(3);
 
   const liveMarker = `fresh-${runKey}-trace`;
   await search.fill(liveMarker);

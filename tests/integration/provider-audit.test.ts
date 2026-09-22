@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Deferred, Effect, Fiber } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AuditAttemptDetail, ServerMessage } from "../../src/shared/contracts";
+import type { AuditAttemptDetail, AuditPage, ServerMessage } from "../../src/shared/contracts";
 import type { ServerConfig } from "../../src/server/config";
 import { resolveIdentity, type RequestIdentity } from "../../src/server/identity";
 import {
@@ -67,6 +67,40 @@ const result = (overrides: Partial<MinistralResult["metadata"]> = {}): Ministral
 const chatRequest = { messages: [{ role: "user" as const, content: "Check order BB-1042." }] };
 
 describe("provider attempt audit", () => {
+  it("upgrades retained audit records before creating correlation indexes", async () => {
+    const filename = await workspace();
+    const owner = identity("legacy-audit-owner@example.test");
+    const database = new DatabaseSync(filename);
+    database.exec(`
+      CREATE TABLE users (id TEXT PRIMARY KEY, identity_digest TEXT NOT NULL UNIQUE, generation INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+      CREATE TABLE audit_records (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, generation INTEGER NOT NULL, kind TEXT NOT NULL,
+        body_json TEXT NOT NULL, completed_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+    `);
+    database.prepare("INSERT INTO users (id, identity_digest, generation, created_at) VALUES (?, ?, 1, ?)").run(owner.id, owner.digest, "2025-01-01T00:00:00.000Z");
+    database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, 1, 'tool', ?, ?)").run("legacy-record", owner.id, JSON.stringify({ retained: true }), "2025-01-01T00:00:01.000Z");
+    database.prepare("INSERT INTO audit_records (id, user_id, generation, kind, body_json, completed_at) VALUES (?, ?, 2, 'reset', ?, ?)").run("legacy-reset", owner.id, JSON.stringify({ fromGeneration: 1, receiptId: "legacy-receipt" }), "2025-01-01T00:00:02.000Z");
+    database.close();
+
+    const legacySearch = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      yield* repository.snapshot(owner);
+      return yield* repository.auditPage(owner, "Workspace reset");
+    }));
+
+    const upgraded = new DatabaseSync(filename);
+    const columns = upgraded.prepare("PRAGMA table_info(audit_records)").all() as Array<{ name: string }>;
+    const indexes = upgraded.prepare("PRAGMA index_list(audit_records)").all() as Array<{ name: string }>;
+    const legacy = upgraded.prepare("SELECT body_json FROM audit_records WHERE id = 'legacy-record'").get() as { body_json: string } | undefined;
+    upgraded.close();
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["turn_id", "proposal_id", "receipt_id"]));
+    expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining(["audit_records_user_turn", "audit_records_user_proposal"]));
+    expect(legacy?.body_json).toBe(JSON.stringify({ retained: true }));
+    expect(legacySearch.markers.map((marker) => marker.id)).toEqual(["legacy-reset"]);
+  });
+
   it("records a successful attempt for its internal owner and excludes credentials and login identity", async () => {
     const filename = await workspace();
     const owner = identity("audit-owner@example.test");
@@ -468,9 +502,10 @@ describe("provider attempt audit", () => {
       const first = yield* repository.auditPage(owner, "", null, 7);
       const second = yield* repository.auditPage(owner, "", first.nextCursor, 7);
       const searched = yield* repository.auditPage(owner, "retained café", null, 7);
+      const ninthUnmatchedTerm = yield* repository.auditPage(owner, "retained café one two three four five six nevermatch", null, 7);
       const ownerDetail = yield* repository.auditDetail(owner, ids[0]!);
       const denied = yield* repository.auditDetail(other, ids[0]!);
-      return { first, second, searched, ownerDetail, denied };
+      return { first, second, searched, ninthUnmatchedTerm, ownerDetail, denied };
     }));
 
     expect(created.first).toMatchObject({ total: 15, attempts: expect.any(Array), nextCursor: expect.any(String) });
@@ -478,6 +513,7 @@ describe("provider attempt audit", () => {
     expect(created.second.attempts).toHaveLength(7);
     expect(new Set([...created.first.attempts, ...created.second.attempts].map((attempt) => attempt.id)).size).toBe(14);
     expect(created.searched.attempts).toHaveLength(1);
+    expect(created.ninthUnmatchedTerm.attempts).toHaveLength(0);
     expect(created.searched.attempts[0]).toMatchObject({ requestLabel: "old retained needle café", mode: "live", costUsd: 0.000000001 });
     expect(created.ownerDetail?.requestBytes).toBe(new TextEncoder().encode(JSON.stringify({ messages: [{ role: "user", content: "old retained needle café" }] })).byteLength);
     expect(created.denied).toBeNull();
@@ -516,10 +552,22 @@ describe("provider attempt audit", () => {
       yield* repository.recordCommandMeasurement(owner, 1, accepted.receipt.id, 18.5);
       const resetProposal = yield* repository.prepareReset(owner, 1);
       yield* repository.accept(owner, 1, resetProposal.id, "retained-reset-key", "reset-request");
-      return { page: yield* repository.auditPage(owner, "Prepare BB-1042"), resetPage: yield* repository.auditPage(owner, ""), detail: yield* repository.auditDetail(owner, started.id) };
+      return {
+        page: yield* repository.auditPage(owner, "Prepare BB-1042"),
+        byAttemptId: yield* repository.auditPage(owner, started.id),
+        byFixtureLabel: yield* repository.auditPage(owner, "Fixture"),
+        byUnknownLabel: yield* repository.auditPage(owner, "Unknown"),
+        byReceiptLinkedMetric: yield* repository.auditPage(owner, "accept_to_visible_commit"),
+        resetPage: yield* repository.auditPage(owner, ""),
+        detail: yield* repository.auditDetail(owner, started.id),
+      };
     }));
 
     expect(result.page.attempts).toHaveLength(1);
+    expect(result.byAttemptId.attempts).toHaveLength(1);
+    expect(result.byFixtureLabel.attempts).toHaveLength(1);
+    expect(result.byUnknownLabel.attempts).toHaveLength(1);
+    expect(result.byReceiptLinkedMetric.attempts).toHaveLength(1);
     expect(result.resetPage.markers).toHaveLength(1);
     expect(result.detail?.application.map((record) => [record.kind, record.outcome])).toEqual(expect.arrayContaining([
       ["tool", "completed"], ["ui", "applied"], ["receipt", "accepted"], ["command_visible", "complete"],
@@ -530,6 +578,36 @@ describe("provider attempt audit", () => {
     const bodyText = result.detail?.application.map((record) => record.bodyText).join("\n") ?? "";
     expect(bodyText).toContain('"state": "prepared"');
     expect(bodyText).toContain('"state": "accepted"');
+  });
+
+  it("pages every retained reset marker", async () => {
+    const filename = await workspace();
+    const owner = identity("reset-pages@example.test");
+    const pages = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      yield* repository.snapshot(owner);
+      let generation = 1;
+      for (let index = 0; index < 21; index += 1) {
+        const proposal = yield* repository.prepareReset(owner, generation);
+        const committed = yield* repository.accept(owner, generation, proposal.id, `reset-page-${index}`, `reset-request-${index}`);
+        generation = committed.snapshot.generation;
+      }
+      const retained: Array<AuditPage> = [];
+      let cursor: string | null = null;
+      do {
+        const page: AuditPage = yield* repository.auditPage(owner, "", null, 12, cursor);
+        retained.push(page);
+        cursor = page.markerNextCursor;
+      } while (cursor !== null);
+      return retained;
+    }));
+
+    const markers = pages.flatMap((page) => page.markers);
+    expect(pages.length).toBe(3);
+    expect(pages.every((page) => page.markers.length <= 8)).toBe(true);
+    expect(markers).toHaveLength(21);
+    expect(new Set(markers.map((marker) => marker.id)).size).toBe(21);
+    expect(markers.every((marker) => marker.kind === "reset")).toBe(true);
   });
 
   it("pages every correlated application result and keeps terminal timing independent of the current page", async () => {

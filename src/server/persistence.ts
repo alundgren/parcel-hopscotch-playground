@@ -93,7 +93,7 @@ export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly completeAgentMeasurement: (identity: RequestIdentity, generation: number, turnId: string, durationMs: number) => Effect.Effect<void, WorkspaceCommandError>;
   readonly recordCommandMeasurement: (identity: RequestIdentity, generation: number, receiptId: string, durationMs: number) => Effect.Effect<void, WorkspaceCommandError>;
   readonly recordApplicationAudit: (identity: RequestIdentity, generation: number, input: ApplicationAuditInput) => Effect.Effect<void, WorkspaceCommandError>;
-  readonly auditPage: (identity: RequestIdentity, query: string, cursor?: string | null, limit?: number) => Effect.Effect<AuditPage, WorkspaceCommandError>;
+  readonly auditPage: (identity: RequestIdentity, query: string, cursor?: string | null, limit?: number, markerCursor?: string | null) => Effect.Effect<AuditPage, WorkspaceCommandError>;
   readonly auditDetail: (identity: RequestIdentity, attemptId: string, applicationCursor?: string | null) => Effect.Effect<AuditAttemptDetail | null, WorkspaceCommandError>;
   readonly markAgentConnectionIncomplete: (identity: RequestIdentity, connectionId: string) => Effect.Effect<void>;
   readonly recoverAgentTurns: () => Effect.Effect<number>;
@@ -167,8 +167,6 @@ const migrate = (database: DatabaseSync) => {
       attempt_id TEXT, proposal_id TEXT, receipt_id TEXT, body_json TEXT NOT NULL, completed_at TEXT NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS audit_records_user_turn ON audit_records (user_id, turn_id, completed_at);
-    CREATE INDEX IF NOT EXISTS audit_records_user_proposal ON audit_records (user_id, proposal_id, completed_at);
     CREATE TABLE IF NOT EXISTS provider_attempts (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -1094,25 +1092,39 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     if (owner === undefined) throw fail("audit_owner_missing", "The audit owner is unavailable.");
     insertAudit(owner.id, generation, input);
   }));
-  const auditPage: WorkspaceRepositoryService["auditPage"] = (identity, rawQuery, rawCursor = null, requestedLimit = 12) => command(() => {
+  const auditPage: WorkspaceRepositoryService["auditPage"] = (identity, rawQuery, rawCursor = null, requestedLimit = 12, rawMarkerCursor = null) => command(() => {
     const owner = database.prepare("SELECT id FROM users WHERE id = ? AND identity_digest = ?").get(identity.id, identity.digest) as { id: string } | undefined;
-    if (owner === undefined) return { query: rawQuery.trim(), attempts: [], total: 0, nextCursor: null, markers: [] };
+    if (owner === undefined) return { query: rawQuery.trim(), attempts: [], total: 0, nextCursor: null, markers: [], markerNextCursor: null };
     const query = rawQuery.trim().replace(/\s+/g, " ").slice(0, 160);
-    const terms = query.toLocaleLowerCase("en").split(/\s+/).filter(Boolean).slice(0, 8);
+    const terms = [...new Set(query.toLocaleLowerCase("en").split(/\s+/).filter(Boolean))];
     const where: Array<string> = ["pa.user_id = ?"];
     const parameters: Array<string | number> = [owner.id];
     const escapeLike = (term: string) => term.replace(/[\\%_]/g, (value) => `\\${value}`);
     for (const term of terms) {
       where.push(`lower(
-        pa.request_id || ' ' || pa.turn_id || ' ' || pa.kind || ' ' || pa.mode || ' ' ||
+        pa.id || ' ' || pa.request_id || ' ' || pa.turn_id || ' ' || pa.kind || ' ' || pa.mode || ' ' ||
+        CASE pa.mode WHEN 'scripted' THEN 'fixture fixture run' WHEN 'live' THEN 'live run' ELSE 'provider unavailable' END || ' ' ||
         pa.provider || ' ' || pa.requested_model || ' ' || coalesce(pa.actual_model, '') || ' ' ||
-        pa.outcome || ' ' || coalesce(pa.error_code, '') || ' ' || coalesce(pa.error_message, '') || ' ' ||
+        pa.outcome || ' ' || CASE pa.outcome WHEN 'success' THEN 'completed' WHEN 'credits_exhausted' THEN 'credits exhausted' WHEN 'timeout' THEN 'timed out' WHEN 'cancelled' THEN 'cancelled' WHEN 'interrupted' THEN 'interrupted' ELSE pa.outcome END || ' ' ||
+        CASE WHEN pa.duration_ms IS NULL THEN 'unknown' ELSE CAST(pa.duration_ms AS TEXT) || ' ms' END || ' ' ||
+        CASE WHEN pa.total_tokens IS NULL THEN 'unknown' ELSE CAST(pa.total_tokens AS TEXT) END || ' ' ||
+        CASE WHEN pa.mode = 'scripted' THEN 'fixture' WHEN pa.cost_usd IS NULL THEN 'unknown' WHEN pa.cost_usd = 0 THEN '$0' ELSE CAST(pa.cost_usd AS TEXT) END || ' ' ||
+        coalesce(pa.error_code, '') || ' ' || coalesce(pa.error_message, '') || ' ' ||
         pa.request_json || ' ' || coalesce(pa.response_json, '') || ' ' ||
-        coalesce((SELECT group_concat(ar.label || ' ' || ar.outcome || ' ' || ar.body_json, ' ')
+        coalesce((SELECT group_concat(ar.id || ' ' || ar.label || ' ' || ar.outcome || ' ' ||
+          coalesce(ar.request_id, '') || ' ' || coalesce(ar.turn_id, '') || ' ' ||
+          coalesce(ar.proposal_id, '') || ' ' || coalesce(ar.receipt_id, '') || ' ' || ar.body_json, ' ')
           FROM audit_records ar WHERE ar.user_id = pa.user_id AND ar.kind <> 'provider' AND (
             ar.turn_id = pa.turn_id OR ar.attempt_id = pa.id OR
             ar.proposal_id IN (SELECT linked.proposal_id FROM audit_records linked
-              WHERE linked.user_id = pa.user_id AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL)
+              WHERE linked.user_id = pa.user_id AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL) OR
+            ar.receipt_id IN (
+              SELECT accepted.receipt_id FROM audit_records accepted
+              WHERE accepted.user_id = pa.user_id AND accepted.proposal_id IN (
+                SELECT linked.proposal_id FROM audit_records linked
+                WHERE linked.user_id = pa.user_id AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL
+              ) AND accepted.receipt_id IS NOT NULL
+            )
           )), '')
       ) LIKE ? ESCAPE '\\'`);
       parameters.push(`%${escapeLike(term)}%`);
@@ -1144,15 +1156,31 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     const markerWhere = ["user_id = ?", "kind = 'reset'"];
     const markerParameters: Array<string> = [owner.id];
     for (const term of terms) {
-      markerWhere.push("lower(label || ' ' || outcome || ' ' || body_json) LIKE ? ESCAPE '\\'");
+      markerWhere.push("lower('workspace reset ' || kind || ' ' || label || ' ' || outcome || ' ' || body_json) LIKE ? ESCAPE '\\'");
       markerParameters.push(`%${escapeLike(term)}%`);
     }
+    let markerCursor: { readonly completedAt: string; readonly id: string } | null = null;
+    if (rawMarkerCursor !== null) {
+      try {
+        const decoded = JSON.parse(Buffer.from(rawMarkerCursor, "base64url").toString("utf8")) as { completedAt?: unknown; id?: unknown };
+        if (typeof decoded.completedAt === "string" && typeof decoded.id === "string") markerCursor = { completedAt: decoded.completedAt, id: decoded.id };
+      } catch {
+        throw fail("invalid_audit_cursor", "That reset-history page is no longer available. Reload Audit.");
+      }
+      if (markerCursor === null) throw fail("invalid_audit_cursor", "That reset-history page is no longer available. Reload Audit.");
+      markerWhere.push("(completed_at < ? OR (completed_at = ? AND id < ?))");
+      markerParameters.push(markerCursor.completedAt, markerCursor.completedAt, markerCursor.id);
+    }
+    const markerLimit = 8;
     const markerRows = database.prepare(`SELECT id, kind, label, outcome, request_id, turn_id, proposal_id, receipt_id, body_json, completed_at
-      FROM audit_records WHERE ${markerWhere.join(" AND ")} ORDER BY completed_at DESC, rowid DESC LIMIT 20`).all(...markerParameters) as Array<{
+      FROM audit_records WHERE ${markerWhere.join(" AND ")} ORDER BY completed_at DESC, id DESC LIMIT ?`).all(...markerParameters, markerLimit + 1) as Array<{
         id: string; kind: "reset"; label: string; outcome: string; request_id: string | null;
         turn_id: string | null; proposal_id: string | null; receipt_id: string | null;
         body_json: string; completed_at: string;
       }>;
+    const hasMoreMarkers = markerRows.length > markerLimit;
+    const selectedMarkers = markerRows.slice(0, markerLimit);
+    const lastMarker = selectedMarkers.at(-1);
     return {
       query,
       attempts: selected.map(publicAttemptSummary),
@@ -1160,12 +1188,15 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
       nextCursor: hasMore && last !== undefined
         ? Buffer.from(JSON.stringify({ startedAt: last.started_at, id: last.id }), "utf8").toString("base64url")
         : null,
-      markers: markerRows.map((record) => ({
+      markers: selectedMarkers.map((record) => ({
         id: record.id, kind: record.kind, label: record.label, outcome: record.outcome,
         occurredAt: record.completed_at, requestId: record.request_id, turnId: record.turn_id,
         proposalId: record.proposal_id, receiptId: record.receipt_id,
         bodyText: auditJson(JSON.parse(record.body_json), 640).text,
       })),
+      markerNextCursor: hasMoreMarkers && lastMarker !== undefined
+        ? Buffer.from(JSON.stringify({ completedAt: lastMarker.completed_at, id: lastMarker.id }), "utf8").toString("base64url")
+        : null,
     };
   });
   const auditDetail: WorkspaceRepositoryService["auditDetail"] = (identity, attemptId, rawApplicationCursor = null) => command(() => {
