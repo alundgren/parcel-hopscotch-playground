@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Deferred, Effect, Fiber } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ServerMessage } from "../../src/shared/contracts";
+import type { AuditAttemptDetail, ServerMessage } from "../../src/shared/contracts";
 import type { ServerConfig } from "../../src/server/config";
 import { resolveIdentity, type RequestIdentity } from "../../src/server/identity";
 import {
@@ -293,7 +293,7 @@ describe("provider attempt audit", () => {
     expect(attempt?.durationMs).toBe(7);
     expect(Object.keys(notification as Record<string, unknown>).sort()).toEqual([
       "actualModel", "costUsd", "durationMs", "generation", "id", "inputTokens", "kind",
-      "outcome", "outputTokens", "provider", "requestedModel",
+      "mode", "outcome", "outputTokens", "provider", "requestedModel",
     ]);
     expect(notification).not.toHaveProperty("request");
     expect(notification).not.toHaveProperty("response");
@@ -437,5 +437,155 @@ describe("provider attempt audit", () => {
     const rows = database.prepare("SELECT COUNT(*) AS count FROM provider_attempts WHERE user_id = ?").get(owner.id) as { count: number };
     database.close();
     expect(Number(rows.count)).toBe(1);
+  });
+
+  it("searches before pagination, preserves UTF-8 bytes and tiny live cost, and rejects another owner's detail lookup", async () => {
+    const filename = await workspace();
+    const owner = identity("audit-page-owner@example.test");
+    const other = identity("audit-page-other@example.test");
+    const created = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      yield* (yield* WorkspaceRepository).snapshot(other);
+      const repository = yield* WorkspaceRepository;
+      yield* repository.snapshot(owner);
+      const ids: Array<string> = [];
+      for (let index = 0; index < 15; index += 1) {
+        const request = { messages: [{ role: "user", content: index === 0 ? "old retained needle café" : `request ${index}` }] };
+        const started = yield* repository.startProviderAttempt({
+          identity: owner, generation: 1, requestId: `page-${String(index).padStart(2, "0")}`,
+          turnId: `turn-page-${String(index).padStart(2, "0")}`, kind: "chat", mode: "live",
+          provider: "OpenRouter", model: "mistralai/ministral-3b-2512", request,
+          requestBytes: new TextEncoder().encode(JSON.stringify(request)).byteLength,
+        });
+        yield* repository.finishProviderAttempt(owner, started.id, {
+          outcome: "success", provider: "Mistral", actualModel: "mistralai/ministral-3b-2512",
+          providerRequestId: null, generationId: null, response: { content: "✓" },
+          responseBytes: new TextEncoder().encode(JSON.stringify({ content: "✓" })).byteLength,
+          inputTokens: 2, outputTokens: 1, totalTokens: 3, costUsd: index === 0 ? 0.000000001 : null,
+          errorCode: null, errorMessage: null, retryCount: 0, durationMs: 4,
+        });
+        ids.push(started.id);
+      }
+      const first = yield* repository.auditPage(owner, "", null, 7);
+      const second = yield* repository.auditPage(owner, "", first.nextCursor, 7);
+      const searched = yield* repository.auditPage(owner, "retained café", null, 7);
+      const ownerDetail = yield* repository.auditDetail(owner, ids[0]!);
+      const denied = yield* repository.auditDetail(other, ids[0]!);
+      return { first, second, searched, ownerDetail, denied };
+    }));
+
+    expect(created.first).toMatchObject({ total: 15, attempts: expect.any(Array), nextCursor: expect.any(String) });
+    expect(created.first.attempts).toHaveLength(7);
+    expect(created.second.attempts).toHaveLength(7);
+    expect(new Set([...created.first.attempts, ...created.second.attempts].map((attempt) => attempt.id)).size).toBe(14);
+    expect(created.searched.attempts).toHaveLength(1);
+    expect(created.searched.attempts[0]).toMatchObject({ requestLabel: "old retained needle café", mode: "live", costUsd: 0.000000001 });
+    expect(created.ownerDetail?.requestBytes).toBe(new TextEncoder().encode(JSON.stringify({ messages: [{ role: "user", content: "old retained needle café" }] })).byteLength);
+    expect(created.denied).toBeNull();
+  });
+
+  it("retains redacted tool, UI, terminal and accepted-receipt outcomes after reset", async () => {
+    const filename = await workspace();
+    const owner = identity("retained-results@example.test");
+    const canary = "synthetic-cookie-secret";
+    const result = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      yield* repository.snapshot(owner);
+      const request = { messages: [{ role: "user", content: "Prepare BB-1042" }] };
+      const started = yield* repository.startProviderAttempt({
+        identity: owner, generation: 1, requestId: "prepare-request", turnId: "turn-retained-results",
+        kind: "chat", mode: "scripted", provider: "OpenRouter", model: "mistralai/ministral-3b-2512",
+        request, requestBytes: new TextEncoder().encode(JSON.stringify(request)).byteLength,
+      });
+      yield* repository.finishProviderAttempt(owner, started.id, {
+        outcome: "success", provider: "Scripted", actualModel: "scripted/mistralai/ministral-3b-2512",
+        providerRequestId: null, generationId: null, response: { tool: "prepareAddressCorrection" }, responseBytes: 35,
+        inputTokens: null, outputTokens: null, totalTokens: null, costUsd: 0,
+        errorCode: null, errorMessage: null, retryCount: 0, durationMs: 3,
+      });
+      const proposal = yield* repository.prepareResolution(owner, 1, "BB-1042");
+      yield* repository.recordApplicationAudit(owner, 1, {
+        kind: "tool", label: "Prepare an address correction", outcome: "completed",
+        requestId: "call-prepare", turnId: "turn-retained-results", proposalId: proposal.id,
+        body: { state: "prepared", arguments: { orderId: "BB-1042", cookie: canary }, result: proposal },
+      });
+      yield* repository.recordApplicationAudit(owner, 1, {
+        kind: "ui", label: "Show proposal", outcome: "applied", requestId: "operation-1",
+        turnId: "turn-retained-results", proposalId: proposal.id, body: { acknowledgement: "applied" },
+      });
+      const accepted = yield* repository.accept(owner, 1, proposal.id, "retained-result-key", "accept-request");
+      yield* repository.recordCommandMeasurement(owner, 1, accepted.receipt.id, 18.5);
+      const resetProposal = yield* repository.prepareReset(owner, 1);
+      yield* repository.accept(owner, 1, resetProposal.id, "retained-reset-key", "reset-request");
+      return { page: yield* repository.auditPage(owner, "Prepare BB-1042"), resetPage: yield* repository.auditPage(owner, ""), detail: yield* repository.auditDetail(owner, started.id) };
+    }));
+
+    expect(result.page.attempts).toHaveLength(1);
+    expect(result.resetPage.markers).toHaveLength(1);
+    expect(result.detail?.application.map((record) => [record.kind, record.outcome])).toEqual(expect.arrayContaining([
+      ["tool", "completed"], ["ui", "applied"], ["receipt", "accepted"], ["command_visible", "complete"],
+    ]));
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(canary);
+    expect(serialized).toContain("[redacted]");
+    const bodyText = result.detail?.application.map((record) => record.bodyText).join("\n") ?? "";
+    expect(bodyText).toContain('"state": "prepared"');
+    expect(bodyText).toContain('"state": "accepted"');
+  });
+
+  it("pages every correlated application result and keeps terminal timing independent of the current page", async () => {
+    const filename = await workspace();
+    const owner = identity("paged-results@example.test");
+    const result = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      yield* repository.snapshot(owner);
+      const request = { messages: [{ role: "user", content: "Inspect a long tool trace" }] };
+      const started = yield* repository.startProviderAttempt({
+        identity: owner, generation: 1, requestId: "paged-results", turnId: "turn-paged-results",
+        kind: "chat", mode: "scripted", provider: "OpenRouter", model: "mistralai/ministral-3b-2512",
+        request, requestBytes: new TextEncoder().encode(JSON.stringify(request)).byteLength,
+      });
+      yield* repository.finishProviderAttempt(owner, started.id, {
+        outcome: "success", provider: "Scripted", actualModel: "scripted/mistralai/ministral-3b-2512",
+        providerRequestId: null, generationId: null, response: { content: "done" }, responseBytes: 18,
+        inputTokens: null, outputTokens: null, totalTokens: null, costUsd: 0,
+        errorCode: null, errorMessage: null, retryCount: 0, durationMs: 2,
+      });
+      for (let index = 0; index < 16; index += 1) {
+        yield* repository.recordApplicationAudit(owner, 1, {
+          kind: "tool", label: `Tool result ${index}`, outcome: "completed",
+          requestId: `tool-${index}`, turnId: "turn-paged-results", body: { index },
+        });
+      }
+      yield* repository.recordApplicationAudit(owner, 1, {
+        kind: "turn", label: "Completed agent turn", outcome: "complete", requestId: "paged-results",
+        turnId: "turn-paged-results", body: { completeDurationMs: 246.5, measurement: "complete", serverDurationMs: 125.25, serverMeasurement: "complete" },
+      });
+      for (let index = 0; index < 5; index += 1) {
+        yield* repository.recordApplicationAudit(owner, 1, {
+          kind: "ui", label: `UI result ${index}`, outcome: "applied",
+          requestId: `ui-${index}`, turnId: "turn-paged-results", body: { index },
+        });
+      }
+      const pages: Array<AuditAttemptDetail> = [];
+      let cursor: string | null = null;
+      do {
+        const page: AuditAttemptDetail | null = yield* repository.auditDetail(owner, started.id, cursor);
+        if (page === null) throw new Error("Expected owner-scoped audit detail.");
+        pages.push(page);
+        cursor = page.applicationNextCursor;
+      } while (cursor !== null);
+      return pages;
+    }));
+
+    const records = result.flatMap((page) => page.application);
+    expect(result.length).toBe(3);
+    expect(result.every((page) => page.application.length <= 8)).toBe(true);
+    expect(records).toHaveLength(22);
+    expect(new Set(records.map((record) => record.id)).size).toBe(22);
+    expect(records.map((record) => record.label)).toEqual(expect.arrayContaining([
+      "Tool result 0", "Tool result 15", "Completed agent turn", "UI result 0", "UI result 4",
+    ]));
+    expect(result.every((page) => page.browserDurationMs === 246.5 && page.browserMeasurement === "complete")).toBe(true);
+    expect(result.every((page) => page.serverTurnDurationMs === 125.25 && page.serverTurnMeasurement === "complete")).toBe(true);
   });
 });

@@ -76,12 +76,9 @@ export const toolHandlers: ToolHandlers = {
     if (args.requestId === undefined && args.turnId === undefined) {
       throw new ToolExecutionError("invalid_arguments", "Provide a requestId or turnId.");
     }
-    const attempts = await Effect.runPromise(context.repository.providerAttempts(context.identity, 50));
+    const attempts = await Effect.runPromise(context.repository.providerAttempts(context.identity, 12, args));
     return {
       attempts: attempts
-        .filter((attempt) => args.requestId === undefined || attempt.requestId === args.requestId)
-        .filter((attempt) => args.turnId === undefined || attempt.turnId === args.turnId)
-        .slice(0, 12)
         .map((attempt) => ({
           id: attempt.id,
           requestId: attempt.requestId,

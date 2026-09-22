@@ -1,0 +1,100 @@
+import { expect, test } from "@playwright/test";
+
+const sendMessage = async (page: import("@playwright/test").Page, message: string, captureTurn = false) => {
+  const input = page.getByRole("textbox", { name: "Message", exact: true });
+  await input.fill(message);
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0, { timeout: 15_000 });
+  return captureTurn ? await page.locator('[data-chat-role="user"]').last().getAttribute("data-chat-turn") : null;
+};
+
+test("searches retained attempts, opens every detail tab, live-updates, and keeps reset history", async ({ page, context }, testInfo) => {
+  const runKey = `${testInfo.project.name}-${testInfo.retry}`;
+  const marker = `trace-${runKey}-flow`;
+  await page.goto("/");
+  await expect(page.getByTestId("connection-status")).toContainText("Connected");
+  await page.getByRole("button", { name: "Audit", exact: true }).click();
+  await expect(page.locator(".audit-count")).toHaveText(/^\d+ requests?$/);
+  const initialTotal = Number((await page.locator(".audit-count").textContent())!.split(" ")[0]);
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+
+  const turnId = await sendMessage(page, `Classify note ${marker}: the carrier scan is delayed.`, true);
+  expect(turnId).not.toBeNull();
+  await sendMessage(page, `Classify note comparison-${runKey}-row: the customer declined a substitution.`);
+  await page.getByRole("button", { name: "Audit", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Audit" })).toBeVisible();
+  const search = page.getByLabel("Search audit history");
+  await search.fill(marker);
+  await expect(page.locator("[data-attempt-id]")).toHaveCount(5);
+  await expect(page.getByText("Fixture", { exact: true }).first()).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(page.viewportSize()!.width);
+  await page.getByRole("button", { name: "Clear audit search" }).click();
+  await expect(page.locator(".audit-view")).toHaveAttribute("data-audit-query", "");
+  await expect(page.locator(".audit-count")).toHaveText(`${initialTotal + 6} requests`);
+  await expect(page.locator("[data-attempt-id]")).toHaveCount(Math.min(initialTotal + 6, 12));
+  await page.screenshot({ path: testInfo.outputPath(`actual-audit-collapsed-${testInfo.project.name}.png`), fullPage: true });
+
+  await search.fill(`${turnId!} typesafe/jev-1.13 success`);
+  await expect(page.getByText(/matching request/)).toBeVisible();
+  await expect(page.locator("[data-attempt-id]")).toHaveCount(1);
+  const detailAttemptId = await page.locator("[data-attempt-id]").getAttribute("data-attempt-id");
+  expect(detailAttemptId).not.toBeNull();
+  await search.fill(turnId!);
+  await expect(page.locator("[data-attempt-id]")).toHaveCount(3);
+  await search.fill("no-such-audit-payload");
+  await expect(page.getByText("No requests match this filter.")).toBeVisible();
+  await page.getByRole("button", { name: "Clear search" }).click();
+  await expect(search).toHaveValue("");
+  await expect(page.locator(".audit-view")).toHaveAttribute("data-audit-query", "");
+  await expect(page.locator(".audit-count")).toHaveText(`${initialTotal + 6} requests`);
+  await expect(page.locator("[data-attempt-id]")).toHaveCount(Math.min(initialTotal + 6, 12));
+
+  const selected = page.locator(`[data-attempt-id="${detailAttemptId!}"]`);
+  await selected.getByRole("button").click();
+  await expect(page.getByRole("tab", { name: "Request" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("Server turn", { exact: false })).toBeVisible();
+  await expect(page.getByText("Browser send to completed work", { exact: false })).toBeVisible();
+  await expect(page.getByText("Input unknown tokens", { exact: false })).toBeVisible();
+  await page.getByRole("tab", { name: "Response" }).click();
+  await expect(page.getByRole("tabpanel")).toContainText(/content|answers/);
+  await page.getByRole("tab", { name: "Application result" }).click();
+  await expect(page.getByRole("tabpanel")).toContainText(/Completed agent turn|Check replacement consent|completed/i);
+  await page.getByRole("tabpanel").locator("summary").filter({ hasText: "Classify a note" }).click();
+  await expect(page.getByRole("tabpanel")).toContainText('"result"');
+  await page.locator(".audit-scroll").evaluate((element) => { element.scrollLeft = 0; });
+  await page.screenshot({ path: testInfo.outputPath(`actual-audit-expanded-${testInfo.project.name}.png`), fullPage: true });
+
+  const liveMarker = `fresh-${runKey}-trace`;
+  await search.fill(liveMarker);
+  await expect(page.getByText("No requests match this filter.")).toBeVisible();
+  const producer = await context.newPage();
+  await producer.goto("/");
+  await expect(producer.getByTestId("connection-status")).toContainText("Connected");
+  const liveTurnId = await sendMessage(producer, `Classify note ${liveMarker}: a carrier scan is missing.`, true);
+  expect(liveTurnId).not.toBeNull();
+  await expect(page.locator("[data-attempt-id]")).toHaveCount(3, { timeout: 15_000 });
+  await search.fill(liveTurnId!);
+  await expect(page.locator("[data-attempt-id]")).toHaveCount(3, { timeout: 15_000 });
+  await producer.close();
+  await page.getByRole("button", { name: "Clear audit search" }).click();
+
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await sendMessage(page, '<img src=x onerror="window.__auditXss=1"> inspect BB-1042');
+  await page.getByRole("button", { name: "Audit", exact: true }).click();
+  await search.fill("<img onerror");
+  await expect(page.locator("[data-attempt-id]").first()).toContainText("<img");
+  expect(await page.evaluate(() => (window as typeof window & { __auditXss?: number }).__auditXss)).toBeUndefined();
+  await page.getByRole("button", { name: "Clear audit search" }).click();
+  await expect(page.locator(".audit-view")).toHaveAttribute("data-audit-query", "");
+  await expect(page.locator(".audit-count")).toHaveText(/^\d+ requests?$/);
+  const resetMarkers = page.locator("[data-reset-id]");
+  const resetIds = await resetMarkers.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-reset-id")));
+
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await page.getByRole("button", { name: "Reset my demo" }).click();
+  await page.getByRole("button", { name: "Reset my demo" }).click();
+  await expect(page.getByText("Fresh workspace ready")).toBeVisible();
+  await page.getByRole("button", { name: "Audit", exact: true }).click();
+  await expect.poll(async () => (await resetMarkers.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-reset-id")))).some((id) => !resetIds.includes(id))).toBe(true);
+  await expect(page.locator("[data-attempt-id]").first()).toBeVisible();
+});

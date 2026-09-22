@@ -390,7 +390,7 @@ describe("reviewed fulfilment commands", () => {
     const audit = database.prepare("SELECT kind, generation FROM audit_records WHERE user_id = ? ORDER BY completed_at").all(first.id) as Array<{ kind: string; generation: number }>;
     const cleared = database.prepare("SELECT (SELECT COUNT(*) FROM chat_messages WHERE user_id = ?) AS chat, (SELECT COUNT(*) FROM tutorial_state WHERE user_id = ?) AS tutorial, (SELECT COUNT(*) FROM proposals WHERE user_id = ?) AS proposals, (SELECT COUNT(*) FROM receipts WHERE user_id = ?) AS receipts, (SELECT COUNT(*) FROM scenario_events WHERE user_id = ?) AS events").get(first.id, first.id, first.id, first.id, first.id) as { chat: number; tutorial: number; proposals: number; receipts: number; events: number };
     database.close();
-    expect(audit).toEqual([{ kind: "command", generation: 1 }, { kind: "reset", generation: 2 }]);
+    expect(audit).toEqual([{ kind: "receipt", generation: 1 }, { kind: "reset", generation: 2 }]);
     expect(cleared).toEqual({ chat: 0, tutorial: 0, proposals: 0, receipts: 1, events: 1 });
     expect(accepted.receipt.id).not.toBe(reset.receipt.id);
   });
