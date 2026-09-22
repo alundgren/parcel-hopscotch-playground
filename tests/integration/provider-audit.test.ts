@@ -483,7 +483,7 @@ describe("provider attempt audit", () => {
       yield* repository.snapshot(owner);
       const ids: Array<string> = [];
       for (let index = 0; index < 15; index += 1) {
-        const request = { messages: [{ role: "user", content: index === 0 ? "old retained needle café" : `request ${index}` }] };
+        const request = { messages: [{ role: "user", content: index === 0 ? "retained café one two three four five six" : `request ${index}` }] };
         const started = yield* repository.startProviderAttempt({
           identity: owner, generation: 1, requestId: `page-${String(index).padStart(2, "0")}`,
           turnId: `turn-page-${String(index).padStart(2, "0")}`, kind: "chat", mode: "live",
@@ -514,9 +514,79 @@ describe("provider attempt audit", () => {
     expect(new Set([...created.first.attempts, ...created.second.attempts].map((attempt) => attempt.id)).size).toBe(14);
     expect(created.searched.attempts).toHaveLength(1);
     expect(created.ninthUnmatchedTerm.attempts).toHaveLength(0);
-    expect(created.searched.attempts[0]).toMatchObject({ requestLabel: "old retained needle café", mode: "live", costUsd: 0.000000001 });
-    expect(created.ownerDetail?.requestBytes).toBe(new TextEncoder().encode(JSON.stringify({ messages: [{ role: "user", content: "old retained needle café" }] })).byteLength);
+    expect(created.searched.attempts[0]).toMatchObject({ requestLabel: "retained café one two three four five six", mode: "live", costUsd: 0.000000001 });
+    expect(created.ownerDetail?.requestBytes).toBe(new TextEncoder().encode(JSON.stringify({ messages: [{ role: "user", content: "retained café one two three four five six" }] })).byteLength);
     expect(created.denied).toBeNull();
+  });
+
+  it("searches every exposed attempt, detail, application and reset field", async () => {
+    const filename = await workspace();
+    const owner = identity("complete-search@example.test");
+    const result = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      yield* repository.snapshot(owner);
+      const started = yield* repository.startProviderAttempt({
+        identity: owner, generation: 1, requestId: "request-visible-901", turnId: "turn-visible-902",
+        kind: "decisions", mode: "live", provider: "OpenRouter", model: "requested/model-visible-904",
+        request: { state: { note: "note-visible-905" } }, requestBytes: 24681,
+      });
+      const finished = yield* repository.finishProviderAttempt(owner, started.id, {
+        outcome: "error", provider: "ProviderVisible903", actualModel: "actual/model-visible-906",
+        providerRequestId: "provider-request-visible-907", generationId: "provider-generation-visible-908",
+        response: { content: "response-visible-909" }, responseBytes: 13579,
+        inputTokens: 4321, outputTokens: 8765, totalTokens: 13086, costUsd: 0.000000001,
+        errorCode: "error-code-visible-910", errorMessage: "error-message-visible-911", retryCount: 7, durationMs: 1250,
+      });
+      yield* repository.recordApplicationAudit(owner, 1, {
+        kind: "tool", label: "application-label-visible-912", outcome: "application-outcome-visible-913",
+        requestId: "application-request-visible-914", turnId: started.turnId, attemptId: started.id,
+        proposalId: "application-proposal-visible-915", receiptId: "application-receipt-visible-916",
+        body: { result: "application-body-visible-917" },
+      });
+      yield* repository.recordApplicationAudit(owner, 1, {
+        kind: "reset", label: "reset-label-visible-918", outcome: "reset-outcome-visible-919",
+        requestId: "reset-request-visible-920", turnId: "reset-turn-visible-921",
+        proposalId: "reset-proposal-visible-922", receiptId: "reset-receipt-visible-923",
+        body: { result: "reset-body-visible-924" },
+      });
+      const detail = yield* repository.auditDetail(owner, started.id);
+      if (detail === null) throw new Error("Expected searchable detail.");
+      const application = detail.application.find((record) => record.label === "application-label-visible-912");
+      if (application === undefined) throw new Error("Expected searchable application record.");
+      const markerPage = yield* repository.auditPage(owner, "");
+      const marker = markerPage.markers.find((record) => record.label === "reset-label-visible-918");
+      if (marker === undefined) throw new Error("Expected searchable reset marker.");
+      const attemptQueries = [
+        started.id, "generation 1", started.requestId, started.turnId, "decisions", "live run",
+        "ProviderVisible903", "requested/model-visible-904", "actual/model-visible-906",
+        "Classify note-visible-905", started.startedAt, finished.completedAt!, "1250", "1.25 s",
+        "4321", "4,321", "8765", "8,765", "13086", "13,086", "24681", "24,681", "13579", "13,579", "$0.000000001", "Error",
+        "error-code-visible-910", "error-message-visible-911", "retries 7",
+        "provider-request-visible-907", "provider-generation-visible-908", "response-visible-909",
+      ];
+      const applicationQueries = [
+        application.id, application.kind, application.label, application.outcome, application.occurredAt,
+        application.requestId!, application.turnId!, application.proposalId!, application.receiptId!, "application-body-visible-917",
+      ];
+      const markerQueries = [
+        marker.id, marker.kind, marker.label, marker.outcome, marker.occurredAt,
+        marker.requestId!, marker.turnId!, marker.proposalId!, marker.receiptId!, "reset-body-visible-924", "Workspace reset",
+      ];
+      const attemptMatches: Array<boolean> = [];
+      for (const query of [...attemptQueries, ...applicationQueries]) {
+        const page = yield* repository.auditPage(owner, query);
+        attemptMatches.push(page.attempts.some((attempt) => attempt.id === started.id));
+      }
+      const markerMatches: Array<boolean> = [];
+      for (const query of markerQueries) {
+        const page = yield* repository.auditPage(owner, query);
+        markerMatches.push(page.markers.some((record) => record.id === marker.id));
+      }
+      return { attemptMatches, markerMatches };
+    }));
+
+    expect(result.attemptMatches.every(Boolean)).toBe(true);
+    expect(result.markerMatches.every(Boolean)).toBe(true);
   });
 
   it("retains redacted tool, UI, terminal and accepted-receipt outcomes after reset", async () => {
@@ -538,6 +608,17 @@ describe("provider attempt audit", () => {
         inputTokens: null, outputTokens: null, totalTokens: null, costUsd: 0,
         errorCode: null, errorMessage: null, retryCount: 0, durationMs: 3,
       });
+      const metadataAttempt = yield* repository.startProviderAttempt({
+        identity: owner, generation: 1, requestId: "metadata-request", turnId: "turn-metadata",
+        kind: "chat", mode: "live", provider: "OpenRouter", model: "mistralai/ministral-3b-2512",
+        request: { messages: [{ role: "user", content: "Inspect visible metadata" }] }, requestBytes: 24681,
+      });
+      yield* repository.finishProviderAttempt(owner, metadataAttempt.id, {
+        outcome: "success", provider: "Mistral", actualModel: "mistralai/ministral-3b-2512",
+        providerRequestId: null, generationId: null, response: { content: "done" }, responseBytes: 13579,
+        inputTokens: 4321, outputTokens: 8765, totalTokens: 13086, costUsd: 0.000000001,
+        errorCode: null, errorMessage: null, retryCount: 0, durationMs: 7,
+      });
       const proposal = yield* repository.prepareResolution(owner, 1, "BB-1042");
       yield* repository.recordApplicationAudit(owner, 1, {
         kind: "tool", label: "Prepare an address correction", outcome: "completed",
@@ -558,6 +639,11 @@ describe("provider attempt audit", () => {
         byFixtureLabel: yield* repository.auditPage(owner, "Fixture"),
         byUnknownLabel: yield* repository.auditPage(owner, "Unknown"),
         byReceiptLinkedMetric: yield* repository.auditPage(owner, "accept_to_visible_commit"),
+        byInputTokens: yield* repository.auditPage(owner, "4321"),
+        byOutputTokens: yield* repository.auditPage(owner, "8765"),
+        byRequestBytes: yield* repository.auditPage(owner, "24681"),
+        byResponseBytes: yield* repository.auditPage(owner, "13579"),
+        byDisplayedCost: yield* repository.auditPage(owner, "$0.000000001"),
         resetPage: yield* repository.auditPage(owner, ""),
         detail: yield* repository.auditDetail(owner, started.id),
       };
@@ -568,6 +654,11 @@ describe("provider attempt audit", () => {
     expect(result.byFixtureLabel.attempts).toHaveLength(1);
     expect(result.byUnknownLabel.attempts).toHaveLength(1);
     expect(result.byReceiptLinkedMetric.attempts).toHaveLength(1);
+    expect(result.byInputTokens.attempts.map((attempt) => attempt.id)).toEqual([result.byDisplayedCost.attempts[0]?.id]);
+    expect(result.byOutputTokens.attempts.map((attempt) => attempt.id)).toEqual([result.byDisplayedCost.attempts[0]?.id]);
+    expect(result.byRequestBytes.attempts.map((attempt) => attempt.id)).toEqual([result.byDisplayedCost.attempts[0]?.id]);
+    expect(result.byResponseBytes.attempts.map((attempt) => attempt.id)).toEqual([result.byDisplayedCost.attempts[0]?.id]);
+    expect(result.byDisplayedCost.attempts).toHaveLength(1);
     expect(result.resetPage.markers).toHaveLength(1);
     expect(result.detail?.application.map((record) => [record.kind, record.outcome])).toEqual(expect.arrayContaining([
       ["tool", "completed"], ["ui", "applied"], ["receipt", "accepted"], ["command_visible", "complete"],

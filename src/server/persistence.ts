@@ -1102,16 +1102,33 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     const escapeLike = (term: string) => term.replace(/[\\%_]/g, (value) => `\\${value}`);
     for (const term of terms) {
       where.push(`lower(
-        pa.id || ' ' || pa.request_id || ' ' || pa.turn_id || ' ' || pa.kind || ' ' || pa.mode || ' ' ||
+        pa.id || ' generation ' || CAST(pa.generation AS TEXT) || ' ' || pa.request_id || ' ' || pa.turn_id || ' ' || pa.kind || ' ' || pa.mode || ' ' ||
         CASE pa.mode WHEN 'scripted' THEN 'fixture fixture run' WHEN 'live' THEN 'live run' ELSE 'provider unavailable' END || ' ' ||
         pa.provider || ' ' || pa.requested_model || ' ' || coalesce(pa.actual_model, '') || ' ' ||
+        coalesce(pa.provider_request_id, '') || ' ' || coalesce(pa.generation_id, '') || ' ' ||
+        pa.started_at || ' ' || coalesce(pa.completed_at, '') || ' ' ||
+        CASE
+          WHEN json_type(pa.request_json, '$.state.note') = 'text' OR json_type(pa.request_json, '$.state.evidence') = 'text'
+            THEN CASE pa.kind WHEN 'decisions' THEN 'classify' ELSE 'request' END
+          WHEN json_type(pa.request_json, '$.state.order.id') = 'text' THEN 'decision'
+          ELSE ''
+        END || ' ' ||
         pa.outcome || ' ' || CASE pa.outcome WHEN 'success' THEN 'completed' WHEN 'credits_exhausted' THEN 'credits exhausted' WHEN 'timeout' THEN 'timed out' WHEN 'cancelled' THEN 'cancelled' WHEN 'interrupted' THEN 'interrupted' ELSE pa.outcome END || ' ' ||
-        CASE WHEN pa.duration_ms IS NULL THEN 'unknown' ELSE CAST(pa.duration_ms AS TEXT) || ' ms' END || ' ' ||
-        CASE WHEN pa.total_tokens IS NULL THEN 'unknown' ELSE CAST(pa.total_tokens AS TEXT) END || ' ' ||
-        CASE WHEN pa.mode = 'scripted' THEN 'fixture' WHEN pa.cost_usd IS NULL THEN 'unknown' WHEN pa.cost_usd = 0 THEN '$0' ELSE CAST(pa.cost_usd AS TEXT) END || ' ' ||
+        CASE WHEN pa.duration_ms IS NULL THEN 'unknown'
+          WHEN pa.duration_ms < 1000 THEN CAST(pa.duration_ms AS TEXT) || ' ms ' || printf('%.0f ms', pa.duration_ms)
+          WHEN pa.duration_ms < 10000 THEN CAST(pa.duration_ms AS TEXT) || ' ms ' || printf('%.2f s', pa.duration_ms / 1000.0)
+          ELSE CAST(pa.duration_ms AS TEXT) || ' ms ' || printf('%.1f s', pa.duration_ms / 1000.0)
+        END || ' ' ||
+        'input ' || coalesce(CAST(pa.input_tokens AS TEXT) || ' ' || printf('%,d', pa.input_tokens), 'unknown') || ' tokens ' ||
+        'output ' || coalesce(CAST(pa.output_tokens AS TEXT) || ' ' || printf('%,d', pa.output_tokens), 'unknown') || ' tokens ' ||
+        'total ' || coalesce(CAST(pa.total_tokens AS TEXT) || ' ' || printf('%,d', pa.total_tokens), 'unknown') || ' tokens ' ||
+        'request ' || CAST(pa.request_bytes AS TEXT) || ' ' || printf('%,d', pa.request_bytes) || ' utf-8 b ' ||
+        'response ' || coalesce(CAST(pa.response_bytes AS TEXT) || ' ' || printf('%,d', pa.response_bytes), 'unknown') || ' utf-8 b ' ||
+        CASE WHEN pa.mode = 'scripted' THEN 'fixture' WHEN pa.cost_usd IS NULL THEN 'unknown' WHEN pa.cost_usd = 0 THEN '$0' ELSE '$' || rtrim(rtrim(printf('%.9f', pa.cost_usd), '0'), '.') END || ' ' ||
+        'retries ' || CAST(pa.retry_count AS TEXT) || ' ' ||
         coalesce(pa.error_code, '') || ' ' || coalesce(pa.error_message, '') || ' ' ||
         pa.request_json || ' ' || coalesce(pa.response_json, '') || ' ' ||
-        coalesce((SELECT group_concat(ar.id || ' ' || ar.label || ' ' || ar.outcome || ' ' ||
+        coalesce((SELECT group_concat(ar.id || ' ' || ar.kind || ' ' || ar.label || ' ' || ar.outcome || ' ' || ar.completed_at || ' ' ||
           coalesce(ar.request_id, '') || ' ' || coalesce(ar.turn_id, '') || ' ' ||
           coalesce(ar.proposal_id, '') || ' ' || coalesce(ar.receipt_id, '') || ' ' || ar.body_json, ' ')
           FROM audit_records ar WHERE ar.user_id = pa.user_id AND ar.kind <> 'provider' AND (
@@ -1156,7 +1173,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     const markerWhere = ["user_id = ?", "kind = 'reset'"];
     const markerParameters: Array<string> = [owner.id];
     for (const term of terms) {
-      markerWhere.push("lower('workspace reset ' || kind || ' ' || label || ' ' || outcome || ' ' || body_json) LIKE ? ESCAPE '\\'");
+      markerWhere.push("lower('workspace reset ' || id || ' ' || kind || ' ' || label || ' ' || outcome || ' ' || completed_at || ' ' || coalesce(request_id, '') || ' ' || coalesce(turn_id, '') || ' ' || coalesce(proposal_id, '') || ' ' || coalesce(receipt_id, '') || ' ' || body_json) LIKE ? ESCAPE '\\'");
       markerParameters.push(`%${escapeLike(term)}%`);
     }
     let markerCursor: { readonly completedAt: string; readonly id: string } | null = null;
