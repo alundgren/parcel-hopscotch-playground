@@ -134,6 +134,17 @@ function EmptyRoute({ title, text }: { title: string; text: string }) { return <
 
 type CatalogueCategory = "All" | ToolCategory;
 interface ScenarioNotice { readonly scenario: ExploreScenarioId; readonly message: string; readonly offerReset: boolean }
+const effectLabels: Readonly<Record<string, string>> = {
+  read_workspace: "Read the current workspace",
+  read_audit: "Read owner-scoped Audit history",
+  navigate_registered_view: "Open a registered application view",
+  highlight_registered_target: "Highlight a registered application target",
+  start_bounded_tutorial: "Start a bounded tutorial",
+  stop_tutorial_guidance: "Dismiss the current tutorial",
+  create_reviewed_proposal: "Prepare a proposal for human review",
+  provider_classification: "Run a bounded provider classification",
+  read_only: "Leave workspace data unchanged",
+};
 
 function ExploreView({ entries, connected, busy, scenarioActive, notice, runScenario, cancelScenario, prepareReset, advanceScenario }: {
   entries: ReadonlyArray<ToolCatalogueEntry>;
@@ -203,7 +214,7 @@ function ExploreView({ entries, connected, busy, scenarioActive, notice, runScen
         <div className="tool-columns" aria-hidden="true"><span>Tool</span><span>What it does</span><span>Type</span><span /></div>
         <div className="tool-list">{matches.map((entry) => <details className="tool-row" key={entry.id} data-tool-id={entry.id}>
           <summary><span><span className="tool-name">{entry.purpose}</span><code className="tool-id">{entry.id}</code></span><span className="tool-description">{entry.description}</span><span className="tool-kind">{entry.category}</span><span className="tool-chevron" aria-hidden="true">›</span></summary>
-          <div className="tool-detail"><p className="tool-effect">Allowed effects: {entry.allowedEffects.join(", ")}.</p><p className="tool-example-note">Illustrative examples validated against the runtime schemas.</p><div className="tool-examples"><div><div className="code-label"><span>Example call</span><Button variant="link" onClick={() => void copyExample(entry)} aria-label={`Copy example call for ${entry.id}`}>Copy</Button></div><pre id={`tool-call-${entry.id}`}>{JSON.stringify({ tool: entry.id, arguments: entry.example.arguments }, null, 2)}</pre></div><div><div className="code-label"><span>Example result</span></div><pre>{JSON.stringify(entry.example.result, null, 2)}</pre></div></div></div>
+          <div className="tool-detail"><p className="tool-effect">What it may do: {entry.allowedEffects.map((effect) => effectLabels[effect] ?? effect).join("; ")}.</p><p className="tool-example-note">Illustrative examples validated against the runtime schemas.</p><div className="tool-examples"><div><div className="code-label"><span>Example call</span><Button variant="link" onClick={() => void copyExample(entry)} aria-label={`Copy example call for ${entry.id}`}>Copy</Button></div><pre id={`tool-call-${entry.id}`}>{JSON.stringify({ tool: entry.id, arguments: entry.example.arguments }, null, 2)}</pre></div><div><div className="code-label"><span>Example result</span></div><pre>{JSON.stringify(entry.example.result, null, 2)}</pre></div></div></div>
         </details>)}</div>
       </>}
       <div className="copy-status" role="status">{copyStatus}</div>

@@ -11,7 +11,7 @@ const EmptyInput = Schema.Record(Schema.String, Schema.Never);
 const OrderIdInput = Schema.Struct({ orderId: Identifier });
 const ProposalOutput = ReviewedProposalSchema;
 const ResultMessage = Schema.Struct({ ok: Schema.Boolean, message: Schema.String });
-const exampleChange = {
+const addressExample = {
   orderId: "BB-1042",
   family: "address",
   before: "14 Willow Lane, Bath BA1 2AB",
@@ -19,15 +19,39 @@ const exampleChange = {
   effect: "Ship to the customer-confirmed street number.",
   expectedVersion: 1,
 } as const;
-const proposalExample = (kind: "resolution" | "batch" | "undo" | "reset", title: string) => ({
+const substitutionExample = {
+  orderId: "BB-1051",
+  family: "substitution",
+  before: "Blue stoneware mug, quantity 1, £24.00",
+  after: "Sage stoneware mug, quantity 1, £24.00",
+  effect: "Reserve one sage mug at no price change.",
+  expectedVersion: 1,
+} as const;
+const bundleExample = {
+  orderId: "BB-1090",
+  family: "bundle",
+  before: "Matched candle pair with gift sleeve",
+  after: "Matched candle pair confirmed",
+  effect: "Confirm the complete matched bundle.",
+  expectedVersion: 1,
+} as const;
+const undoExample = {
+  orderId: "BB-1051",
+  family: "substitution",
+  before: "Sage stoneware mug, quantity 1, £24.00",
+  after: "Blue stoneware mug, quantity 1, £24.00",
+  effect: "Restore the accepted replacement to the original blue mug.",
+  expectedVersion: 2,
+} as const;
+const proposalExample = (kind: "resolution" | "batch" | "undo" | "reset", title: string, change?: typeof addressExample | typeof substitutionExample | typeof bundleExample | typeof undoExample) => ({
   id: "proposal_example",
   generation: 1,
   kind,
   title,
   ready: true,
-  changes: kind === "reset" ? [] : [exampleChange],
+  changes: change === undefined ? [] : [change],
   omissions: [],
-  effects: kind === "reset" ? ["Restore the seeded workspace and keep Audit history."] : [exampleChange.effect],
+  effects: kind === "reset" ? ["Restore the seeded workspace and keep Audit history."] : change === undefined ? [] : [change.effect],
   createdAt: "2026-09-21T09:14:00.000Z",
 });
 
@@ -102,7 +126,7 @@ const specs = {
   groupOrders: {
     description: "Group the current queue by status or exception family.",
     category: "Read", purpose: "Group the work", allowedEffects: ["read_workspace"],
-    example: { arguments: { groupBy: "status" }, result: { groups: [{ name: "ready", count: 2, orderIds: ["BB-1051"] }] } },
+    example: { arguments: { groupBy: "status" }, result: { groups: [{ name: "ready", count: 1, orderIds: ["BB-1051"] }] } },
     input: Schema.Struct({ groupBy: Schema.Literals(["status", "family"]) }),
     output: Schema.Struct({ groups: Schema.Array(Schema.Struct({ name: Schema.String, count: Schema.Int, orderIds: Schema.Array(Schema.String) })) }),
   },
@@ -140,30 +164,30 @@ const specs = {
   prepareAddressCorrection: {
     description: "Prepare the authoritative address correction for an address order. The user must accept the preview.",
     category: "Prepare", purpose: "Prepare an address correction", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: { orderId: "BB-1042" }, result: proposalExample("resolution", "Check address") },
+    example: { arguments: { orderId: "BB-1042" }, result: proposalExample("resolution", "Check address", addressExample) },
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareSubstitution: {
     description: "Prepare the authoritative substitution for a substitution order. Stock and consent remain application checks.",
     category: "Prepare", purpose: "Prepare a substitution", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: { orderId: "BB-1051" }, result: proposalExample("resolution", "Review replacement") },
+    example: { arguments: { orderId: "BB-1051" }, result: proposalExample("resolution", "Review replacement", substitutionExample) },
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareResolution: {
     description: "Prepare the existing authoritative resolution for any conventional exception family. The user must accept the preview.",
     category: "Prepare", purpose: "Prepare a reviewed resolution", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: { orderId: "BB-1090" }, result: proposalExample("resolution", "Review resolution") },
+    example: { arguments: { orderId: "BB-1090" }, result: proposalExample("resolution", "Review resolution", bundleExample) },
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareBatch: {
     description: "Prepare all currently eligible ready orders with exact inclusions and omissions. The user must accept the preview.",
     category: "Prepare", purpose: "Prepare a batch", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: {}, result: proposalExample("batch", "Review 1 change") }, input: EmptyInput, output: ProposalOutput,
+    example: { arguments: {}, result: proposalExample("batch", "Review 1 change", substitutionExample) }, input: EmptyInput, output: ProposalOutput,
   },
   prepareUndo: {
     description: "Prepare a checked reversal of a current user's receipt. The user must accept the preview.",
     category: "Prepare", purpose: "Prepare an undo", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: { receiptId: "receipt_example" }, result: proposalExample("undo", "Undo 1 accepted change") },
+    example: { arguments: { receiptId: "receipt_example" }, result: proposalExample("undo", "Undo 1 accepted change", undoExample) },
     input: Schema.Struct({ receiptId: Identifier }), output: ProposalOutput,
   },
   classifyNote: {

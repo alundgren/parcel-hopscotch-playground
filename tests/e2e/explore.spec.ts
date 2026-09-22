@@ -82,10 +82,50 @@ test("launches the orientation, tutorial, and batch scenarios through working fl
 });
 
 test("opens the exact Jev trace and recovers completed examples through review", async ({ page }) => {
+  await page.addInitScript(() => {
+    const nativeAddEventListener = WebSocket.prototype.addEventListener as (this: WebSocket, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) => void;
+    const nativeSend = WebSocket.prototype.send;
+    const testWindow = window as unknown as { __agentCompleteAcks: number };
+    testWindow.__agentCompleteAcks = 0;
+    WebSocket.prototype.send = function (data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+      try {
+        const message = JSON.parse(String(data)) as { type?: string };
+        if (message.type === "agent_complete_ack") testWindow.__agentCompleteAcks += 1;
+      } catch {
+        // Non-JSON frames are not application acknowledgements.
+      }
+      return nativeSend.call(this, data);
+    };
+    WebSocket.prototype.addEventListener = function (this: WebSocket, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+      if (type !== "message" || listener === null) return nativeAddEventListener.call(this, type, listener, options);
+      const delayedListener: EventListener = (event) => {
+        let delay = 0;
+        try {
+          const message = JSON.parse(String((event as MessageEvent).data)) as { type?: string; result?: { kind?: string } };
+          if (message.type === "command_result" && message.result?.kind === "explore") delay = 1_500;
+          if (message.type === "audit_detail") delay = 1_500;
+        } catch {
+          // Non-JSON frames remain immediate.
+        }
+        window.setTimeout(() => {
+          if (typeof listener === "function") listener.call(this, event);
+          else listener.handleEvent(event);
+        }, delay);
+      };
+      return nativeAddEventListener.call(this, type, delayedListener, options);
+    } as typeof WebSocket.prototype.addEventListener;
+  });
   await resetWorkspace(page);
   await openExplore(page);
   await page.getByRole("button", { name: "View in Audit: Test a judgement" }).click();
+  await page.getByRole("button", { name: "Work", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Decisions" })).toBeVisible();
+  await page.waitForTimeout(900);
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __agentCompleteAcks: number }).__agentCompleteAcks)).toBe(0);
   await expect(page.getByRole("heading", { name: "Audit" })).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __agentCompleteAcks: number }).__agentCompleteAcks)).toBe(0);
   const expanded = page.locator('.audit-summary[aria-hidden="false"]');
   const row = page.locator(".audit-summary[data-attempt-id]").first();
   await expect(row).toBeVisible();
@@ -96,10 +136,12 @@ test("opens the exact Jev trace and recovers completed examples through review",
   await expect(page.locator(`#audit-detail-${attemptId}`)).toContainText("Check replacement consent");
   await expect(page.locator(`#audit-detail-${attemptId}`)).toContainText("Fixture run");
   await expect(page.locator(`#audit-detail-${attemptId}`)).toContainText("Browser send to completed work");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __agentCompleteAcks: number }).__agentCompleteAcks)).toBe(1);
   await expect(expanded).toHaveCount(0);
   await pause(page);
 
   await page.getByRole("button", { name: "Work", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0);
   await page.locator("#target-order-BB-1042").click();
   await page.getByRole("button", { name: "Review change" }).click();
   await page.getByRole("button", { name: "Accept 1 change" }).click();

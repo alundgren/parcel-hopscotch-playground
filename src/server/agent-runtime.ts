@@ -526,7 +526,7 @@ export const makeAgentCoordinator = (
       return { scenario: "consent", outcome: "failed", attemptId: attempt.id, turnId: active.turnId, message };
     }
     waitForFinalRender(active, repository, history);
-    await update(active, repository, history, "waiting_for_ui", "Rendering answer", { finished: true });
+    await update(active, repository, history, "waiting_for_ui", "Rendering Audit result", { finished: true });
     return { scenario: "consent", outcome: "completed", attemptId: attempt.id, turnId: active.turnId, message };
   };
 

@@ -102,7 +102,7 @@ describe("agent runtime", () => {
       expect(attempts[0]).toMatchObject({ id: launch.attemptId, turnId: launch.turnId, kind: "decisions", mode: "scripted", outcome: "success" });
       const detail = yield* repository.auditDetail(identity, launch.attemptId);
       expect(detail?.application.some((record) => record.kind === "tool" && record.turnId === launch.turnId && record.label === "Check replacement consent")).toBe(true);
-      expect((yield* repository.agentTurn(identity, 1, launch.turnId))).toMatchObject({ status: "waiting_for_ui", phase: "Rendering answer" });
+      expect((yield* repository.agentTurn(identity, 1, launch.turnId))).toMatchObject({ status: "waiting_for_ui", phase: "Rendering Audit result" });
       expect(sent.some((message) => message.type === "agent_state")).toBe(true);
       expect(coordinator.acknowledgeComplete(identity, 1, launch.turnId, "connection-explore-consent")).toBe(true);
       yield* repository.completeAgentMeasurement(identity, 1, launch.turnId, 240);
