@@ -1132,15 +1132,15 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
         coalesce((SELECT group_concat(ar.id || ' ' || ar.kind || ' ' || ar.label || ' ' || ar.outcome || ' ' || ar.completed_at || ' ' ||
           coalesce(ar.request_id, '') || ' ' || coalesce(ar.turn_id, '') || ' ' ||
           coalesce(ar.proposal_id, '') || ' ' || coalesce(ar.receipt_id, '') || ' ' || ar.body_json, ' ')
-          FROM audit_records ar WHERE ar.user_id = pa.user_id AND ar.generation = pa.generation AND ar.kind <> 'provider' AND (
-            ar.turn_id = pa.turn_id OR ar.attempt_id = pa.id OR
+          FROM audit_records ar WHERE ar.user_id = pa.user_id AND ar.kind <> 'provider' AND (
+            (ar.turn_id = pa.turn_id AND ar.generation = pa.generation) OR ar.attempt_id = pa.id OR
             ar.proposal_id IN (SELECT linked.proposal_id FROM audit_records linked
-              WHERE linked.user_id = pa.user_id AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL) OR
+              WHERE linked.user_id = pa.user_id AND linked.generation = pa.generation AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL) OR
             ar.receipt_id IN (
               SELECT accepted.receipt_id FROM audit_records accepted
               WHERE accepted.user_id = pa.user_id AND accepted.proposal_id IN (
                 SELECT linked.proposal_id FROM audit_records linked
-                WHERE linked.user_id = pa.user_id AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL
+                WHERE linked.user_id = pa.user_id AND linked.generation = pa.generation AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL
               ) AND accepted.receipt_id IS NOT NULL
             )
           )), '')
@@ -1268,22 +1268,22 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
       if (applicationCursor === null) throw fail("invalid_audit_cursor", "That application-result page is no longer available. Reload the request detail.");
     }
     const applicationParameters: Array<string | number> = [
-      row.user_id, row.generation, row.turn_id, row.id, row.user_id, row.turn_id,
-      row.user_id, row.user_id, row.turn_id,
+      row.user_id, row.turn_id, row.generation, row.id, row.user_id, row.generation, row.turn_id,
+      row.user_id, row.user_id, row.generation, row.turn_id,
     ];
     if (applicationCursor !== null) {
       applicationParameters.push(applicationCursor.completedAt, applicationCursor.completedAt, applicationCursor.id);
     }
     const applicationLimit = 8;
     const records = database.prepare(`SELECT ar.* FROM audit_records ar
-      WHERE ar.user_id = ? AND ar.generation = ? AND ar.kind IN ('tool', 'ui', 'turn', 'proposal', 'receipt', 'reset', 'command_visible')
+      WHERE ar.user_id = ? AND ar.kind IN ('tool', 'ui', 'turn', 'proposal', 'receipt', 'reset', 'command_visible')
       AND (
-        ar.turn_id = ? OR ar.attempt_id = ? OR
-        ar.proposal_id IN (SELECT linked.proposal_id FROM audit_records linked WHERE linked.user_id = ? AND linked.turn_id = ? AND linked.proposal_id IS NOT NULL) OR
+        (ar.turn_id = ? AND ar.generation = ?) OR ar.attempt_id = ? OR
+        ar.proposal_id IN (SELECT linked.proposal_id FROM audit_records linked WHERE linked.user_id = ? AND linked.generation = ? AND linked.turn_id = ? AND linked.proposal_id IS NOT NULL) OR
         ar.receipt_id IN (
           SELECT accepted.receipt_id FROM audit_records accepted
           WHERE accepted.user_id = ? AND accepted.proposal_id IN (
-            SELECT linked.proposal_id FROM audit_records linked WHERE linked.user_id = ? AND linked.turn_id = ? AND linked.proposal_id IS NOT NULL
+            SELECT linked.proposal_id FROM audit_records linked WHERE linked.user_id = ? AND linked.generation = ? AND linked.turn_id = ? AND linked.proposal_id IS NOT NULL
           ) AND accepted.receipt_id IS NOT NULL
         )
       ) ${applicationCursor === null ? "" : "AND (ar.completed_at < ? OR (ar.completed_at = ? AND ar.id < ?))"}

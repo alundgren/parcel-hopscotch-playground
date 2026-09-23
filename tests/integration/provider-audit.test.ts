@@ -811,3 +811,36 @@ it("paginates complete requests, retains totals and measurements through reset, 
   expect(data.afterReset.requests.find((request) => request.turnId === "group-a" && request.generation === 1)).toMatchObject({ durationMs: 4321, outcome: "success", turnCount: 24 });
   expect(data.afterReset.requests.find((request) => request.turnId === "group-a" && request.generation === 2)).toMatchObject({ durationMs: null, outcome: "unknown", turnCount: 1 });
 });
+
+it("keeps reset receipts and visible-commit measurements linked across generations without mixing reused turn IDs", async () => {
+  const filename = await workspace();
+  const owner = identity("reset-request-owner@example.test");
+  const data = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+    const repository = yield* WorkspaceRepository;
+    yield* repository.snapshot(owner);
+    const attempt = yield* repository.startProviderAttempt({ identity: owner, generation: 1, requestId: "reset-call", turnId: "reused-turn",
+      kind: "chat", mode: "scripted", provider: "OpenRouter", model: "test/model", request: { messages: [{ role: "user", content: "Reset my workspace" }] }, requestBytes: 10 });
+    const proposal = yield* repository.prepareReset(owner, 1);
+    yield* repository.recordApplicationAudit(owner, 1, { kind: "tool", label: "prepareReset", outcome: "prepared", turnId: "reused-turn", proposalId: proposal.id, body: {} });
+    const accepted = yield* repository.accept(owner, 1, proposal.id, "reset-proof");
+    yield* repository.recordCommandMeasurement(owner, 2, accepted.receipt.id, 125);
+    const unrelated = yield* repository.prepareResolution(owner, 2, "BB-1042");
+    yield* repository.recordApplicationAudit(owner, 2, { kind: "tool", label: "unrelated-new-generation", outcome: "prepared", turnId: "reused-turn", proposalId: unrelated.id, body: {} });
+    const unrelatedAccepted = yield* repository.accept(owner, 2, unrelated.id, "unrelated-proof");
+    return {
+      attempt, receiptId: accepted.receipt.id,
+      detail: yield* repository.auditDetail(owner, attempt.id),
+      byReceipt: yield* repository.auditPage(owner, accepted.receipt.id),
+      byMeasurement: yield* repository.auditPage(owner, "accept_to_visible_commit"),
+      unrelated: yield* repository.auditPage(owner, unrelatedAccepted.receipt.id),
+      byNewTurnRecord: yield* repository.auditPage(owner, "unrelated-new-generation"),
+    };
+  }));
+  expect(data.detail!.application.map((record) => record.kind)).toEqual(expect.arrayContaining(["tool", "reset", "command_visible"]));
+  expect(data.detail!.application.filter((record) => record.receiptId === data.receiptId)).toHaveLength(2);
+  expect(data.detail!.application.some((record) => record.label === "unrelated-new-generation")).toBe(false);
+  expect(data.byReceipt.requests.map((request) => request.id)).toEqual([data.attempt.id]);
+  expect(data.byMeasurement.requests.map((request) => request.id)).toEqual([data.attempt.id]);
+  expect(data.unrelated.requests).toHaveLength(0);
+  expect(data.byNewTurnRecord.requests).toHaveLength(0);
+});
