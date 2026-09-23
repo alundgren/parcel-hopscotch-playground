@@ -32,8 +32,9 @@ vp run qa -- init --mode live --minutes 120 --budget 0.10
 ```
 
 The result supplies an absolute `runDir` outside the checkout. Substitute it for
-`RUN_DIR` below. Keep `serve` running in a terminal or tool session. It owns the
-disposable loopback server and browser and stops them on its deadline or shutdown.
+`RUN_DIR` below. `serve` starts a background adapter and returns when it is ready.
+That adapter owns the disposable loopback server and browser. It stops them on
+its deadline or when you run `stop`; closing the launching terminal does not stop it.
 
 ```sh
 vp run qa -- serve --run RUN_DIR

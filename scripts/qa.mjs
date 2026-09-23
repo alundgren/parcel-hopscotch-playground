@@ -137,16 +137,25 @@ async function adapterCall(runDir, command, extra = []) {
   return JSON.parse(result.stdout);
 }
 
-async function recordUsage(runDir, status) {
+export function cumulativeUsage(status) {
   if (!status?.usage) throw new Error('Adapter did not return cumulative app usage.');
+  return Object.fromEntries(['knownCostUsd', 'unknownCostRequests', 'inputTokens', 'outputTokens', 'requestCount']
+    .map((key) => [key, status.usage[key]]));
+}
+
+async function recordUsage(runDir, status) {
+  const usage = cumulativeUsage(status);
   const run = await loadRun({ runDir });
-  if (run.status === 'active') return updateRun({ runDir, event: { type: 'usage.record', usage: status.usage } });
+  if (run.status === 'active') return updateRun({ runDir, event: { type: 'usage.record', usage } });
   return run;
 }
 
 export async function sessionStatus(runDir) {
   const adapter = await adapterCall(runDir, 'status');
-  const run = await recordUsage(runDir, adapter);
+  let run = await recordUsage(runDir, adapter);
+  if (run.status === 'active' && run.inFlight && !adapter.busy) {
+    run = await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: cumulativeUsage(adapter) } });
+  }
   return { run, adapter, decision: runDecision(run, { adapterBusy: adapter.busy }) };
 }
 
@@ -193,10 +202,16 @@ export async function browserCommand(runDir, request) {
   try { response = await adapterCall(runDir, 'command', ['--request', JSON.stringify(request)]); }
   catch (error) { failure = error; }
   const durationMs = Math.round(performance.now() - started);
-  const status = await adapterCall(runDir, 'status');
+  let status = await adapterCall(runDir, 'status');
+  const waitUntil = Math.min(Date.now() + 180_000, Date.parse(run.createdAt) + run.settings.durationMinutes * 60_000 + 5000);
+  while (!failure && status.busy && Date.now() < waitUntil) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    status = await adapterCall(runDir, 'status');
+  }
   await recordUsage(runDir, status);
-  if (turnId && !status.busy) {
-    await updateRun({ runDir, event: { type: 'turn.finish', id: turnId, usage: status.usage } });
+  const currentRun = await loadRun({ runDir });
+  if (currentRun.inFlight && !status.busy) {
+    await updateRun({ runDir, event: { type: 'turn.finish', id: currentRun.inFlight.id, usage: cumulativeUsage(status) } });
   }
   const observationId = randomUUID();
   const evidenceName = `browser-${observationId}.json`;
@@ -213,7 +228,7 @@ export async function browserCommand(runDir, request) {
     },
   } });
   if (failure) throw new Error(`Adapter command failed. Observation ${observationId}; local evidence ${evidenceName}.`);
-  return { observationId, response, appUsage: status.usage, adapterCommandDurationMs: durationMs };
+  return { observationId, response, busy: status.busy, appUsage: cumulativeUsage(status), adapterCommandDurationMs: durationMs };
 }
 
 async function serve(runDir) {
@@ -245,7 +260,7 @@ async function stop(runDir, reason) {
   await adapterCall(runDir, 'stop');
   const status = await adapterCall(runDir, 'status');
   let run = await recordUsage(runDir, status);
-  if (run.inFlight) run = await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: status.usage } });
+  if (run.inFlight) run = await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: cumulativeUsage(status) } });
   return closeRun({ runDir, reason });
 }
 
@@ -281,7 +296,7 @@ export async function main(argv = process.argv.slice(2)) {
     case 'resume': {
       const { run, adapter } = await sessionStatus(requireRun());
       if (adapter.busy) throw new Error('An app turn is still running.');
-      if (run.inFlight) await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: adapter.usage } });
+      if (run.inFlight) await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: cumulativeUsage(adapter) } });
       return sessionStatus(runDir);
     }
     case 'stop': return stop(requireRun(), options.reason ?? 'Session completed; unfinished findings retained.');

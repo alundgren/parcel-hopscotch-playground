@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { generatePacket, initialize, main, repositoryRoot } from '../../scripts/qa.mjs';
+import { cumulativeUsage, generatePacket, initialize, main, repositoryRoot } from '../../scripts/qa.mjs';
 import { loadRun, promoteMemory, updateRun } from '../../tools/qa-loop/core.mjs';
 
 async function fixture(t) {
@@ -85,4 +85,10 @@ test('promotion JSON cannot replace the selected run or memory destination', asy
   const input = path.join(data.directory, 'selection.json');
   await writeFile(input, JSON.stringify({ runDir: '/tmp/another-run', memoryFile: '/tmp/other-memory', lessons: [] }));
   await assert.rejects(main(['promote', '--run', created.runDir, '--input', input]), /only selected lessons and regressions/);
+});
+
+test('accounting integration keeps cumulative cost and tokens separate from adapter activity fields', () => {
+  const usage = { knownCostUsd: 0.01, unknownCostRequests: 1, inputTokens: 90, outputTokens: 12, requestCount: 2 };
+  assert.deepEqual(cumulativeUsage({ usage: { ...usage, runningRequests: 0, activeTurns: 0, accountingMode: 'live provider audit' } }), usage);
+  assert.throws(() => cumulativeUsage({}), /cumulative app usage/);
 });
