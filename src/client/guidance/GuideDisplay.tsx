@@ -37,6 +37,7 @@ export function GuideDisplay({ registry, targetId, entityId, title, note, progre
   const revision = useGuideTargetRevision(registry);
   const [position, setPosition] = useState<NotePosition | null>(null);
   const focusedTarget = useRef<string | null>(null);
+  const noteElement = useRef<HTMLElement | null>(null);
   const target = targetId === null ? null : registry.find(targetId, entityId);
   useLayoutEffect(() => {
     if (phase !== "active" || target === null) { setPosition(null); return; }
@@ -51,11 +52,15 @@ export function GuideDisplay({ registry, targetId, entityId, title, note, progre
   useEffect(() => {
     if (phase !== "active" || target === null) return;
     const rect = target.element.getBoundingClientRect();
-    if (rect.top < 0 || rect.bottom > window.innerHeight) target.element.scrollIntoView({ block: "center", behavior: "instant" });
+    const frame = requestAnimationFrame(() => {
+      if (window.matchMedia("(max-width: 760px)").matches) noteElement.current?.scrollIntoView({ block: "start", behavior: "instant" });
+      else if (rect.top < 0 || rect.bottom > window.innerHeight) target.element.scrollIntoView({ block: "center", behavior: "instant" });
+    });
     if (focusedTarget.current !== target.id && (target.element.hasAttribute("tabindex") || target.element.tabIndex >= 0)) {
       focusedTarget.current = target.id;
       target.element.focus({ preventScroll: true });
     }
+    return () => cancelAnimationFrame(frame);
   }, [phase, target?.element]);
   useEffect(() => {
     if (phase !== "active") return;
@@ -76,7 +81,7 @@ export function GuideDisplay({ registry, targetId, entityId, title, note, progre
     {phase === "offered" && <div className="guide-offer" aria-live="polite"><p>{note}</p>{onShow !== undefined && <Button onClick={onShow}>Show me</Button>}</div>}
     {phase === "active" && position !== null && target !== null && <>
       <div className="guide-outline" aria-hidden="true" style={{ top: position.target.top - 4, left: position.target.left - 4, width: position.target.width + 8, height: position.target.height + 8 }} />
-      <aside className="work-note" aria-label="Notes on work" style={{ top: position.top, left: position.left, width: position.width }}>
+      <aside ref={noteElement} className="work-note" aria-label="Notes on work" style={{ top: position.top, left: position.left, width: position.width }}>
         <span className="work-note-label">Notes on work</span>
         <p>{note}</p>
         {actionLabel !== undefined && onAction !== undefined && <Button onClick={onAction}>{actionLabel}</Button>}

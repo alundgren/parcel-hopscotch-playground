@@ -11,7 +11,7 @@ import type { JevAdapter, MinistralAdapter, MinistralResult } from "../../src/se
 import { providerFailure } from "../../src/server/providers/http";
 import type { RealtimeHubService } from "../../src/server/realtime";
 import type { ServerMessage } from "../../src/shared/contracts";
-import { workGuidanceTargets } from "../../src/modules/guidance";
+import { auditGuidanceTargets, workGuidanceTargets } from "../../src/modules/guidance";
 
 const paths: string[] = [];
 const config: ServerConfig = { environment: "test", host: "127.0.0.1", port: 0, publicOrigin: "http://127.0.0.1", databasePath: ":memory:", allowDevelopmentIdentity: true, developmentEmail: "guide@example.test", agentMode: "scripted", openRouterApiKey: null };
@@ -141,7 +141,7 @@ describe("server guidance", () => {
           if (message.type === "agent_ui_operation") {
             expect(coordinator.acknowledgeUi(owner, 1, turnId, message.operation.id, "second-browser", "applied")).toBe(false);
             if (message.operation.kind === "offer_guide") offered += 1;
-            expect(coordinator.acknowledgeUi(owner, 1, turnId, message.operation.id, "first-browser", message.operation.kind === "offer_guide" && offered === 1 ? "stale_context" : "applied", message.operation.kind === "offer_guide" && offered === 1 ? { view: "audit", focus: null, guidance: { visibleTargetIds: [] } } : undefined)).toBe(true);
+            expect(coordinator.acknowledgeUi(owner, 1, turnId, message.operation.id, "first-browser", message.operation.kind === "offer_guide" && offered === 1 ? "stale_context" : "applied", message.operation.kind === "offer_guide" && offered === 1 ? { view: "audit", focus: null, guidance: { visibleTargetIds: [auditGuidanceTargets.search], disabledTargetIds: [auditGuidanceTargets.search] } } : undefined)).toBe(true);
           }
         },
       }));
@@ -159,8 +159,10 @@ describe("server guidance", () => {
       expect(offers[1]?.contextRef).not.toBe(offers[0]?.contextRef);
       expect(operations.every((operation) => operation.turnId === turnId && operation.generation === 1)).toBe(true);
       expect(turn.history.at(-1)?.content).toContain("Show me");
-      const toolResults = turn.history.filter((message) => message.role === "tool").map((message) => JSON.parse(message.content) as { result?: { kind?: string; currentContext?: { view?: string } } });
+      const toolResults = turn.history.filter((message) => message.role === "tool").map((message) => JSON.parse(message.content) as { result?: { kind?: string; currentContext?: { view?: string; targets?: ReadonlyArray<{ label: string; availability: { available: boolean; reason: string | null } }> } } });
       expect(toolResults).toEqual(expect.arrayContaining([expect.objectContaining({ result: expect.objectContaining({ kind: "stale_context", currentContext: expect.objectContaining({ view: "audit" }) }) })]));
+      const staleResult = toolResults.find((entry) => entry.result?.kind === "stale_context")?.result?.currentContext;
+      expect(staleResult?.targets).toEqual(expect.arrayContaining([expect.objectContaining({ label: "Audit search", availability: { available: false, reason: "This action is currently disabled." } })]));
       expect((yield* repository.snapshot(owner)).currentProposal?.id).toBe(stale.id);
     }));
   });

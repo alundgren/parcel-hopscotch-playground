@@ -70,6 +70,7 @@ export const makeGuidanceContext = <Input>(
   input: Input,
   revision: { readonly generation: number; readonly sequence: number; readonly view: string; readonly entityId: string | null; readonly focusId: string | null; readonly problemId: string | null },
   observedTargetIds: ReadonlyArray<string> = [],
+  disabledTargetIds: ReadonlyArray<string> = [],
 ): GuidanceContext => {
   const moduleVersions = modules.map((module) => [module.id, module.version]);
   const allTargets = modules.flatMap((module) => module.targets(input));
@@ -77,14 +78,18 @@ export const makeGuidanceContext = <Input>(
   const facts = modules.flatMap((module) => module.facts(input));
   const mounted = new Set(observedTargetIds.slice(0, 24).filter((id) =>
     allTargets.some((target) => target.id === id && (target.entityId === revision.entityId || target.entityId === null))));
+  const disabled = new Set(disabledTargetIds.slice(0, 24).filter((id) => mounted.has(id)));
+  const reportedTargets = allTargets.map((target) => disabled.has(target.id)
+    ? { ...target, availability: { available: false, reason: target.availability.reason ?? "This action is currently disabled." } }
+    : target);
   const contextRef = `ctx_${revisionOf({
     ...revision,
     moduleVersions,
-    targets: allTargets.map((target) => ({ ...target, mounted: mounted.has(target.id) })),
+    targets: reportedTargets.map((target) => ({ ...target, mounted: mounted.has(target.id) })),
     guides: allGuides,
     facts,
   })}`;
-  const targetEntries = allTargets.map((target, index) => ({ ref: opaqueRef("t", index, contextRef.slice(4)), target }));
+  const targetEntries = reportedTargets.map((target, index) => ({ ref: opaqueRef("t", index, contextRef.slice(4)), target }));
   const guideEntries = allGuides.map((guide, index) => ({ ref: opaqueRef("g", index, contextRef.slice(4)), guide }));
   const base = {
     version: GuidanceContextVersion,

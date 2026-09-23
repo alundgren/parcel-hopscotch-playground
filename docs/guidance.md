@@ -79,8 +79,8 @@ check that model-facing output remains bounded. These are byte and item
 limits, not a model-specific token measurement. Positioning, step progress,
 pause, resume, and return do not call a model.
 
-The one-order context fixture measured 1,649 UTF-8 bytes for a stale stock
-review and 1,497 bytes for Audit with its search target mounted. Real values
+The one-order context fixture measured 1,677 UTF-8 bytes for a stale stock
+review and 1,502 bytes for Audit with its search target mounted. Real values
 depend on the current targets and guide text; the ceiling is enforced for
 both context and discovery output.
 

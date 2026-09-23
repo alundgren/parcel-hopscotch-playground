@@ -32,6 +32,7 @@ export interface CreateGuidanceContextInput {
   readonly problem?: GuidanceProblem | null;
   readonly connected?: boolean;
   readonly observedTargetIds?: ReadonlyArray<string>;
+  readonly disabledTargetIds?: ReadonlyArray<string>;
 }
 
 const locationFocus = (location: AgentViewContext): GuidanceLocation["focus"] => {
@@ -41,13 +42,14 @@ const locationFocus = (location: AgentViewContext): GuidanceLocation["focus"] =>
   return { kind: "receipt", id: location.focus.receiptId };
 };
 
-export const createGuidanceContext = ({ snapshot, location, problem = null, connected = true, observedTargetIds = [] }: CreateGuidanceContextInput) => {
+export const createGuidanceContext = ({ snapshot, location, problem = null, connected = true, observedTargetIds = [], disabledTargetIds = [] }: CreateGuidanceContextInput) => {
   const focus = locationFocus(location);
   const entityId = problem?.orderId ?? (focus?.kind === "order" ? focus.id : null);
   const input: GuidanceInput = {
     generation: snapshot.generation,
     sequence: snapshot.sequence,
     orders: snapshot.orders,
+    currentProposal: snapshot.currentProposal,
     location: { view: location.view, focus },
     problem,
     connected,
@@ -59,5 +61,5 @@ export const createGuidanceContext = ({ snapshot, location, problem = null, conn
     entityId,
     focusId: focus?.id ?? null,
     problemId: problem === null ? null : `${problem.proposalId}:${problem.reason}:${problem.currentVersion ?? "unknown"}:${problem.resolved}`,
-  }, observedTargetIds);
+  }, observedTargetIds, disabledTargetIds);
 };

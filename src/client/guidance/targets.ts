@@ -46,6 +46,10 @@ export class GuideTargetRegistry {
       return rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
     }).slice(0, 24).map(({ id }) => id);
   }
+
+  disabledTargetIds(): ReadonlyArray<string> {
+    return [...this.targets.values()].filter(({ element, available }) => !available && element.isConnected).slice(0, 24).map(({ id }) => id);
+  }
 }
 
 export const useGuideTarget = (

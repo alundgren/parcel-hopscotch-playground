@@ -100,6 +100,17 @@ describe("guidance catalog", () => {
     expect(JSON.parse(JSON.stringify(context))).toEqual({ publicContext: context.publicContext });
   });
 
+  it("revises references for disabled mounted targets without trusting unknown IDs", () => {
+    const mounted = makeGuidanceContext([simpleModule], null, revision, ["target"]);
+    const disabled = makeGuidanceContext([simpleModule], null, revision, ["target"], ["target"]);
+    expect(disabled.publicContext.targets[0]!.availability).toEqual({ available: false, reason: "This action is currently disabled." });
+    expect(disabled.publicContext.contextRef).not.toBe(mounted.publicContext.contextRef);
+    expect(validateGuidanceNote(disabled, { contextRef: mounted.publicContext.contextRef, targetRef: mounted.publicContext.targets[0]!.targetRef, text: "Read here." }).kind).toBe("stale");
+    expect(validateGuidanceOffer(disabled, { contextRef: disabled.publicContext.contextRef, guideRef: disabled.publicContext.guides[0]!.guideRef }).kind).toBe("invalid");
+    expect(makeGuidanceContext([simpleModule], null, revision, ["target"], ["unknown"]).publicContext.contextRef).toBe(mounted.publicContext.contextRef);
+    expect(makeGuidanceContext([simpleModule], null, revision, [], ["target"]).publicContext.contextRef).toBe(makeGuidanceContext([simpleModule], null, revision).publicContext.contextRef);
+  });
+
   it("keeps discovery and model context bounded with 1000 modules", () => {
     const modules = Array.from({ length: 1000 }, (_, index): GuidanceModule<null> => ({ ...simpleModule, id: `module-${index}`, guides: () => [{ ...simpleModule.guides(null)[0]!, id: `guide-${index}`, title: `Guide ${index}` }] }));
     const context = makeGuidanceContext(modules, null, revision);

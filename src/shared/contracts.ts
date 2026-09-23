@@ -128,6 +128,7 @@ export const AgentViewContext = Schema.Struct({
     problem: Schema.optionalKey(Schema.Struct({ kind: Schema.Literal("stale_review"), proposalId: AgentContextId })),
     activeGuideRef: Schema.optionalKey(AgentContextId),
     visibleTargetIds: Schema.optionalKey(Schema.Array(AgentContextId).check(Schema.isMaxLength(24))),
+    disabledTargetIds: Schema.optionalKey(Schema.Array(AgentContextId).check(Schema.isMaxLength(24))),
   })),
 });
 export type AgentViewContext = typeof AgentViewContext.Type;

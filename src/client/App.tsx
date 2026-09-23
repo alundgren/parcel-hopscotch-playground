@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import Markdown from "react-markdown";
 import type { AgentViewContext, AuditAttemptDetail, AuditAttemptSummary, AuditRequestSummary, AuditPage, CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, ToolCatalogueEntry, ToolCategory, TutorialState, WorkspaceSnapshot } from "../shared/contracts";
 import { exploreScenarios, type ExploreScenarioId } from "../shared/explore";
 import { targets } from "../shared/targets";
@@ -71,22 +72,23 @@ function ProposalView({ proposal, orders, busy, connected, onAccept, onCancel, c
   const addressOrder = addressChange === null ? null : orders.find((order) => order.id === addressChange.orderId) ?? null;
   const acceptLabel = !proposal.ready ? "Held" : !connected ? "Reconnect to accept" : busy ? "Working…" : reset ? "Reset my demo" : `Accept ${proposal.changes.length} ${proposal.changes.length === 1 ? "change" : "changes"}`;
   const guideOrderId = proposal.kind === "resolution" && proposal.changes.length === 1 ? proposal.changes[0]!.orderId : null;
-  const guideReviewRef = useCallback((element: HTMLElement | null) => { if (guideOrderId !== null) guideTargets.register(workGuidanceTargets.proposalReview(guideOrderId), guideOrderId, element, proposal.ready && connected); }, [guideTargets, guideOrderId, proposal.ready, connected]);
-  if (addressChange !== null && addressOrder !== null) return <section className="order-detail proposal-screen address-review" aria-labelledby="proposal-title" ref={guideReviewRef}>
+  const canAccept = proposal.ready && connected && !busy;
+  const guideReviewRef = useCallback((element: HTMLButtonElement | null) => { if (guideOrderId !== null) guideTargets.register(workGuidanceTargets.proposalReview(guideOrderId), guideOrderId, element, canAccept); }, [guideTargets, guideOrderId, canAccept]);
+  if (addressChange !== null && addressOrder !== null) return <section className="order-detail proposal-screen address-review" aria-labelledby="proposal-title">
     <div className="detail-heading"><h1 id="proposal-title" tabIndex={-1}>Check address</h1><span className="order-id">{addressOrder.id}</span></div>
     <div className="address-evidence"><div><span>Order</span><p>{addressChange.before}</p></div><div><span>Customer</span><p>“{addressOrder.evidence[0]?.value}”</p></div></div>
-    <div className="address-proposal" id={targets.proposalReview} tabIndex={-1}><p><span aria-hidden="true">✧</span> <s>{addressChange.before.split(",")[0]}</s> <span aria-hidden="true">→</span> <strong>{addressChange.after}</strong></p><Button id={targets.proposalAccept} className="address-action" onClick={onAccept} disabled={busy || !connected || !proposal.ready}>{acceptLabel}</Button></div>
+    <div className="address-proposal" id={targets.proposalReview} tabIndex={-1}><p><span aria-hidden="true">✧</span> <s>{addressChange.before.split(",")[0]}</s> <span aria-hidden="true">→</span> <strong>{addressChange.after}</strong></p><Button ref={guideReviewRef} id={targets.proposalAccept} className="address-action" onClick={onAccept} disabled={!canAccept}>{acceptLabel}</Button></div>
     {coach}
     <Button variant="link" onClick={onCancel} disabled={busy}>Cancel</Button>
   </section>;
-  return <section className="order-detail proposal-screen" aria-labelledby="proposal-title" id={targets.proposalReview} tabIndex={-1} ref={guideReviewRef}>
+  return <section className="order-detail proposal-screen" aria-labelledby="proposal-title" id={targets.proposalReview} tabIndex={-1}>
     <h1 id="proposal-title" tabIndex={-1}>{proposal.title}</h1>
     <p className={`proposal-state ${proposal.ready ? "ready" : ""}`}>{proposal.ready ? "✓ Ready" : "Needs review"}</p>
     {proposal.changes.length > 0 && <div className="change-list">{proposal.changes.map((change) => <article className="change-row" key={change.orderId}><span className="order-id">{change.orderId}</span><div><strong>{change.before} <span aria-hidden="true">→</span> {change.after}</strong><p>{change.effect}</p></div></article>)}</div>}
     {reset && proposal.effects.length > 0 && <ul className="effect-list">{proposal.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul>}
     {proposal.omissions.length > 0 && <div className="omissions" aria-label="Orders left out">{proposal.omissions.map((item) => <p key={item.orderId}><span className="order-id">{item.orderId}</span> excluded · {item.reason}</p>)}</div>}
     {coach}
-    <div className="proposal-actions"><Button id={targets.proposalAccept} className={reset ? "danger-action" : proposal.kind === "batch" ? "batch-action" : "accept-action"} onClick={onAccept} disabled={busy || !connected || !proposal.ready}>{acceptLabel}</Button><Button variant="quiet" onClick={onCancel} disabled={busy}>Cancel</Button></div>
+    <div className="proposal-actions"><Button ref={guideReviewRef} id={targets.proposalAccept} className={reset ? "danger-action" : proposal.kind === "batch" ? "batch-action" : "accept-action"} onClick={onAccept} disabled={!canAccept}>{acceptLabel}</Button><Button variant="quiet" onClick={onCancel} disabled={busy}>Cancel</Button></div>
   </section>;
 }
 
@@ -120,11 +122,39 @@ function WorkQueue({ orders, latestReceipt, tutorialReceipt, savedProposal, tuto
   </section>;
 }
 
-function ChatPanel({ snapshot, connected, onSend, onCancel, error }: { snapshot: WorkspaceSnapshot; connected: boolean; onSend: (message: string) => void; onCancel: () => void; error: string | null }) {
+const markdownElements = ["a", "blockquote", "br", "code", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "li", "ol", "p", "pre", "strong", "ul"];
+const safeMarkdownUrl = (url: string) => {
+  try { return new URL(url).protocol === "https:" ? url : ""; }
+  catch { return ""; }
+};
+const AssistantMessage = memo(function AssistantMessage({ content }: { content: string }) {
+  return <Markdown allowedElements={markdownElements} skipHtml unwrapDisallowed urlTransform={safeMarkdownUrl} components={{
+    a: ({ href, children }) => href ? <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span>,
+  }}>{content}</Markdown>;
+});
+
+function ChatPanel({ snapshot, connected, wide, onWideChange, onSend, onCancel, error }: { snapshot: WorkspaceSnapshot; connected: boolean; wide: boolean; onWideChange: (wide: boolean) => void; onSend: (message: string) => void; onCancel: () => void; error: string | null }) {
   const [message, setMessage] = useState("");
   const listRef = useRef<HTMLDivElement | null>(null);
+  const readingPosition = useRef<{ fraction: number; atBottom: boolean } | null>(null);
   const active = snapshot.activeTurn;
   useEffect(() => { listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }); }, [snapshot.chat.length, active?.phase]);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const position = readingPosition.current;
+    if (list === null || position === null) return;
+    const range = Math.max(0, list.scrollHeight - list.clientHeight);
+    list.scrollTop = position.atBottom ? range : position.fraction * range;
+    readingPosition.current = null;
+  }, [wide]);
+  const toggleWidth = () => {
+    const list = listRef.current;
+    if (list !== null) {
+      const range = Math.max(0, list.scrollHeight - list.clientHeight);
+      readingPosition.current = { fraction: range === 0 ? 0 : list.scrollTop / range, atBottom: range - list.scrollTop <= 32 };
+    }
+    onWideChange(!wide);
+  };
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const value = message.trim();
@@ -133,8 +163,11 @@ function ChatPanel({ snapshot, connected, onSend, onCancel, error }: { snapshot:
     setMessage("");
   };
   return <aside className="chat-panel" aria-label="Assistant chat" data-provider-mode={snapshot.agentMode}>
+    <div className="chat-controls"><Button variant="quiet" className="chat-width-button" type="button" onClick={toggleWidth} aria-label={wide ? "Restore work space" : "Widen chat"} title={wide ? "Restore work space" : "Widen chat"} aria-pressed={wide}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{wide ? <><path d="m9 5 7 7-7 7"/><path d="m3 5 7 7-7 7"/></> : <><path d="m15 5-7 7 7 7"/><path d="m21 5-7 7 7 7"/></>}</svg></Button></div>
     <div className="chat-messages" ref={listRef} aria-live="polite">
-      {snapshot.chat.map((item) => <p key={item.id} className={`chat-message chat-${item.role}`} data-chat-turn={item.turnId} data-chat-role={item.role}>{item.content}</p>)}
+      {snapshot.chat.map((item) => item.role === "assistant"
+        ? <div key={item.id} className="chat-message chat-assistant" data-chat-turn={item.turnId} data-chat-role={item.role}><AssistantMessage content={item.content} /></div>
+        : <p key={item.id} className="chat-message chat-user" data-chat-turn={item.turnId} data-chat-role={item.role}>{item.content}</p>)}
       {active !== null && <div className="turn-progress" role="status"><span className="progress-dot" aria-hidden="true" /> <span>{active.phase}</span><Button variant="link" onClick={onCancel}>Cancel</Button></div>}
       {error !== null && <p className="chat-error" role="alert">{error}</p>}
     </div>
@@ -270,7 +303,7 @@ const consentResultText = (bodyText: string): string | null => {
 
 function AuditDetails({ detail, tab, setTab, loadMore, filterTurn, revealToolResult, onResultRendered }: { detail: AuditAttemptDetail | null; tab: AuditTab; setTab: (tab: AuditTab) => void; loadMore: (attemptId: string, cursor: string) => void; filterTurn: (turnId: string) => void; revealToolResult: boolean; onResultRendered: () => void }) {
   const resultPanelRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => { if (detail !== null && tab === "application" && resultPanelRef.current?.isConnected && resultPanelRef.current.getClientRects().length > 0) onResultRendered(); }, [detail, tab, onResultRendered]);
+  useEffect(() => { if (detail !== null && detail.application.some((record) => record.turnId === detail.attempt.turnId || record.requestId === detail.attempt.requestId) && tab === "application" && resultPanelRef.current?.isConnected && resultPanelRef.current.getClientRects().length > 0) onResultRendered(); }, [detail, tab, onResultRendered]);
   if (detail === null) return <div className="audit-detail-loading" role="status">Loading request details…</div>;
   const panelId = `audit-panel-${detail.attempt.id}`;
   const selectedText = tab === "request" ? detail.requestText : detail.responseText ?? "No response body was recorded.";
@@ -404,6 +437,7 @@ function AuditView({ page, details, loading, error, revision, connected, focused
 
 export default function App() {
   const [view, setView] = useState<View>("work");
+  const [chatWide, setChatWide] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [queueFilter, setQueueFilter] = useState<Filter>("all");
   const [guideSession, setGuideSession] = useState<GuidanceSession | null>(() => decodeSavedGuidance(sessionStorage.getItem("parcel-hopscotch-guidance-v1"), guidanceGuideVersion));
@@ -487,13 +521,13 @@ export default function App() {
       : selectedOrderId !== null ? { view: "work", focus: { kind: "order", orderId: selectedOrderId } }
       : { view, focus: null };
     if (guideProblem === null && guideSession === null) return location;
-    return { ...location, guidance: { ...(guideProblem === null ? {} : { problem: { kind: "stale_review", proposalId: guideProblem.proposalId } }), ...(guideSession === null ? {} : { activeGuideRef: guideSession.guideRef }), visibleTargetIds: [...guideTargets.visibleTargetIds()] } };
+    return { ...location, guidance: { ...(guideProblem === null ? {} : { problem: { kind: "stale_review", proposalId: guideProblem.proposalId } }), ...(guideSession === null ? {} : { activeGuideRef: guideSession.guideRef }), visibleTargetIds: [...guideTargets.visibleTargetIds()], disabledTargetIds: [...guideTargets.disabledTargetIds()] } };
   };
   useEffect(() => {
     if (agentOperation === null || snapshot === null) return;
     if (agentOperation.kind === "offer_guide" || agentOperation.kind === "show_note") {
       const current = currentViewContext();
-      const context = createGuidanceContext({ snapshot, location: current, problem: guideProblem, connected: status === "connected", observedTargetIds: current.guidance?.visibleTargetIds });
+      const context = createGuidanceContext({ snapshot, location: current, problem: guideProblem, connected: status === "connected", observedTargetIds: current.guidance?.visibleTargetIds, disabledTargetIds: current.guidance?.disabledTargetIds });
       if (agentOperation.contextRef !== context.publicContext.contextRef) {
         acknowledgeAgentOperation(agentOperation, "stale_context", current);
         return;
@@ -572,7 +606,7 @@ export default function App() {
     const detail = cause.detail;
     if (snapshot === null || detail?.kind !== "stale_review" || guideSession?.phase === "active") return;
     const problem: GuidanceProblem = { kind: "stale_review", proposalId: detail.proposalId, orderId: detail.orderId, reason: detail.reason, resolved: detail.resolved, expectedVersion: detail.expectedVersion, ...(detail.currentVersion === null ? {} : { currentVersion: detail.currentVersion }) };
-    const context = createGuidanceContext({ snapshot, location: { view: "work", focus: { kind: "proposal", proposalId: detail.proposalId } }, problem, connected: status === "connected", observedTargetIds: guideTargets.visibleTargetIds() });
+    const context = createGuidanceContext({ snapshot, location: { view: "work", focus: { kind: "proposal", proposalId: detail.proposalId } }, problem, connected: status === "connected", observedTargetIds: guideTargets.visibleTargetIds(), disabledTargetIds: guideTargets.disabledTargetIds() });
     const entry = context.guideEntries.find(({ guide }) => guide.id === workGuides.staleReview);
     if (entry === undefined) return;
     const origin: GuidanceReturnContext = { view: "work", focusKind: "proposal", focusId: detail.proposalId, filter: queueFilter };
@@ -685,8 +719,8 @@ export default function App() {
   const guideStep = guideSession?.steps[guideSession.stepIndex];
   const guideOrder = snapshot?.orders.find((order) => order.id === guideSession?.entityId) ?? null;
   const selectedOrder = resolveSelectedOrder(snapshot?.orders ?? [], selectedOrderId);
-  const selectedReviewAvailability = reviewChangeAvailability({ connected: status === "connected" && !busy, order: selectedOrder, resolved: guideProblem !== null && selectedOrder !== null && guideProblem.orderId === selectedOrder.id ? guideProblem.resolved : undefined });
-  const guideAvailability = guideOrder?.id === selectedOrder?.id ? selectedReviewAvailability : reviewChangeAvailability({ connected: status === "connected" && !busy, order: guideOrder, resolved: guideProblem?.resolved });
+  const selectedReviewAvailability = reviewChangeAvailability({ connected: status === "connected", busy, order: selectedOrder, resolved: guideProblem !== null && selectedOrder !== null && guideProblem.orderId === selectedOrder.id ? guideProblem.resolved : undefined });
+  const guideAvailability = guideOrder?.id === selectedOrder?.id ? selectedReviewAvailability : reviewChangeAvailability({ connected: status === "connected", busy, order: guideOrder, resolved: guideProblem?.resolved });
   const guideText = guideSession?.phase === "offered" ? guideSession.offerText
     : guideNote !== null && guideNote.targetId === guideStep?.targetId && guideNote.entityId === guideStep.entityId
       ? guideNote.text
@@ -735,7 +769,7 @@ export default function App() {
   };
   const explainAudit = () => {
     if (snapshot === null || guideSession?.phase === "active") return;
-    const context = createGuidanceContext({ snapshot, location: { view: "audit", focus: null }, connected: status === "connected", observedTargetIds: guideTargets.visibleTargetIds() });
+    const context = createGuidanceContext({ snapshot, location: { view: "audit", focus: null }, connected: status === "connected", observedTargetIds: guideTargets.visibleTargetIds(), disabledTargetIds: guideTargets.disabledTargetIds() });
     const entry = context.guideEntries.find(({ guide }) => guide.id === auditGuides.inspectRequest);
     if (entry === undefined) return;
     const origin: GuidanceReturnContext = { view, focusKind: selectedOrderId !== null ? "order" : proposal !== null ? "proposal" : receipt !== null ? "receipt" : null, focusId: selectedOrderId ?? proposal?.id ?? receipt?.id ?? null, filter: view === "work" ? queueFilter : null };
@@ -759,6 +793,6 @@ export default function App() {
   return <div className="app-shell"><header className="topbar"><div className="brand"><BrandIcon onClick={goToStart} /> <span>Bracken &amp; Beam</span></div><span className={`connection connection-${status}`} data-testid="connection-status"><span aria-hidden="true" />{connectionText[status]}</span><nav aria-label="Main navigation">{(["work", "explore", "audit"] as const).map((item) => <Button key={item} variant="quiet" aria-current={view === item ? "page" : undefined} onClick={() => { if (guideSession?.phase === "active") pauseGuide(); setView(item); setAuditFocus(null); }}>{item[0]!.toUpperCase() + item.slice(1)}</Button>)}</nav></header>
     {guideSession !== null && <GuideDisplay registry={guideTargets} targetId={guideDisplayTargetId} entityId={guideDisplayEntityId} title={guideSession.title} note={guideText} progress={`${Math.min(guideSession.stepIndex + 1, guideSession.steps.length)} of ${guideSession.steps.length}`} step={guideSession.stepIndex} phase={guideSession.phase} onShow={showGuide} onPause={pauseGuide} onResume={resumeGuide} onDismiss={dismissGuide} onReturn={returnToWork} returnLabel={guideReturnLabel} />}
     {guideSession === null && guideNote !== null && <GuideDisplay registry={guideTargets} targetId={guideNote.targetId} entityId={guideNote.entityId} title="Note on work" note={guideNote.text} progress="Current view" step={0} phase="active" onPause={dismissNote} onResume={() => {}} onDismiss={dismissNote} showPause={false} />}
-    {view === "work" ? <main className="work-layout" data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { if (guideSession?.phase === "active") pauseGuide(); setProposal(null); setSelectedOrderId(null); }} coach={coach} guideTargets={guideTargets} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => { if (guideSession?.phase === "active" && guideStep?.eventKind === "returned") setReturnRequested(true); else if (guideSession?.phase === "active") pauseGuide(); void confirmReceiptAndBack(); }} onUndo={undo} coach={coach} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} tutorialReceipt={snapshot.tutorialReceipt} savedProposal={snapshot.currentProposal} tutorialProposal={snapshot.tutorialProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} selectOrder={(orderId) => { if (guideSession?.phase === "active") pauseGuide(); setSelectedOrderId(orderId); if (orderId !== null) void reportTutorialAction({ action: "order_selected", orderId }); }} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }), orderId)} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openTutorialReceipt={() => setReceipt(snapshot.tutorialReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} openTutorialProposal={() => setProposal(snapshot.tutorialProposal)} selectReady={() => { void reportTutorialAction({ action: "ready_filter_selected" }); }} coach={coach} filter={queueFilter} setFilter={setQueueFilter} guideTargets={guideTargets} reviewAvailability={selectedReviewAvailability} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} onSend={(message) => { try { sendAgentMessage(message, currentViewContext()); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><ExploreView entries={toolCatalogue} connected={status === "connected" && snapshot !== null && snapshot.activeTurn === null} busy={busy} scenarioActive={snapshot?.activeTurn !== null && snapshot?.activeTurn !== undefined} notice={scenarioNotice} runScenario={(scenario) => void launchExploreScenario(scenario)} cancelScenario={cancelAgentTurn} prepareReset={() => void prepareExploreReset()} advanceScenario={() => void advanceFromExplore()} />{coach}</div> : <div data-view="audit"><AuditView page={auditPage} details={auditDetails} loading={auditLoading} error={auditError} revision={auditRevision} connected={status === "connected"} focusedAttemptId={auditFocus?.attemptId ?? null} onFocusedAttemptRendered={(attemptId) => { if (auditFocus?.attemptId === attemptId && auditFocus.acknowledge) acknowledgeAgentComplete(auditFocus.turnId, auditFocus.generation); }} requestPage={requestAudit} requestDetail={requestAuditDetail} guideTargets={guideTargets} onResultRendered={() => setAuditResultOpened(true)} explainAudit={explainAudit} />{coach}</div>}
+    {view === "work" ? <main className={`work-layout${chatWide ? " chat-wide" : ""}`} data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { if (guideSession?.phase === "active") pauseGuide(); setProposal(null); setSelectedOrderId(null); }} coach={coach} guideTargets={guideTargets} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => { if (guideSession?.phase === "active" && guideStep?.eventKind === "returned") setReturnRequested(true); else if (guideSession?.phase === "active") pauseGuide(); void confirmReceiptAndBack(); }} onUndo={undo} coach={coach} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} tutorialReceipt={snapshot.tutorialReceipt} savedProposal={snapshot.currentProposal} tutorialProposal={snapshot.tutorialProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} selectOrder={(orderId) => { if (guideSession?.phase === "active") pauseGuide(); setSelectedOrderId(orderId); if (orderId !== null) void reportTutorialAction({ action: "order_selected", orderId }); }} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }), orderId)} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openTutorialReceipt={() => setReceipt(snapshot.tutorialReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} openTutorialProposal={() => setProposal(snapshot.tutorialProposal)} selectReady={() => { void reportTutorialAction({ action: "ready_filter_selected" }); }} coach={coach} filter={queueFilter} setFilter={setQueueFilter} guideTargets={guideTargets} reviewAvailability={selectedReviewAvailability} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} wide={chatWide} onWideChange={setChatWide} onSend={(message) => { try { sendAgentMessage(message, currentViewContext()); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><ExploreView entries={toolCatalogue} connected={status === "connected" && snapshot !== null && snapshot.activeTurn === null} busy={busy} scenarioActive={snapshot?.activeTurn !== null && snapshot?.activeTurn !== undefined} notice={scenarioNotice} runScenario={(scenario) => void launchExploreScenario(scenario)} cancelScenario={cancelAgentTurn} prepareReset={() => void prepareExploreReset()} advanceScenario={() => void advanceFromExplore()} />{coach}</div> : <div data-view="audit"><AuditView page={auditPage} details={auditDetails} loading={auditLoading} error={auditError} revision={auditRevision} connected={status === "connected"} focusedAttemptId={auditFocus?.attemptId ?? null} onFocusedAttemptRendered={(attemptId) => { if (auditFocus?.attemptId === attemptId && auditFocus.acknowledge) acknowledgeAgentComplete(auditFocus.turnId, auditFocus.generation); }} requestPage={requestAudit} requestDetail={requestAuditDetail} guideTargets={guideTargets} onResultRendered={() => setAuditResultOpened(true)} explainAudit={explainAudit} />{coach}</div>}
   </div>;
 }

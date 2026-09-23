@@ -18,16 +18,18 @@ export const workGuideVersion = 1;
 
 export type ReviewChangeAvailability =
   | { readonly available: true; readonly reason: null }
-  | { readonly available: false; readonly reason: "Reconnect to review this item." | "This item is no longer available." | "This change was already accepted." };
+  | { readonly available: false; readonly reason: "Reconnect to review this item." | "This item is no longer available." | "This change was already accepted." | "Wait for the current action to finish." };
 
 export const reviewChangeAvailability = (input: {
   readonly connected: boolean;
   readonly order: GuidanceOrder | null;
   readonly resolved?: boolean;
+  readonly busy?: boolean;
 }): ReviewChangeAvailability => {
   if (input.order === null) return { available: false, reason: "This item is no longer available." };
   if (input.order.resolved ?? input.resolved ?? false) return { available: false, reason: "This change was already accepted." };
   if (!input.connected) return { available: false, reason: "Reconnect to review this item." };
+  if (input.busy) return { available: false, reason: "Wait for the current action to finish." };
   return { available: true, reason: null };
 };
 
@@ -59,12 +61,22 @@ const workTargets = (input: GuidanceInput): ReadonlyArray<GuidanceTargetDefiniti
   const review = reviewChangeAvailability({ connected: input.connected, order, resolved: input.problem?.resolved });
   const exists = { available: order !== null, reason: order === null ? "This item is no longer available." : null };
   const queue = { available: true, reason: null };
+  const proposal = input.currentProposal;
+  const proposalReview = proposal === null || proposal.id === input.problem?.proposalId
+    ? { available: false, reason: "Prepare a fresh review first." }
+    : !proposal.changes.some((change) => change.orderId === entityId)
+      ? { available: false, reason: "This proposal is for another item." }
+      : !proposal.ready
+        ? { available: false, reason: "This proposal is held and cannot be accepted." }
+        : !input.connected
+          ? { available: false, reason: "Reconnect to accept this proposal." }
+          : { available: true, reason: null };
   return [
     { id: workGuidanceTargets.queue, label: "Work queue", destination: "work", entityId: null, availability: queue },
     { id: workGuidanceTargets.orderRow(entityId ?? "missing"), label: "Affected item in Work", destination: "work", entityId, availability: exists },
     { id: workGuidanceTargets.orderEvidence(entityId ?? "missing"), label: "Current item evidence", destination: "order", entityId, availability: exists },
     { id: workGuidanceTargets.reviewChange(entityId ?? "missing"), label: "Review change", destination: "order", entityId, availability: review },
-    { id: workGuidanceTargets.proposalReview(entityId ?? "missing"), label: "Fresh proposal review", destination: "work", entityId, availability: { available: review.available, reason: review.reason } },
+    { id: workGuidanceTargets.proposalReview(entityId ?? "missing"), label: "Fresh proposal review", destination: "work", entityId, availability: proposalReview },
   ];
 };
 

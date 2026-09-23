@@ -1,6 +1,7 @@
 import { vi } from "vite-plus/test";
 import type {
   AgentUiOperation,
+  AgentViewContext,
   AuditAttemptDetail,
   AuditAttemptSummary,
   AuditPage,
@@ -219,7 +220,7 @@ export const createWorkspace = (overrides: WorkspaceOverrides = {}) => ({
     return { kind: "scenario", message: "Scenario advanced." };
   }),
   runExploreScenario: vi.fn(async () => ({ kind: "explore" as const, scenario: "consent" as const, attemptId: completedAttempt.id, turnId: completedAttempt.turnId, outcome: "completed" as const, message: "Consent classified." })),
-  sendAgentMessage: vi.fn(() => "turn-new"),
+  sendAgentMessage: vi.fn((_message: string, _context: AgentViewContext) => "turn-new"),
   cancelAgentTurn: vi.fn(),
   agentOperation: null,
   acknowledgeAgentOperation: vi.fn(),

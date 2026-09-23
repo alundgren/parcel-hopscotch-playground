@@ -7,7 +7,7 @@ import { WorkspaceRequestError } from "../../src/client/use-workspace";
 import { GuideTargetRegistry } from "../../src/client/guidance/targets";
 import { GuideDisplay } from "../../src/client/guidance/GuideDisplay";
 import { createGuidanceContext } from "../../src/modules/guidance";
-import { addressProposal, auditPage, createWorkspace, proposal, receipt, snapshot } from "./fixtures";
+import { addressProposal, auditDetail, auditPage, completedAttempt, createWorkspace, proposal, receipt, snapshot } from "./fixtures";
 
 const workspaceState = vi.hoisted(() => ({ current: null as ReturnType<typeof createWorkspace> | null }));
 vi.mock("../../src/client/use-workspace", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../src/client/use-workspace")>()), useWorkspace: () => workspaceState.current }));
@@ -97,6 +97,8 @@ test("stale review offers consent, marks the real order action, and preserves th
   const composer = document.querySelector(".composer")!;
   expect(overlapArea(document.querySelector(".task-trail")!, composer)).toBe(0);
   expect(overlapArea(note, composer)).toBe(0);
+  expect(overlapArea(note, document.querySelector(".evidence")!)).toBe(0);
+  expect(overlapArea(note, document.querySelector(".detail-current")!)).toBe(0);
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
   await checkpoint("guidance-note-and-trail");
 
@@ -126,6 +128,16 @@ test("stale review offers consent, marks the real order action, and preserves th
   await page.getByRole("button", { name: "Review change" }).click();
   await expect.element(page.getByRole("heading", { name: "Review replacement" })).toBeVisible();
   await expect.element(page.getByRole("complementary", { name: "Task trail" })).toHaveAttribute("data-guidance-step", "2");
+  const accept = page.getByRole("button", { name: "Accept 1 change", exact: true }).element().getBoundingClientRect();
+  const acceptOutline = document.querySelector(".guide-outline")!.getBoundingClientRect();
+  expect(acceptOutline.left).toBeLessThan(accept.left);
+  expect(acceptOutline.right).toBeGreaterThan(accept.right);
+  expect(acceptOutline.height).toBeLessThan(accept.height + 12);
+  if (window.innerWidth > 760) {
+    const actionNote = document.querySelector(".work-note")!.getBoundingClientRect();
+    expect(actionNote.top - accept.bottom).toBeGreaterThanOrEqual(0);
+    expect(actionNote.top - accept.bottom).toBeLessThan(32);
+  }
   await checkpoint("guidance-fresh-review");
   await page.getByRole("button", { name: "Accept 1 change" }).click();
   await expect.element(page.getByRole("heading", { name: "One change saved" })).toBeVisible();
@@ -152,6 +164,45 @@ test("a missing or differently bound target gives recovery text without marking 
     await page.getByRole("button", { name: "Dismiss guide" }).click();
     expect(dismiss).toHaveBeenCalledOnce();
   } finally { element.remove(); }
+});
+
+test("busy and held actions report the same disabled state as the rendered control", async () => {
+  const registrations = vi.spyOn(GuideTargetRegistry.prototype, "register");
+  const problem = { kind: "stale_review" as const, proposalId: proposal.id, orderId: "BB-1076", reason: "stock_changed" as const, expectedVersion: 2, currentVersion: 3, resolved: false };
+  const held: ReviewedProposal = { ...addressProposal, id: "held-1076", title: "Review replacement", ready: false, changes: [{ ...proposal.changes[0]!, orderId: "BB-1076" }] };
+  let finishReview: (() => void) | undefined;
+  const runCommand = vi.fn(async (input: { readonly type: string }): Promise<CommandResult> => {
+    if (input.type === "prepare_batch") return { kind: "proposal", proposal };
+    if (input.type === "accept_proposal") throw new WorkspaceRequestError("stale_proposal", "Nothing was applied.", problem);
+    if (input.type === "prepare_resolution") return new Promise((resolve) => { finishReview = () => {
+      workspaceState.current = { ...workspaceState.current!, snapshot: { ...snapshot, currentProposal: held } };
+      resolve({ kind: "proposal", proposal: held });
+    }; });
+    return { kind: "scenario", message: "Scenario advanced." };
+  });
+  workspaceState.current = createWorkspace({ snapshot: { ...snapshot, currentProposal: null }, runCommand });
+  await render(<App />);
+  await page.getByRole("button", { name: "Review ready orders" }).click();
+  await page.getByRole("button", { name: "Accept 1 change" }).click();
+  await page.getByRole("button", { name: "Show me" }).click();
+  await page.getByRole("button", { name: "Review change", exact: true }).click();
+  try {
+    await expect.element(page.getByRole("button", { name: "Review change", exact: true })).toBeDisabled();
+    await page.getByRole("textbox", { name: "Message" }).fill("Which action is available?");
+    await page.getByRole("button", { name: "Send message" }).click();
+    const location = workspaceState.current.sendAgentMessage.mock.calls.at(-1)![1];
+    expect(location.guidance?.disabledTargetIds).toContain("work.order.review:BB-1076");
+    const context = createGuidanceContext({ snapshot: workspaceState.current.snapshot!, location, problem, observedTargetIds: location.guidance?.visibleTargetIds, disabledTargetIds: location.guidance?.disabledTargetIds });
+    expect(context.publicContext.targets.find((target) => target.label === "Review change")?.availability.available).toBe(false);
+    expect(registrations.mock.calls.filter(([id, , element]) => id === "work.order.review:BB-1076" && element !== null).at(-1)?.[3]).toBe(false);
+  } finally { finishReview?.(); }
+  await expect.element(page.getByRole("button", { name: "Held", exact: true })).toBeDisabled();
+  expect(registrations.mock.calls.filter(([id, , element]) => id === "work.proposal.review:BB-1076" && element !== null).at(-1)?.[3]).toBe(false);
+  await page.getByRole("textbox", { name: "Message" }).fill("Explain this held proposal.");
+  await page.getByRole("button", { name: "Send message" }).click();
+  const location = workspaceState.current.sendAgentMessage.mock.calls.at(-1)![1];
+  const context = createGuidanceContext({ snapshot: workspaceState.current.snapshot!, location, problem, observedTargetIds: location.guidance?.visibleTargetIds, disabledTargetIds: location.guidance?.disabledTargetIds });
+  expect(context.publicContext.targets.find((target) => target.label === "Fresh proposal review")?.availability.available).toBe(false);
 });
 
 test("Audit guide explains an empty result area without claiming a result", async () => {
@@ -183,6 +234,21 @@ test("Audit guide waits for a rendered Application result", async () => {
   await page.getByRole("tab", { name: "Application result" }).click();
   await expect.element(trail).toHaveAttribute("data-guidance-status", "complete");
   await checkpoint("guidance-audit-result");
+});
+
+test.each(["empty", "unrelated"] as const)("Audit guide does not complete for an %s result panel", async (kind) => {
+  workspaceState.current = createWorkspace({ auditDetails: { [completedAttempt.id]: { ...auditDetail, application: kind === "empty" ? [] : auditDetail.application.map((record) => ({ ...record, requestId: "other-request", turnId: "other-turn" })) } } });
+  await render(<App />);
+  await page.getByRole("button", { name: "Audit", exact: true }).click();
+  await page.getByRole("button", { name: "Explain Audit" }).click();
+  await page.getByRole("button", { name: "Show me" }).click();
+  await page.getByRole("button", { name: /Summarise the ready orders/ }).click();
+  await page.getByRole("button", { name: /Turn 1 · Chat/ }).click();
+  await page.getByRole("tab", { name: "Application result" }).click();
+  if (kind === "empty") await expect.element(page.getByText("No correlated application result was recorded.")).toBeVisible();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  await expect.element(page.getByRole("complementary", { name: "Task trail" })).toHaveAttribute("data-guidance-status", "active");
+  if (kind === "empty") await checkpoint("guidance-audit-no-result");
 });
 
 test("a pending batch does not replace a new individual receipt", async () => {
