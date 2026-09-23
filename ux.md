@@ -24,6 +24,20 @@ Show only completed-request, completed-turn, and committed-command durations wit
 
 ## Responsive behavior and proof
 
+Guided help uses Notes on work beside the relevant item, with a muted blue
+outline and a pointer. Keep the real control reachable. A compact Task trail
+holds the task and return action while moving between views. Show me is the
+consent step before navigation. The person performs every business action.
+Keep explanations short and specific to current evidence. If another tab has
+already resolved an item, say so and help the person request a fresh review.
+
+At narrow widths, put the note in the normal reading flow instead of covering
+the work. Manual navigation pauses the guide; Resume is explicit. Dismiss and
+Escape remove annotations and restore a useful focus target. A missing target
+must leave readable guidance with a recovery action, not an arrow to empty
+space. These choices favor continuing real work over locking the page inside a
+tour.
+
 At narrow widths, chat follows work. Keep horizontal overflow inside the Audit table, with no page-wide overflow at 320px. Preserve keyboard actions, focus visibility, accessible icon names, and reduced-motion preferences. Use styled shadcn controls without importing its default appearance.
 
 For every UI PR, capture and inspect meaningful application states at desktop and narrow widths. Show the app before or after the change, or show the new feature when there is no earlier state. Use matching viewport and browser settings when showing both Before and After. Attach selected PNGs through `gh --attach`. Check contrast, clipping, overlap, spacing, sizing, and reachable actions. Use Trace View for interaction history and optional video when motion matters. See [browser testing](docs/browser-testing.md).

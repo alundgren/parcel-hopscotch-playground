@@ -139,6 +139,23 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
 .reset-link { color: #8f3a2d; }
 .command-message { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: min(560px, calc(100vw - 32px)); padding: 10px 14px; border-radius: 8px; background: var(--blue); color: var(--paper); box-shadow: 0 5px 20px rgba(51,78,91,.16); }
 
+.task-trail { position: fixed; z-index: 25; right: 22px; bottom: 20px; display: flex; align-items: center; gap: 18px; max-width: min(490px, calc(100vw - 24px)); padding: 10px 12px 10px 16px; border: 1px solid var(--blue-line); border-radius: 10px; background: var(--paper); color: var(--blue); box-shadow: 0 5px 20px rgba(51,78,91,.13); }
+.task-trail > div:first-child { display: grid; min-width: 0; gap: 2px; }
+.task-trail strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.task-trail span { color: var(--muted); font-size: 12px; }
+.task-trail-actions { display: flex; align-items: center; gap: 12px; flex: none; }
+.task-trail-actions .button-icon { width: 32px; height: 32px; font-size: 20px; }
+.guide-outline { position: fixed; z-index: 22; border: 3px solid var(--blue); border-radius: 9px; box-shadow: 0 0 0 3px var(--paper); pointer-events: none; }
+.work-note { position: fixed; z-index: 24; max-height: min(240px, calc(100vh - 20px)); overflow-y: auto; padding: 15px 17px; border: 1px solid var(--blue-line); border-radius: 10px; background: var(--paper); color: var(--blue); box-shadow: 0 7px 22px rgba(51,78,91,.18); }
+.work-note::before { content: ""; position: absolute; top: -7px; left: 23px; width: 13px; height: 13px; transform: rotate(45deg); border-top: 1px solid var(--blue-line); border-left: 1px solid var(--blue-line); background: var(--paper); }
+.work-note-label { display: block; color: var(--muted); font-size: 12px; font-weight: 600; }
+.work-note p { margin: 7px 0 12px; line-height: 1.5; }
+.work-note .button { background: var(--blue); color: var(--paper); }
+.guide-missing { position: fixed; z-index: 24; right: 22px; bottom: 88px; max-width: min(340px, calc(100vw - 24px)); padding: 15px 17px; border: 1px solid var(--blue-line); border-radius: 10px; background: var(--paper); color: var(--blue); box-shadow: 0 7px 22px rgba(51,78,91,.18); }
+.guide-missing p { margin: 0 0 9px; }
+.guide-offer { position: fixed; z-index: 24; right: 22px; bottom: 86px; max-width: min(360px, calc(100vw - 24px)); padding: 16px 18px; border: 1px solid var(--blue-line); border-radius: 10px; background: var(--paper); color: var(--blue); box-shadow: 0 7px 22px rgba(51,78,91,.18); }
+.guide-offer p { margin: 0 0 12px; line-height: 1.5; }
+
 .address-evidence { margin-top: 30px; }
 .address-evidence > div { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 18px; padding: 18px 0; border-bottom: 1px solid var(--line); }
 .address-evidence span { color: var(--muted); font-size: 14px; }
@@ -291,6 +308,15 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
 .audit-more { display: flex; justify-content: center; padding: 18px 0 2px; }
 
 @media (max-width: 760px) {
+  .task-trail { position: sticky; top: 0; left: auto; right: auto; bottom: auto; width: 100%; max-width: none; flex-direction: column; align-items: stretch; gap: 5px; margin: 0 0 10px; }
+  .task-trail > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .task-trail strong { overflow: visible; white-space: normal; }
+  .task-trail-actions { justify-content: flex-end; gap: 12px; }
+  .guide-offer { position: relative; right: auto; bottom: auto; max-width: none; margin: 0 0 12px; }
+  .work-note { position: sticky; top: 100px !important; left: auto !important; width: 100% !important; max-height: min(250px, calc(100vh - 190px)); margin: 0 0 12px; }
+  .work-note::before { display: none; }
+  .guide-missing { position: sticky; top: 100px; right: auto; bottom: auto; max-width: none; margin: 0 0 12px; }
+  .app-shell:has(.task-trail) .command-message { position: static; grid-column: 1 / -1; transform: none; max-width: none; margin: 0 0 12px; }
   .app-shell { padding: 0 10px 10px; }
   .topbar { align-items: flex-start; flex-wrap: wrap; padding: 14px 6px 16px; gap: 10px 14px; }
   .brand { flex-basis: auto; }

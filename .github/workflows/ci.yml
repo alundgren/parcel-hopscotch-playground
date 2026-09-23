@@ -21,6 +21,7 @@ jobs:
           cache: true
           run-install: false
       - run: vp install --frozen-lockfile
+      - run: vp run check:guidance
       - run: vp run typecheck
       - run: vp test run --project=server
       - run: vp run build
