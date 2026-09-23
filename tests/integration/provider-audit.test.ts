@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Deferred, Effect, Fiber } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { AuditAttemptDetail, AuditPage, ServerMessage } from "../../src/shared/contracts";
 import type { ServerConfig } from "../../src/server/config";
 import { resolveIdentity, type RequestIdentity } from "../../src/server/identity";

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Schema } from "effect";
 import { ClientMessage } from "../../src/shared/contracts";
 import { exploreScenarios } from "../../src/shared/explore";

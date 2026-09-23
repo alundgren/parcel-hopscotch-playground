@@ -138,13 +138,13 @@ const specs = {
     output: Schema.Struct({ attempts: Schema.Array(Schema.Struct({ id: Schema.String, requestId: Schema.String, turnId: Schema.String, model: Schema.String, actualModel: Schema.NullOr(Schema.String), outcome: Schema.String, durationMs: Schema.NullOr(Schema.Number), inputTokens: Schema.NullOr(Schema.Int), outputTokens: Schema.NullOr(Schema.Int), costUsd: Schema.NullOr(Schema.Number) })) }),
   },
   navigate: {
-    description: "Open a registered application view or current order. Arbitrary URLs and selectors are not accepted.",
+    description: "Open Work, Explore, Audit, or a current order.",
     category: "Guide", purpose: "Open a view", allowedEffects: ["navigate_registered_view"],
     example: { arguments: { view: "order", orderId: "BB-1042" }, result: { ok: true, message: "Opened BB-1042." } },
     input: Schema.Struct({ view: Schema.Literals(["work", "explore", "audit", "order"]), orderId: Schema.optionalKey(Identifier) }), output: ResultMessage,
   },
   highlight: {
-    description: "Highlight one registered application target. Raw selectors and browser code are not accepted.",
+    description: "Point to a queue, control, order, or its evidence.",
     category: "Guide", purpose: "Point to evidence", allowedEffects: ["highlight_registered_target"],
     example: { arguments: { target: "orderEvidence", orderId: "BB-1042" }, result: { ok: true, message: "Highlighted the evidence." } },
     input: Schema.Struct({ target: Schema.Literals(["workQueue", "readyFilter", "chatComposer", "orderRow", "orderEvidence"]), orderId: Schema.optionalKey(Identifier) }), output: ResultMessage,

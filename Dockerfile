@@ -1,19 +1,23 @@
 # syntax=docker/dockerfile:1.7
 
-FROM --platform=$BUILDPLATFORM ghcr.io/voidzero-dev/vite-plus:0.3.0@sha256:bca24ac970b21298430ad281f306dbe0a17be3fd1d6c9ec5f2cc73da65740b88 AS build
+FROM --platform=$BUILDPLATFORM ghcr.io/voidzero-dev/vite-plus:1.0.0-rc.0@sha256:2777dc87ed4d842688af87d20e8452561609d20d78927c6c9544aa011b9b4e8f AS build
 WORKDIR /app
 COPY --chown=1000:1000 package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-RUN vp install --frozen-lockfile
+RUN --mount=type=cache,id=parcel-hopscotch-pnpm-v1,target=/pnpm/store,uid=1000,gid=1000,sharing=locked \
+  vp install --frozen-lockfile -- \
+    --store-dir=/pnpm/store --network-concurrency=4 --fetch-timeout=300000
 COPY --chown=1000:1000 . .
 RUN vp run build
 RUN install -d -o 1000 -g 1000 /app/runtime-data && \
   touch /app/runtime-data/.parcel-hopscotch-volume && \
   chown 1000:1000 /app/runtime-data/.parcel-hopscotch-volume
 
-FROM --platform=$BUILDPLATFORM ghcr.io/voidzero-dev/vite-plus:0.3.0@sha256:bca24ac970b21298430ad281f306dbe0a17be3fd1d6c9ec5f2cc73da65740b88 AS production-dependencies
+FROM --platform=$BUILDPLATFORM ghcr.io/voidzero-dev/vite-plus:1.0.0-rc.0@sha256:2777dc87ed4d842688af87d20e8452561609d20d78927c6c9544aa011b9b4e8f AS production-dependencies
 WORKDIR /app
 COPY --chown=1000:1000 package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
-RUN vp install --prod --frozen-lockfile
+RUN --mount=type=cache,id=parcel-hopscotch-pnpm-v1,target=/pnpm/store,uid=1000,gid=1000,sharing=locked \
+  vp install --prod --frozen-lockfile -- \
+    --store-dir=/pnpm/store --network-concurrency=4 --fetch-timeout=300000
 
 FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime
 WORKDIR /app

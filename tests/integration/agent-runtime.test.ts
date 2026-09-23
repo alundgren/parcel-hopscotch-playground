@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { ServerMessage } from "../../src/shared/contracts";
 import { makeAgentCoordinator } from "../../src/server/agent-runtime";
 import type { ServerConfig } from "../../src/server/config";

@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { ProviderError, type ChatTool, type FetchLike, type JevRequest } from "../../src/server/providers/contracts";
 import { buildMinistralWireRequest } from "../../src/server/providers/chat-request";
 import { readBoundedBody } from "../../src/server/providers/http";

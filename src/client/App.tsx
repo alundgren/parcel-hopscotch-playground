@@ -117,7 +117,7 @@ function ChatPanel({ snapshot, connected, onSend, onCancel, error }: { snapshot:
     onSend(value);
     setMessage("");
   };
-  return <aside className="chat-panel" aria-label={`Assistant chat, ${snapshot.agentMode} provider`} data-provider-mode={snapshot.agentMode}>
+  return <aside className="chat-panel" aria-label="Assistant chat" data-provider-mode={snapshot.agentMode}>
     <div className="chat-messages" ref={listRef} aria-live="polite">
       {snapshot.chat.map((item) => <p key={item.id} className={`chat-message chat-${item.role}`} data-chat-turn={item.turnId} data-chat-role={item.role}>{item.content}</p>)}
       {active !== null && <div className="turn-progress" role="status"><span className="progress-dot" aria-hidden="true" /> <span>{active.phase}</span><Button variant="link" onClick={onCancel}>Cancel</Button></div>}
@@ -136,13 +136,13 @@ type CatalogueCategory = "All" | ToolCategory;
 interface ScenarioNotice { readonly scenario: ExploreScenarioId; readonly message: string; readonly offerReset: boolean }
 const effectLabels: Readonly<Record<string, string>> = {
   read_workspace: "Read the current workspace",
-  read_audit: "Read owner-scoped Audit history",
-  navigate_registered_view: "Open a registered application view",
-  highlight_registered_target: "Highlight a registered application target",
-  start_bounded_tutorial: "Start a bounded tutorial",
+  read_audit: "Read your Audit history",
+  navigate_registered_view: "Open a view",
+  highlight_registered_target: "Highlight a control or evidence",
+  start_bounded_tutorial: "Start a tutorial",
   stop_tutorial_guidance: "Dismiss the current tutorial",
   create_reviewed_proposal: "Prepare a proposal for human review",
-  provider_classification: "Run a bounded provider classification",
+  provider_classification: "Classify a note or check consent",
   read_only: "Leave workspace data unchanged",
 };
 
@@ -214,7 +214,7 @@ function ExploreView({ entries, connected, busy, scenarioActive, notice, runScen
         <div className="tool-columns" aria-hidden="true"><span>Tool</span><span>What it does</span><span>Type</span><span /></div>
         <div className="tool-list">{matches.map((entry) => <details className="tool-row" key={entry.id} data-tool-id={entry.id}>
           <summary><span><span className="tool-name">{entry.purpose}</span><code className="tool-id">{entry.id}</code></span><span className="tool-description">{entry.description}</span><span className="tool-kind">{entry.category}</span><span className="tool-chevron" aria-hidden="true">›</span></summary>
-          <div className="tool-detail"><p className="tool-effect">What it may do: {entry.allowedEffects.map((effect) => effectLabels[effect] ?? effect).join("; ")}.</p><p className="tool-example-note">Illustrative examples validated against the runtime schemas.</p><div className="tool-examples"><div><div className="code-label"><span>Example call</span><Button variant="link" onClick={() => void copyExample(entry)} aria-label={`Copy example call for ${entry.id}`}>Copy</Button></div><pre id={`tool-call-${entry.id}`}>{JSON.stringify({ tool: entry.id, arguments: entry.example.arguments }, null, 2)}</pre></div><div><div className="code-label"><span>Example result</span></div><pre>{JSON.stringify(entry.example.result, null, 2)}</pre></div></div></div>
+          <div className="tool-detail"><p className="tool-effect">What it may do: {entry.allowedEffects.map((effect) => effectLabels[effect] ?? effect).join("; ")}.</p><p className="tool-example-note">Example data.</p><div className="tool-examples"><div><div className="code-label"><span>Example call</span><Button variant="link" onClick={() => void copyExample(entry)} aria-label={`Copy example call for ${entry.id}`}>Copy</Button></div><pre id={`tool-call-${entry.id}`}>{JSON.stringify({ tool: entry.id, arguments: entry.example.arguments }, null, 2)}</pre></div><div><div className="code-label"><span>Example result</span></div><pre>{JSON.stringify(entry.example.result, null, 2)}</pre></div></div></div>
         </details>)}</div>
       </>}
       <div className="copy-status" role="status">{copyStatus}</div>

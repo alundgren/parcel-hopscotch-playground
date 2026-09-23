@@ -77,7 +77,7 @@ const isolatedContext = async (browser: Browser, testInfo: TestInfo, identity: s
   return browser.newContext({
     baseURL: "http://127.0.0.1:4173",
     viewport,
-    recordVideo: { dir: testInfo.outputPath("isolation-videos"), size: viewport },
+    ...(process.env.RECORD_VIDEO === "true" ? { recordVideo: { dir: testInfo.outputPath("isolation-videos"), size: viewport } } : {}),
     extraHTTPHeaders: { [identityHeader]: identity },
   });
 };
