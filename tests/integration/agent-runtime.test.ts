@@ -41,6 +41,7 @@ type ToolPayload = {
   readonly truncated?: boolean;
   readonly result?: {
     readonly count?: number;
+    readonly queueTotals?: { readonly ready: number; readonly review: number; readonly waiting: number };
     readonly orders?: ReadonlyArray<{ readonly id?: string; readonly status?: string }>;
     readonly id?: string;
     readonly changes?: ReadonlyArray<unknown>;
@@ -396,18 +397,20 @@ describe("agent runtime", () => {
       for (const results of [storedResults]) {
         expect(results).toHaveLength(5);
         const all = results.find((entry) => entry.id === "call_all")?.payload;
-        expect(all).toMatchObject({ ok: true, result: { count: 24 } });
+        expect(all).toMatchObject({ ok: true, result: { count: 24, queueTotals: { ready: 6, review: 14, waiting: 4 } } });
         expect(all?.truncated).toBeUndefined();
         expect(all?.result?.orders).toHaveLength(24);
         expect(all?.result?.orders?.map((order) => order.id)).toContain("BB-1072");
         expect(results.find((entry) => entry.id === "call_null")?.payload).toEqual(all);
         const review = results.find((entry) => entry.id === "call_review")?.payload;
-        expect(review).toMatchObject({ ok: true, result: { count: 14 } });
+        expect(review).toMatchObject({ ok: true, result: { count: 14, queueTotals: { ready: 6, review: 14, waiting: 4 } } });
         expect(review?.result?.orders?.every((order) => order.status === "review")).toBe(true);
         const ready = results.find((entry) => entry.id === "call_ready")?.payload;
-        expect(ready).toMatchObject({ ok: true, result: { count: 6 } });
+        expect(ready).toMatchObject({ ok: true, result: { count: 6, queueTotals: { ready: 6, review: 14, waiting: 4 } } });
         expect(ready?.result?.orders).toHaveLength(6);
         expect(ready?.result?.orders?.every((order) => order.status === "ready")).toBe(true);
+        expect(ready?.result?.orders?.find((order) => order.id === "BB-1112")?.status).toBe("ready");
+        expect(ready?.result?.queueTotals?.review).toBeGreaterThan(0);
         const batch = results.find((entry) => entry.id === "call_batch")?.payload;
         expect(batch?.truncated).toBeUndefined();
         expect(batch?.result?.id).toMatch(/^proposal_/);
@@ -415,6 +418,36 @@ describe("agent runtime", () => {
         expect(batch?.result?.omissions).toHaveLength(18);
       }
       expect(coordinator.acknowledgeComplete(identity, 1, turnId, "connection-useful")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it("gives the model whole-queue totals after it requests only ready orders", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let round = 0;
+    let replyRequest: MinistralRequest | null = null;
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      if (round++ === 0) return result([{ id: "ready_only", name: "listOrders", arguments: { status: "ready" } }]);
+      replyRequest = request;
+      return result([], "Ready: 6\nReview: 14\nWaiting: 4");
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = "turn_12345678-ready-overview";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "ready-overview", message: "Which orders can I work on now, and which need review or waiting?", viewContext: workView, connectionId: "ready-overview", send: async () => undefined }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(round).toBe(2);
+      const request = replyRequest as MinistralRequest | null;
+      expect(request).not.toBeNull();
+      const system = request?.messages.find((message) => message.role === "system");
+      expect(system?.content).toContain("listOrders.queueTotals");
+      expect(system?.content).toContain("never place a ready order under review or waiting");
+      const ready = toolPayloads(request?.messages ?? []).find((entry) => entry.id === "ready_only")?.payload;
+      expect(ready).toMatchObject({ ok: true, result: { count: 6, queueTotals: { ready: 6, review: 14, waiting: 4 } } });
+      expect(ready?.result?.orders?.find((order) => order.id === "BB-1112")?.status).toBe("ready");
+      expect(turn.history.at(-1)).toMatchObject({ role: "assistant", content: "Ready: 6\nReview: 14\nWaiting: 4" });
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "ready-overview")).toBe(true);
       yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
     }));
   });

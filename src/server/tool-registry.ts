@@ -107,11 +107,11 @@ interface ToolSpec {
 
 const specs = {
   listOrders: {
-    description: "Read each order's ID, status, exception family, and recorded issue together. Omit filters to list the whole queue; use status review for individual examples needing a decision.",
+    description: "Read each returned order's ID, status, exception family, and recorded issue together. count is the filtered result count; queueTotals always counts the whole queue by status, even when filters are set. Omit filters to list the whole queue; use status review for individual examples needing a decision.",
     category: "Read", purpose: "Find orders", allowedEffects: ["read_workspace"],
-    example: { arguments: { status: "ready" }, result: { count: 1, orders: [{ id: "BB-1051", item: "Stoneware mug", issue: "Blue unavailable", status: "ready", family: "substitution" }] } },
+    example: { arguments: { status: "ready" }, result: { count: 1, queueTotals: { ready: 1, review: 0, waiting: 0 }, orders: [{ id: "BB-1051", item: "Stoneware mug", issue: "Blue unavailable", status: "ready", family: "substitution" }] } },
     input: Schema.Struct({ status: Schema.optionalKey(Schema.NullOr(OrderStatus)), family: Schema.optionalKey(Schema.NullOr(ResolutionFamily)), query: Schema.optionalKey(Schema.NullOr(Schema.String.check(Schema.isMaxLength(80)))) }),
-    output: Schema.Struct({ count: Schema.Int, orders: Schema.Array(orderListResult) }),
+    output: Schema.Struct({ count: Schema.Int, queueTotals: Schema.Struct({ ready: Schema.Int, review: Schema.Int, waiting: Schema.Int }), orders: Schema.Array(orderListResult) }),
   },
   getOrder: {
     description: "Look up an order ID such as BB-1042 and read its current details and evidence. Use this for order IDs, not classifyNote.",

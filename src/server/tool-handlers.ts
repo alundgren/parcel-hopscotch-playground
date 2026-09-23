@@ -49,6 +49,11 @@ export const toolHandlers: ToolHandlers = {
   listOrders: async (context, input) => {
     const args = input as { status?: OrderSummary["status"] | null; family?: OrderSummary["family"] | null; query?: string | null };
     const state = await snapshot(context);
+    const queueTotals = {
+      ready: state.orders.filter((order) => order.status === "ready").length,
+      review: state.orders.filter((order) => order.status === "review").length,
+      waiting: state.orders.filter((order) => order.status === "waiting").length,
+    };
     const query = args.query?.trim().toLowerCase();
     const orders = state.orders
       .filter((order) => args.status == null || order.status === args.status)
@@ -58,6 +63,7 @@ export const toolHandlers: ToolHandlers = {
       .map(({ id, item, issue, status, family }) => ({ id, item, issue, status, family }));
     return {
       count: orders.length,
+      queueTotals,
       orders,
     };
   },
