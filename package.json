@@ -20,7 +20,9 @@
     "smoke:providers": "vp exec tsx src/server/provider-smoke.ts",
     "smoke:agent": "vp exec tsx src/server/provider-smoke.ts",
     "verify:container": "node scripts/verify-container.mjs",
-    "check": "vp run typecheck && vp test run && vp run build",
+    "check": "vp run typecheck && vp test run && vp run test:qa",
+    "qa": "node scripts/qa.mjs",
+    "test:qa": "vp run build && node --test tools/qa-loop/core.test.mjs qa/parcel/adapter.test.mjs tests/qa/workflow.node-test.mjs",
     "test:live": "node scripts/live-acceptance.mjs",
     "test:browser": "vp test run --project=browser-*",
     "benchmark:tests": "node scripts/benchmark-tests.mjs"

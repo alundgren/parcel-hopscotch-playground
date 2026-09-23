@@ -1,0 +1,9 @@
+{
+  "id": "replacement-consent",
+  "version": "1",
+  "title": "Decide what to do about a replacement",
+  "goal": "Find out whether order BB-1076 can proceed with the proposed replacement and what you should do next.",
+  "context": "The original item is unavailable. The order contains the customer's reply about a replacement.",
+  "completion": "You can explain the next action and the customer's reasons for it.",
+  "variations": ["Ask why the assistant reached its conclusion.", "Compare this reply with another replacement order."]
+}

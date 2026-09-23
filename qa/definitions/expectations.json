@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "fixture": {
+    "id": "parcel-seed-v1",
+    "classification": "synthetic",
+    "sources": ["src/server/seeds.ts", "src/server/persistence.ts"],
+    "setup": "Start the adapter with a new run directory. Use normal UI commands to establish recovery cases. Capture verifier facts before and after each mission."
+  },
+  "rules": [
+    {
+      "id": "facts-support-advice",
+      "status": "documented",
+      "source": "src/shared/explore.ts",
+      "scenarios": ["queue-triage"],
+      "expected": "Counts and cited order facts match the current database. Advice does not invent urgency or claim an uncommitted proposal changed an order. Freeform wording and alternate valid routes are accepted."
+    },
+    {
+      "id": "review-before-commit",
+      "status": "documented",
+      "source": "docs/architecture.md#review-and-reset-ordering",
+      "scenarios": ["queue-triage", "address-correction", "replacement-consent", "recovery"],
+      "expected": "Preparing a proposal leaves business state unchanged. Only acceptance through the ordinary UI commits the exact reviewed change. Stale proposals cannot commit."
+    },
+    {
+      "id": "address-evidence",
+      "status": "documented",
+      "source": "src/server/seeds.ts",
+      "scenarios": ["address-correction"],
+      "expected": "BB-1042's customer specifies number 41 instead of 14. Any proposed correction uses that evidence and preserves unrelated address values. For another order, derive the expected correction from that order's evidence."
+    },
+    {
+      "id": "conditional-permission",
+      "status": "documented",
+      "source": "src/server/seeds.ts",
+      "scenarios": ["replacement-consent"],
+      "expected": "BB-1076's request for a picture is not unconditional permission to substitute. The explanation must preserve that condition and must not present the order as approved for replacement. A contrasting case is BB-1051, which explicitly agrees to sage."
+    },
+    {
+      "id": "recover-visible-state",
+      "status": "documented",
+      "source": "docs/architecture.md#review-and-reset-ordering",
+      "scenarios": ["recovery"],
+      "expected": "Reload reflects persisted business state. Accepting a valid Undo restores the affected business values; it does not erase retained audit or cost history."
+    },
+    {
+      "id": "user-comprehension",
+      "status": "hypothesis",
+      "source": "qa/definitions/personas/new-operator.json",
+      "scenarios": ["queue-triage", "address-correction", "replacement-consent", "recovery"],
+      "expected": "A new operator can identify a useful next action and explain whether a change is pending or saved. Report concrete confusing wording or controls as UX concerns; simulated success does not establish usability for real people."
+    }
+  ],
+  "quality": {
+    "accuracy": "Compare concrete claims and final state with the fixture evidence and documented rules.",
+    "helpfulness": "Check whether the answer addresses the user's task and provides a usable next action. Preserve disagreement as a product question.",
+    "speed": "Record send-to-completed-work and accept-to-committed-visible-update. Missing completion is not a fast result.",
+    "efficiency": "Record app calls, tokens, known cost, unknown cost attempts, and repeated or unnecessary work. Compare equivalent successful tasks before claiming improvement."
+  }
+}

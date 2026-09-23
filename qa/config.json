@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "productId": "parcel-hopscotch",
+  "adapter": "qa/parcel/adapter.mjs",
+  "persona": "qa/definitions/personas/new-operator.json",
+  "scenarios": [
+    "qa/definitions/scenarios/queue-triage.json",
+    "qa/definitions/scenarios/address-correction.json",
+    "qa/definitions/scenarios/replacement-consent.json",
+    "qa/definitions/scenarios/recovery.json"
+  ],
+  "expectations": "qa/definitions/expectations.json",
+  "memoryFile": "qa/memory/lessons.json",
+  "defaults": {
+    "durationMinutes": 120,
+    "budgetUsd": 0.1,
+    "explorerModel": "gpt-6-luna",
+    "explorerEffort": "max"
+  }
+}

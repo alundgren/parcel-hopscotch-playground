@@ -1,0 +1,6 @@
+interface:
+  display_name: "Exploratory QA"
+  short_description: "Explore a local app and verify useful corrections"
+  default_prompt: "Use $exploratory-qa to run a bounded QA session on this local application."
+policy:
+  allow_implicit_invocation: false
