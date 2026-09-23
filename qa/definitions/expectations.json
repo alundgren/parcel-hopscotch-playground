@@ -3,7 +3,10 @@
   "fixture": {
     "id": "parcel-seed-v1",
     "classification": "synthetic",
-    "sources": ["src/server/seeds.ts", "src/server/persistence.ts"],
+    "sources": [
+      "src/server/seeds.ts",
+      "src/server/persistence.ts"
+    ],
     "setup": "Start the adapter with a new run directory. Use normal UI commands to establish recovery cases. Capture verifier facts before and after each mission."
   },
   "rules": [
@@ -11,42 +14,71 @@
       "id": "facts-support-advice",
       "status": "documented",
       "source": "src/shared/explore.ts",
-      "scenarios": ["queue-triage"],
+      "scenarios": [
+        "queue-triage"
+      ],
       "expected": "Counts and cited order facts match the current database. Advice does not invent urgency or claim an uncommitted proposal changed an order. Freeform wording and alternate valid routes are accepted."
     },
     {
       "id": "review-before-commit",
       "status": "documented",
       "source": "docs/architecture.md#review-and-reset-ordering",
-      "scenarios": ["queue-triage", "address-correction", "replacement-consent", "recovery"],
+      "scenarios": [
+        "queue-triage",
+        "address-correction",
+        "replacement-consent",
+        "recovery",
+        "accepted-resolution-packing"
+      ],
       "expected": "Preparing a proposal leaves business state unchanged. Only acceptance through the ordinary UI commits the exact reviewed change. Stale proposals cannot commit."
     },
     {
       "id": "address-evidence",
       "status": "documented",
       "source": "src/server/seeds.ts",
-      "scenarios": ["address-correction"],
+      "scenarios": [
+        "address-correction"
+      ],
       "expected": "BB-1042's customer specifies number 41 instead of 14. Any proposed correction uses that evidence and preserves unrelated address values. For another order, derive the expected correction from that order's evidence."
     },
     {
       "id": "conditional-permission",
       "status": "documented",
       "source": "src/server/seeds.ts",
-      "scenarios": ["replacement-consent"],
+      "scenarios": [
+        "replacement-consent"
+      ],
       "expected": "BB-1076's request for a picture is not unconditional permission to substitute. The explanation must preserve that condition and must not present the order as approved for replacement. A contrasting case is BB-1051, which explicitly agrees to sage."
     },
     {
       "id": "recover-visible-state",
       "status": "documented",
       "source": "docs/architecture.md#review-and-reset-ordering",
-      "scenarios": ["recovery"],
+      "scenarios": [
+        "recovery"
+      ],
       "expected": "Reload reflects persisted business state. Accepting a valid Undo restores the affected business values; it does not erase retained audit or cost history."
+    },
+    {
+      "id": "resolution-before-packing",
+      "status": "user-reported, to verify against persisted receipts and order state",
+      "source": "docs/qa-validation.md#owner-reported-incident",
+      "scenarios": [
+        "accepted-resolution-packing"
+      ],
+      "expected": "Fresh BB-1051 has one blue stoneware mug at GBP 24.00 and one available sage mug, version 1, unresolved and incomplete. Accepting substitution changes blue to sage at the same price, reserves one sage mug, and reaches version 2 with resolved true but completed false and Ready status. Read the accepted receipt and current order before explaining an already-accepted response. Do not invent a version mismatch, claim nothing changed, propose the same substitution again, or suggest rejecting an accepted resolution. Explain Ready and offer a separate reviewed ready batch for packing. The operator must inspect all included orders and accept through the UI. If included, BB-1051 reaches version 3 and completed true with a packing receipt."
     },
     {
       "id": "user-comprehension",
       "status": "hypothesis",
       "source": "qa/definitions/personas/new-operator.json",
-      "scenarios": ["queue-triage", "address-correction", "replacement-consent", "recovery"],
+      "scenarios": [
+        "queue-triage",
+        "address-correction",
+        "replacement-consent",
+        "recovery",
+        "accepted-resolution-packing"
+      ],
       "expected": "A new operator can identify a useful next action and explain whether a change is pending or saved. Report concrete confusing wording or controls as UX concerns; simulated success does not establish usability for real people."
     }
   ],

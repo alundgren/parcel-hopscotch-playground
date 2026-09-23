@@ -1,0 +1,12 @@
+{
+  "id": "accepted-resolution-packing",
+  "version": "1",
+  "title": "Finish work after reviewing a replacement",
+  "goal": "Handle the agreed replacement for BB-1051 and establish what you must do to send the order to packing.",
+  "context": "You are new to fulfilment. Review the replacement and accept it if its contents match the customer's agreement. If the order still appears unchanged afterward, ask the assistant to explain before taking another action. Inspect the full contents of any further proposed change.",
+  "completion": "You can explain what your acceptance changed, what work remains, and whether the order has been released to packing.",
+  "variations": [
+    "After accepting, ask: I just reviewed 1051 but now it says resolution was already accepted but nothing changed. Can you explain?",
+    "Return to the order after a reload and ask what still needs doing."
+  ]
+}

@@ -7,7 +7,8 @@
     "qa/definitions/scenarios/queue-triage.json",
     "qa/definitions/scenarios/address-correction.json",
     "qa/definitions/scenarios/replacement-consent.json",
-    "qa/definitions/scenarios/recovery.json"
+    "qa/definitions/scenarios/recovery.json",
+    "qa/definitions/scenarios/accepted-resolution-packing.json"
   ],
   "expectations": "qa/definitions/expectations.json",
   "memoryFile": "qa/memory/lessons.json",

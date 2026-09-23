@@ -14,10 +14,13 @@ coordinator; they are not permission configuration files.
 
 ## A run
 
-Read `qa/config.json`. It selects one synthetic operator persona, four missions,
+Read `qa/config.json`. It selects one synthetic operator persona, five missions,
 independent product expectations, and repository memory. The persona is a stated
 hypothesis about a user, not customer research. Missions cover triage, address
-correction, conditional replacement consent, and interrupted work with Undo.
+correction, conditional replacement consent, interrupted work with Undo, and the
+separate actions of accepting a replacement and releasing an order to packing.
+The last mission comes from an incident reported by the owner. Its expected
+receipt and state transitions belong to the verifier, not the explorer packet.
 The explorer chooses questions and UI actions; mission briefs contain no answer
 key. The coordinator may investigate an unplanned follow-up.
 
@@ -43,7 +46,8 @@ vp run qa -- packet --run RUN_DIR --role explorer --scenario queue-triage
 
 Pass only that packet to a fresh explorer delegate, without conversation history.
 Select other missions with `address-correction`, `replacement-consent`, or
-`recovery`. They share one spending total and one deadline. A new-user explorer
+`recovery`, or `accepted-resolution-packing`. They share one spending total and
+one deadline. A new-user explorer
 does not inherit the QA team's previous findings or lessons.
 
 The explorer sends a JSON browser operation through stdin or `--input FILE`:

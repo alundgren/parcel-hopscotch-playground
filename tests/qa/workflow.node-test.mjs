@@ -30,7 +30,9 @@ async function fixture(t) {
 test('wrapper keeps fresh explorer knowledge separate while a second run cites inspected learning', async (t) => {
   const data = await fixture(t);
   const first = await initialize(data.options);
-  assert.equal(first.run.scenarios.length, 4);
+  assert.deepEqual(first.run.scenarios.map((scenario) => scenario.id), [
+    'queue-triage', 'address-correction', 'replacement-consent', 'recovery', 'accepted-resolution-packing',
+  ]);
   assert.equal(first.run.settings.budgetUsd, 0.1);
   assert.match(first.run.persona.digest, /^[a-f0-9]{64}$/);
   const explorer = await generatePacket(first.runDir, 'explorer', 'queue-triage');
