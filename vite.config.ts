@@ -18,6 +18,7 @@ const captureViewport: BrowserCommand<[relativePath: string]> = async (context, 
 
 export default defineConfig({
   plugins: [react()],
+  optimizeDeps: { include: ["react-markdown"] },
   build: {
     outDir: "dist/client",
     emptyOutDir: true,

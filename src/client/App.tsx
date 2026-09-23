@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import Markdown from "react-markdown";
 import type { AgentViewContext, AuditAttemptDetail, AuditAttemptSummary, AuditRequestSummary, AuditPage, CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, ToolCatalogueEntry, ToolCategory, TutorialState, WorkspaceSnapshot } from "../shared/contracts";
 import { exploreScenarios, type ExploreScenarioId } from "../shared/explore";
 import { targets } from "../shared/targets";
@@ -105,11 +106,39 @@ function WorkQueue({ orders, latestReceipt, tutorialReceipt, savedProposal, tuto
   </section>;
 }
 
-function ChatPanel({ snapshot, connected, onSend, onCancel, error }: { snapshot: WorkspaceSnapshot; connected: boolean; onSend: (message: string) => void; onCancel: () => void; error: string | null }) {
+const markdownElements = ["a", "blockquote", "br", "code", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "li", "ol", "p", "pre", "strong", "ul"];
+const safeMarkdownUrl = (url: string) => {
+  try { return new URL(url).protocol === "https:" ? url : ""; }
+  catch { return ""; }
+};
+const AssistantMessage = memo(function AssistantMessage({ content }: { content: string }) {
+  return <Markdown allowedElements={markdownElements} skipHtml unwrapDisallowed urlTransform={safeMarkdownUrl} components={{
+    a: ({ href, children }) => href ? <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> : <span>{children}</span>,
+  }}>{content}</Markdown>;
+});
+
+function ChatPanel({ snapshot, connected, wide, onWideChange, onSend, onCancel, error }: { snapshot: WorkspaceSnapshot; connected: boolean; wide: boolean; onWideChange: (wide: boolean) => void; onSend: (message: string) => void; onCancel: () => void; error: string | null }) {
   const [message, setMessage] = useState("");
   const listRef = useRef<HTMLDivElement | null>(null);
+  const readingPosition = useRef<{ fraction: number; atBottom: boolean } | null>(null);
   const active = snapshot.activeTurn;
   useEffect(() => { listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }); }, [snapshot.chat.length, active?.phase]);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const position = readingPosition.current;
+    if (list === null || position === null) return;
+    const range = Math.max(0, list.scrollHeight - list.clientHeight);
+    list.scrollTop = position.atBottom ? range : position.fraction * range;
+    readingPosition.current = null;
+  }, [wide]);
+  const toggleWidth = () => {
+    const list = listRef.current;
+    if (list !== null) {
+      const range = Math.max(0, list.scrollHeight - list.clientHeight);
+      readingPosition.current = { fraction: range === 0 ? 0 : list.scrollTop / range, atBottom: range - list.scrollTop <= 32 };
+    }
+    onWideChange(!wide);
+  };
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const value = message.trim();
@@ -118,8 +147,11 @@ function ChatPanel({ snapshot, connected, onSend, onCancel, error }: { snapshot:
     setMessage("");
   };
   return <aside className="chat-panel" aria-label="Assistant chat" data-provider-mode={snapshot.agentMode}>
+    <div className="chat-controls"><Button variant="quiet" className="chat-width-button" type="button" onClick={toggleWidth} aria-label={wide ? "Restore work space" : "Widen chat"} title={wide ? "Restore work space" : "Widen chat"} aria-pressed={wide}><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{wide ? <><path d="m9 5 7 7-7 7"/><path d="m3 5 7 7-7 7"/></> : <><path d="m15 5-7 7 7 7"/><path d="m21 5-7 7 7 7"/></>}</svg></Button></div>
     <div className="chat-messages" ref={listRef} aria-live="polite">
-      {snapshot.chat.map((item) => <p key={item.id} className={`chat-message chat-${item.role}`} data-chat-turn={item.turnId} data-chat-role={item.role}>{item.content}</p>)}
+      {snapshot.chat.map((item) => item.role === "assistant"
+        ? <div key={item.id} className="chat-message chat-assistant" data-chat-turn={item.turnId} data-chat-role={item.role}><AssistantMessage content={item.content} /></div>
+        : <p key={item.id} className="chat-message chat-user" data-chat-turn={item.turnId} data-chat-role={item.role}>{item.content}</p>)}
       {active !== null && <div className="turn-progress" role="status"><span className="progress-dot" aria-hidden="true" /> <span>{active.phase}</span><Button variant="link" onClick={onCancel}>Cancel</Button></div>}
       {error !== null && <p className="chat-error" role="alert">{error}</p>}
     </div>
@@ -381,6 +413,7 @@ function AuditView({ page, details, loading, error, revision, connected, focused
 
 export default function App() {
   const [view, setView] = useState<View>("work");
+  const [chatWide, setChatWide] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [proposal, setProposal] = useState<ReviewedProposal | null>(null);
   const [receipt, setReceipt] = useState<CommandReceipt | null>(null);
@@ -564,6 +597,6 @@ export default function App() {
   };
 
   return <div className="app-shell"><header className="topbar"><div className="brand"><BrandIcon onClick={goToStart} /> <span>Bracken &amp; Beam</span></div><span className={`connection connection-${status}`} data-testid="connection-status"><span aria-hidden="true" />{connectionText[status]}</span><nav aria-label="Main navigation">{(["work", "explore", "audit"] as const).map((item) => <Button key={item} variant="quiet" aria-current={view === item ? "page" : undefined} onClick={() => { setView(item); setAuditFocus(null); }}>{item[0]!.toUpperCase() + item.slice(1)}</Button>)}</nav></header>
-    {view === "work" ? <main className="work-layout" data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} coach={coach} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => void confirmReceiptAndBack()} onUndo={undo} coach={coach} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} tutorialReceipt={snapshot.tutorialReceipt} savedProposal={snapshot.currentProposal} tutorialProposal={snapshot.tutorialProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} selectOrder={(orderId) => { setSelectedOrderId(orderId); if (orderId !== null) void reportTutorialAction({ action: "order_selected", orderId }); }} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openTutorialReceipt={() => setReceipt(snapshot.tutorialReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} openTutorialProposal={() => setProposal(snapshot.tutorialProposal)} selectReady={() => { void reportTutorialAction({ action: "ready_filter_selected" }); }} coach={coach} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} onSend={(message) => { try { const context: AgentViewContext = proposal !== null ? { view: "work", focus: { kind: "proposal", proposalId: proposal.id } } : receipt !== null ? { view: "work", focus: { kind: "receipt", receiptId: receipt.id } } : selectedOrderId !== null ? { view: "work", focus: { kind: "order", orderId: selectedOrderId } } : { view, focus: null }; sendAgentMessage(message, context); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><ExploreView entries={toolCatalogue} connected={status === "connected" && snapshot !== null && snapshot.activeTurn === null} busy={busy} scenarioActive={snapshot?.activeTurn !== null && snapshot?.activeTurn !== undefined} notice={scenarioNotice} runScenario={(scenario) => void launchExploreScenario(scenario)} cancelScenario={cancelAgentTurn} prepareReset={() => void prepareExploreReset()} advanceScenario={() => void advanceFromExplore()} />{coach}</div> : <div data-view="audit"><AuditView page={auditPage} details={auditDetails} loading={auditLoading} error={auditError} revision={auditRevision} connected={status === "connected"} focusedAttemptId={auditFocus?.attemptId ?? null} onFocusedAttemptRendered={(attemptId) => { if (auditFocus?.attemptId === attemptId && auditFocus.acknowledge) acknowledgeAgentComplete(auditFocus.turnId, auditFocus.generation); }} requestPage={requestAudit} requestDetail={requestAuditDetail} />{coach}</div>}
+    {view === "work" ? <main className={`work-layout${chatWide ? " chat-wide" : ""}`} data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} coach={coach} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => void confirmReceiptAndBack()} onUndo={undo} coach={coach} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} tutorialReceipt={snapshot.tutorialReceipt} savedProposal={snapshot.currentProposal} tutorialProposal={snapshot.tutorialProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} selectOrder={(orderId) => { setSelectedOrderId(orderId); if (orderId !== null) void reportTutorialAction({ action: "order_selected", orderId }); }} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openTutorialReceipt={() => setReceipt(snapshot.tutorialReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} openTutorialProposal={() => setProposal(snapshot.tutorialProposal)} selectReady={() => { void reportTutorialAction({ action: "ready_filter_selected" }); }} coach={coach} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} wide={chatWide} onWideChange={setChatWide} onSend={(message) => { try { const context: AgentViewContext = proposal !== null ? { view: "work", focus: { kind: "proposal", proposalId: proposal.id } } : receipt !== null ? { view: "work", focus: { kind: "receipt", receiptId: receipt.id } } : selectedOrderId !== null ? { view: "work", focus: { kind: "order", orderId: selectedOrderId } } : { view, focus: null }; sendAgentMessage(message, context); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><ExploreView entries={toolCatalogue} connected={status === "connected" && snapshot !== null && snapshot.activeTurn === null} busy={busy} scenarioActive={snapshot?.activeTurn !== null && snapshot?.activeTurn !== undefined} notice={scenarioNotice} runScenario={(scenario) => void launchExploreScenario(scenario)} cancelScenario={cancelAgentTurn} prepareReset={() => void prepareExploreReset()} advanceScenario={() => void advanceFromExplore()} />{coach}</div> : <div data-view="audit"><AuditView page={auditPage} details={auditDetails} loading={auditLoading} error={auditError} revision={auditRevision} connected={status === "connected"} focusedAttemptId={auditFocus?.attemptId ?? null} onFocusedAttemptRendered={(attemptId) => { if (auditFocus?.attemptId === attemptId && auditFocus.acknowledge) acknowledgeAgentComplete(auditFocus.turnId, auditFocus.generation); }} requestPage={requestAudit} requestDetail={requestAuditDetail} />{coach}</div>}
   </div>;
 }
