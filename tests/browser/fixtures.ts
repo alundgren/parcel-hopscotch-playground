@@ -68,6 +68,20 @@ export const proposal: ReviewedProposal = {
   createdAt: now,
 };
 
+export const addressProposal: ReviewedProposal = {
+  id: "proposal-address",
+  generation: 1,
+  kind: "resolution",
+  title: "Check address",
+  ready: true,
+  changes: [
+    { orderId: "BB-1042", family: "address", before: "14 Market Road, London, W1 4AB", after: "Flat 8, 14 Market Road, London, W1 4AB", effect: "Use the corrected delivery address before dispatch.", expectedVersion: 3 },
+  ],
+  omissions: [],
+  effects: [],
+  createdAt: now,
+};
+
 export const receipt: CommandReceipt = {
   id: "receipt-1",
   proposalId: proposal.id,
