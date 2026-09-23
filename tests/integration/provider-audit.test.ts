@@ -759,3 +759,118 @@ describe("provider attempt audit", () => {
     expect(result.every((page) => page.serverTurnDurationMs === 125.25 && page.serverTurnMeasurement === "complete")).toBe(true);
   });
 });
+
+it("paginates complete requests, retains totals and measurements through reset, and isolates repeated prompts and generations", async () => {
+  const filename = await workspace();
+  const owner = identity("grouped-owner@example.test");
+  const other = identity("grouped-other@example.test");
+  const data = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+    const repository = yield* WorkspaceRepository;
+    yield* repository.snapshot(owner);
+    yield* repository.snapshot(other);
+    const makeCall = (who: RequestIdentity, generation: number, turnId: string, index: number, unknown = false) => Effect.gen(function* () {
+      const started = yield* repository.startProviderAttempt({ identity: who, generation, requestId: `${turnId}:${index}`, turnId,
+        kind: index === 1 ? "decisions" : "chat", mode: "live", provider: "OpenRouter", model: "test/model",
+        request: { messages: [{ role: "user", content: "Same prompt" }] }, requestBytes: 10 });
+      yield* repository.finishProviderAttempt(who, started.id, { outcome: "success", provider: "test", actualModel: "test/model", providerRequestId: null, generationId: null,
+        response: { content: index === 1 ? "unique-match" : "done" }, responseBytes: 10, inputTokens: 2, outputTokens: 1,
+        totalTokens: unknown ? null : 3, costUsd: unknown ? null : 0.00001, errorCode: null, errorMessage: null, retryCount: 0, durationMs: 4 });
+      return started.id;
+    });
+    const ids: string[] = [];
+    for (let index = 0; index < 24; index++) ids.push(yield* makeCall(owner, 1, "group-a", index));
+    yield* repository.recordApplicationAudit(owner, 1, { kind: "turn", label: "Completed agent turn", outcome: "complete", turnId: "group-a",
+      body: { measurement: "complete", completeDurationMs: 4321 } });
+    yield* makeCall(owner, 1, "group-b", 0, true);
+    yield* makeCall(other, 1, "group-a", 0);
+    const first = yield* repository.auditPage(owner, "", null, 1);
+    const second = yield* repository.auditPage(owner, "", first.nextCursor, 1);
+    const matched = yield* repository.auditPage(owner, ids[1]!);
+    const matchedBody = yield* repository.auditPage(owner, "unique-match");
+    const denied = yield* repository.auditPage(other, ids[1]!);
+    const reset = yield* repository.prepareReset(owner, 1);
+    yield* repository.accept(owner, 1, reset.id, "reset-grouped");
+    yield* makeCall(owner, 2, "group-a", 0);
+    const afterReset = yield* repository.auditPage(owner, "");
+    return { ids, first, second, matched, matchedBody, denied, afterReset };
+  }));
+  expect(data.first.total).toBe(2);
+  expect(data.first.requests).toHaveLength(1);
+  expect(data.first.requests[0]).toMatchObject({ turnId: "group-b", totalTokens: null, costUsd: null, durationMs: null, outcome: "unknown" });
+  expect(data.second.requests).toHaveLength(1);
+  expect(data.second.nextCursor).toBeNull();
+  expect(data.second.attempts.map((attempt) => attempt.id)).toEqual(data.ids);
+  expect(data.second.requests[0]).toMatchObject({ turnId: "group-a", turnCount: 24, totalTokens: 72, durationMs: 4321, outcome: "success" });
+  expect(data.second.requests[0]!.costUsd).toBeCloseTo(0.00024, 9);
+  expect(data.matched.requests).toEqual(data.second.requests);
+  expect(data.matched.attempts).toHaveLength(24);
+  expect(data.matchedBody.attempts).toHaveLength(24);
+  expect(data.denied.requests).toHaveLength(0);
+  expect(data.afterReset.total).toBe(3);
+  expect(data.afterReset.requests.filter((request) => request.turnId === "group-a")).toHaveLength(2);
+  expect(data.afterReset.requests.find((request) => request.turnId === "group-a" && request.generation === 1)).toMatchObject({ durationMs: 4321, outcome: "success", turnCount: 24 });
+  expect(data.afterReset.requests.find((request) => request.turnId === "group-a" && request.generation === 2)).toMatchObject({ durationMs: null, outcome: "unknown", turnCount: 1 });
+});
+
+it("keeps reset receipts and visible-commit measurements linked across generations without mixing reused turn IDs", async () => {
+  const filename = await workspace();
+  const owner = identity("reset-request-owner@example.test");
+  const data = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+    const repository = yield* WorkspaceRepository;
+    yield* repository.snapshot(owner);
+    const attempt = yield* repository.startProviderAttempt({ identity: owner, generation: 1, requestId: "reset-call", turnId: "reused-turn",
+      kind: "chat", mode: "scripted", provider: "OpenRouter", model: "test/model", request: { messages: [{ role: "user", content: "Reset my workspace" }] }, requestBytes: 10 });
+    const proposal = yield* repository.prepareReset(owner, 1);
+    yield* repository.recordApplicationAudit(owner, 1, { kind: "tool", label: "prepareReset", outcome: "prepared", turnId: "reused-turn", proposalId: proposal.id, body: {} });
+    const accepted = yield* repository.accept(owner, 1, proposal.id, "reset-proof");
+    yield* repository.recordCommandMeasurement(owner, 2, accepted.receipt.id, 125);
+    const unrelated = yield* repository.prepareResolution(owner, 2, "BB-1042");
+    yield* repository.recordApplicationAudit(owner, 2, { kind: "tool", label: "unrelated-new-generation", outcome: "prepared", turnId: "reused-turn", proposalId: unrelated.id, body: {} });
+    const unrelatedAccepted = yield* repository.accept(owner, 2, unrelated.id, "unrelated-proof");
+    return {
+      attempt, receiptId: accepted.receipt.id,
+      detail: yield* repository.auditDetail(owner, attempt.id),
+      byReceipt: yield* repository.auditPage(owner, accepted.receipt.id),
+      byMeasurement: yield* repository.auditPage(owner, "accept_to_visible_commit"),
+      unrelated: yield* repository.auditPage(owner, unrelatedAccepted.receipt.id),
+      byNewTurnRecord: yield* repository.auditPage(owner, "unrelated-new-generation"),
+    };
+  }));
+  expect(data.detail!.application.map((record) => record.kind)).toEqual(expect.arrayContaining(["tool", "reset", "command_visible"]));
+  expect(data.detail!.application.filter((record) => record.receiptId === data.receiptId)).toHaveLength(2);
+  expect(data.detail!.application.some((record) => record.label === "unrelated-new-generation")).toBe(false);
+  expect(data.byReceipt.requests.map((request) => request.id)).toEqual([data.attempt.id]);
+  expect(data.byMeasurement.requests.map((request) => request.id)).toEqual([data.attempt.id]);
+  expect(data.unrelated.requests).toHaveLength(0);
+  expect(data.byNewTurnRecord.requests).toHaveLength(0);
+});
+
+it("searches retained request history within the browser response budget", async () => {
+  const filename = await workspace();
+  const owner = identity("audit-search-volume@example.test");
+  await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+    const repository = yield* WorkspaceRepository;
+    yield* repository.snapshot(owner);
+    for (let index = 0; index < 30; index++) {
+      const turnId = `volume-turn-${index}`;
+      const proposalId = `volume-proposal-${index}`;
+      const receiptId = `volume-receipt-${index}`;
+      for (let call = 0; call < 2; call++) {
+        yield* repository.startProviderAttempt({ identity: owner, generation: 1, requestId: `${turnId}-${call}`, turnId,
+          kind: "chat", mode: "scripted", provider: "OpenRouter", model: "test/model", request: { messages: [{ role: "user", content: `Review order ${index}` }] }, requestBytes: 10 });
+      }
+      yield* repository.recordApplicationAudit(owner, 1, { kind: "tool", label: "Prepare review", outcome: "prepared", turnId, proposalId, body: { order: index } });
+      yield* repository.recordApplicationAudit(owner, 1, { kind: "ui", label: "Show review", outcome: "applied", turnId, proposalId, body: {} });
+      yield* repository.recordApplicationAudit(owner, 1, { kind: "receipt", label: "Accepted review", outcome: "accepted", proposalId, receiptId, body: {} });
+      yield* repository.recordApplicationAudit(owner, 1, { kind: "command_visible", label: "Visible review", outcome: "complete", receiptId, body: { durationMs: 10 } });
+    }
+    const started = performance.now();
+    const matched = yield* repository.auditPage(owner, "volume-receipt-29");
+    const absent = yield* repository.auditPage(owner, "no-such-record");
+    expect(matched.requests.map((request) => request.turnId)).toEqual(["volume-turn-29"]);
+    expect(matched.attempts).toHaveLength(2);
+    expect(absent.requests).toHaveLength(0);
+    // Two reads must finish well within the UI's five-second response expectation.
+    expect(performance.now() - started).toBeLessThan(3_000);
+  }));
+});

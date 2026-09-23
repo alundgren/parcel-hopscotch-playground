@@ -18,7 +18,7 @@ Use four scenario cards and a filterable catalogue generated from the real tool 
 
 ## Audit
 
-Use the full width and hide chat. Each inference attempt has one clear row showing time, request, model, outcome, complete duration, tokens, and cost. Add freeform multi-term search, a clear control, a match count, and an empty state. Rows expand to request, response, and application-result details with provider, bytes, tokens, costs, retries, and cancellations. Unknown cost is unknown, not zero.
+Use the full width and hide chat. Each user request has one row showing start time, prompt, models, outcome, send-to-completed-work duration, turn count, total tokens, and total cost. Expand requests independently to show model calls as chronological turns, then expand a turn for its existing details. The server groups and paginates by owner, workspace generation, and agent turn ID, never by prompt text. Search returns complete matching requests, including their other turns. Unknown measurements stay unknown. Add freeform multi-term search, a clear control, a match count, and an empty state. Rows expand to request, response, and application-result details with provider, bytes, tokens, costs, retries, and cancellations. Unknown cost is unknown, not zero.
 
 Show only completed-request, completed-turn, and committed-command durations with clear labels. A spinner or partial response is not completed work.
 

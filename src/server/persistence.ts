@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
-import type { AgentViewContext, AuditApplicationRecord, AuditAttemptDetail, AuditAttemptMode, AuditAttemptSummary, AuditPage, CommandReceipt, OrderStatus, ReviewedProposal, TutorialId, TutorialState, WorkspaceSnapshot } from "../shared/contracts.js";
+import type { AgentViewContext, AuditApplicationRecord, AuditAttemptDetail, AuditAttemptMode, AuditAttemptSummary, AuditRequestSummary, AuditPage, CommandReceipt, OrderStatus, ReviewedProposal, TutorialId, TutorialState, WorkspaceSnapshot } from "../shared/contracts.js";
 import type { ChatMessage } from "./providers/contracts.js";
 import { targets } from "../shared/targets.js";
 import { tutorialBatchOrderIds, tutorialPublicState, tutorialRequiredOrderIds, tutorialStepMatches, type TutorialProgressEvent } from "../shared/tutorials.js";
@@ -198,6 +198,7 @@ const migrate = (database: DatabaseSync) => {
       UNIQUE (user_id, generation, request_id),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+    CREATE INDEX IF NOT EXISTS provider_attempts_user_turn ON provider_attempts (user_id, generation, turn_id, started_at);
     CREATE INDEX IF NOT EXISTS provider_attempts_user_completed ON provider_attempts (user_id, completed_at DESC, started_at DESC);
   `);
   const columns = database.prepare("PRAGMA table_info(orders)").all() as Array<{ name: string }>;
@@ -1094,7 +1095,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
   }));
   const auditPage: WorkspaceRepositoryService["auditPage"] = (identity, rawQuery, rawCursor = null, requestedLimit = 12, rawMarkerCursor = null) => command(() => {
     const owner = database.prepare("SELECT id FROM users WHERE id = ? AND identity_digest = ?").get(identity.id, identity.digest) as { id: string } | undefined;
-    if (owner === undefined) return { query: rawQuery.trim(), attempts: [], total: 0, nextCursor: null, markers: [], markerNextCursor: null };
+    if (owner === undefined) return { query: rawQuery.trim(), requests: [], attempts: [], total: 0, nextCursor: null, markers: [], markerNextCursor: null };
     const query = rawQuery.trim().replace(/\s+/g, " ").slice(0, 160);
     const terms = [...new Set(query.toLocaleLowerCase("en").split(/\s+/).filter(Boolean))];
     const where: Array<string> = ["pa.user_id = ?"];
@@ -1132,44 +1133,78 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
           coalesce(ar.request_id, '') || ' ' || coalesce(ar.turn_id, '') || ' ' ||
           coalesce(ar.proposal_id, '') || ' ' || coalesce(ar.receipt_id, '') || ' ' || ar.body_json, ' ')
           FROM audit_records ar WHERE ar.user_id = pa.user_id AND ar.kind <> 'provider' AND (
-            ar.turn_id = pa.turn_id OR ar.attempt_id = pa.id OR
+            (ar.turn_id = pa.turn_id AND ar.generation = pa.generation) OR ar.attempt_id = pa.id OR
             ar.proposal_id IN (SELECT linked.proposal_id FROM audit_records linked
-              WHERE linked.user_id = pa.user_id AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL) OR
+              WHERE linked.user_id = pa.user_id AND linked.generation = pa.generation AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL) OR
             ar.receipt_id IN (
               SELECT accepted.receipt_id FROM audit_records accepted
               WHERE accepted.user_id = pa.user_id AND accepted.proposal_id IN (
                 SELECT linked.proposal_id FROM audit_records linked
-                WHERE linked.user_id = pa.user_id AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL
+                WHERE linked.user_id = pa.user_id AND linked.generation = pa.generation AND linked.turn_id = pa.turn_id AND linked.proposal_id IS NOT NULL
               ) AND accepted.receipt_id IS NOT NULL
             )
           )), '')
       ) LIKE ? ESCAPE '\\'`);
       parameters.push(`%${escapeLike(term)}%`);
     }
-    const count = database.prepare(`SELECT COUNT(*) AS count FROM provider_attempts pa WHERE ${where.join(" AND ")}`).get(...parameters) as { count: number };
-    let cursor: { readonly startedAt: string; readonly id: string } | null = null;
+    // Materialize matches so grouping cannot repeat the correlated audit search for each call.
+    const requestGroups = `WITH matching AS MATERIALIZED (
+      SELECT DISTINCT pa.generation, pa.turn_id FROM provider_attempts pa WHERE ${where.join(" AND ")}
+    ), grouped AS (
+      SELECT pa.generation, pa.turn_id, MIN(pa.started_at) AS started_at, MIN(pa.rowid) AS first_row
+      FROM provider_attempts pa JOIN matching m ON m.generation = pa.generation AND m.turn_id = pa.turn_id
+      WHERE pa.user_id = ? GROUP BY pa.generation, pa.turn_id
+    )`;
+    const groupParameters = [...parameters, owner.id];
+    const count = database.prepare(`${requestGroups} SELECT COUNT(*) AS count FROM grouped`).get(...groupParameters) as { count: number };
+    let cursor: { readonly startedAt: string; readonly firstRow: number } | null = null;
     if (rawCursor !== null) {
       try {
-        const decoded = JSON.parse(Buffer.from(rawCursor, "base64url").toString("utf8")) as { startedAt?: unknown; id?: unknown };
-        if (typeof decoded.startedAt === "string" && typeof decoded.id === "string") cursor = { startedAt: decoded.startedAt, id: decoded.id };
+        const decoded = JSON.parse(Buffer.from(rawCursor, "base64url").toString("utf8")) as { startedAt?: unknown; firstRow?: unknown };
+        if (typeof decoded.startedAt === "string" && typeof decoded.firstRow === "number" && Number.isSafeInteger(decoded.firstRow)) cursor = { startedAt: decoded.startedAt, firstRow: decoded.firstRow };
       } catch {
         throw fail("invalid_audit_cursor", "That audit page is no longer available. Reload the first page.");
       }
       if (cursor === null) throw fail("invalid_audit_cursor", "That audit page is no longer available. Reload the first page.");
     }
-    const pageWhere = [...where];
-    const pageParameters = [...parameters];
-    if (cursor !== null) {
-      pageWhere.push("(pa.started_at < ? OR (pa.started_at = ? AND pa.id < ?))");
-      pageParameters.push(cursor.startedAt, cursor.startedAt, cursor.id);
-    }
     const limit = Math.max(1, Math.min(20, Math.floor(requestedLimit)));
-    const rows = database.prepare(`SELECT pa.* FROM provider_attempts pa
-      WHERE ${pageWhere.join(" AND ")}
-      ORDER BY pa.started_at DESC, pa.id DESC LIMIT ?`).all(...pageParameters, limit + 1) as Array<AttemptRow>;
-    const hasMore = rows.length > limit;
-    const selected = rows.slice(0, limit);
+    const groups = database.prepare(`${requestGroups} SELECT * FROM grouped
+      ${cursor === null ? "" : "WHERE started_at < ? OR (started_at = ? AND first_row < ?)"}
+      ORDER BY started_at DESC, first_row DESC LIMIT ?`).all(...groupParameters,
+        ...(cursor === null ? [] : [cursor.startedAt, cursor.startedAt, cursor.firstRow]), limit + 1) as Array<{ generation: number; turn_id: string; started_at: string; first_row: number }>;
+    const hasMore = groups.length > limit;
+    const selected = groups.slice(0, limit);
     const last = selected.at(-1);
+    const attempts: Array<AuditAttemptSummary> = [];
+    const requests: Array<AuditRequestSummary> = selected.map((group) => {
+      const rows = database.prepare(`SELECT * FROM provider_attempts WHERE user_id = ? AND generation = ? AND turn_id = ?
+        ORDER BY started_at, rowid`).all(owner.id, group.generation, group.turn_id) as Array<AttemptRow>;
+      const calls = rows.map(publicAttemptSummary);
+      attempts.push(...calls);
+      const first = calls[0]!;
+      const liveTurn = turnRow(owner.id, group.generation, group.turn_id);
+      const retained = database.prepare(`SELECT outcome, body_json FROM audit_records
+        WHERE user_id = ? AND generation = ? AND turn_id = ? AND kind = 'turn'
+        ORDER BY completed_at DESC, id DESC LIMIT 1`).get(owner.id, group.generation, group.turn_id) as { outcome: string; body_json: string } | undefined;
+      const body = retained === undefined ? null : JSON.parse(retained.body_json) as { measurement?: string; completeDurationMs?: unknown };
+      const status = liveTurn?.status ?? retained?.outcome;
+      const outcome: AuditRequestSummary["outcome"] = status === "complete" ? "success"
+        : status === "failed" ? "error"
+        : status === "cancelled" || status === "interrupted" ? status
+        : status === "running" || status === "waiting_for_ui" || status === "awaiting_browser" ? "running"
+        : calls.find((call) => call.outcome !== "success")?.outcome ?? "unknown";
+      const measured = liveTurn === undefined ? body?.measurement === "complete" ? body.completeDurationMs : null
+        : liveTurn.measurement === "complete" ? liveTurn.complete_duration_ms : null;
+      const mode = calls.every((call) => call.mode === first.mode) ? first.mode : "mixed";
+      return {
+        id: first.id, generation: group.generation, turnId: group.turn_id,
+        requestLabel: first.requestLabel, startedAt: group.started_at, turnCount: calls.length, outcome,
+        durationMs: typeof measured === "number" && Number.isFinite(measured) ? measured : null,
+        totalTokens: calls.some((call) => call.totalTokens === null) ? null : calls.reduce((sum, call) => sum + call.totalTokens!, 0),
+        costUsd: mode === "scripted" || calls.some((call) => call.costUsd === null || call.mode !== "live") ? null : calls.reduce((sum, call) => sum + call.costUsd!, 0),
+        mode,
+      };
+    });
     const markerWhere = ["user_id = ?", "kind = 'reset'"];
     const markerParameters: Array<string> = [owner.id];
     for (const term of terms) {
@@ -1200,10 +1235,11 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     const lastMarker = selectedMarkers.at(-1);
     return {
       query,
-      attempts: selected.map(publicAttemptSummary),
+      requests,
+      attempts,
       total: Number(count.count),
       nextCursor: hasMore && last !== undefined
-        ? Buffer.from(JSON.stringify({ startedAt: last.started_at, id: last.id }), "utf8").toString("base64url")
+        ? Buffer.from(JSON.stringify({ startedAt: last.started_at, firstRow: last.first_row }), "utf8").toString("base64url")
         : null,
       markers: selectedMarkers.map((record) => ({
         id: record.id, kind: record.kind, label: record.label, outcome: record.outcome,
@@ -1231,9 +1267,9 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
       }
       if (applicationCursor === null) throw fail("invalid_audit_cursor", "That application-result page is no longer available. Reload the request detail.");
     }
-    const applicationParameters: Array<string> = [
-      row.user_id, row.turn_id, row.id, row.user_id, row.turn_id,
-      row.user_id, row.user_id, row.turn_id,
+    const applicationParameters: Array<string | number> = [
+      row.user_id, row.turn_id, row.generation, row.id, row.user_id, row.generation, row.turn_id,
+      row.user_id, row.user_id, row.generation, row.turn_id,
     ];
     if (applicationCursor !== null) {
       applicationParameters.push(applicationCursor.completedAt, applicationCursor.completedAt, applicationCursor.id);
@@ -1242,12 +1278,12 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     const records = database.prepare(`SELECT ar.* FROM audit_records ar
       WHERE ar.user_id = ? AND ar.kind IN ('tool', 'ui', 'turn', 'proposal', 'receipt', 'reset', 'command_visible')
       AND (
-        ar.turn_id = ? OR ar.attempt_id = ? OR
-        ar.proposal_id IN (SELECT linked.proposal_id FROM audit_records linked WHERE linked.user_id = ? AND linked.turn_id = ? AND linked.proposal_id IS NOT NULL) OR
+        (ar.turn_id = ? AND ar.generation = ?) OR ar.attempt_id = ? OR
+        ar.proposal_id IN (SELECT linked.proposal_id FROM audit_records linked WHERE linked.user_id = ? AND linked.generation = ? AND linked.turn_id = ? AND linked.proposal_id IS NOT NULL) OR
         ar.receipt_id IN (
           SELECT accepted.receipt_id FROM audit_records accepted
           WHERE accepted.user_id = ? AND accepted.proposal_id IN (
-            SELECT linked.proposal_id FROM audit_records linked WHERE linked.user_id = ? AND linked.turn_id = ? AND linked.proposal_id IS NOT NULL
+            SELECT linked.proposal_id FROM audit_records linked WHERE linked.user_id = ? AND linked.generation = ? AND linked.turn_id = ? AND linked.proposal_id IS NOT NULL
           ) AND accepted.receipt_id IS NOT NULL
         )
       ) ${applicationCursor === null ? "" : "AND (ar.completed_at < ? OR (ar.completed_at = ? AND ar.id < ?))"}
@@ -1260,8 +1296,8 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     const selectedRecords = records.slice(0, applicationLimit);
     const lastApplication = selectedRecords.at(-1);
     const turnRecord = database.prepare(`SELECT body_json FROM audit_records
-      WHERE user_id = ? AND kind = 'turn' AND turn_id = ?
-      ORDER BY completed_at DESC, id DESC LIMIT 1`).get(row.user_id, row.turn_id) as { body_json: string } | undefined;
+      WHERE user_id = ? AND generation = ? AND kind = 'turn' AND turn_id = ?
+      ORDER BY completed_at DESC, id DESC LIMIT 1`).get(row.user_id, row.generation, row.turn_id) as { body_json: string } | undefined;
     let serverTurnDurationMs: number | null = null;
     let serverTurnMeasurement: "pending" | "complete" | "incomplete" | null = null;
     let browserDurationMs: number | null = null;

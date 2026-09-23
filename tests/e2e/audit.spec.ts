@@ -27,20 +27,22 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   const search = page.getByLabel("Search audit history");
   await expect(search).toHaveAttribute("maxlength", "160");
   await search.fill(marker);
-  await expect(page.locator("[data-attempt-id]")).toHaveCount(5);
+  await expect(page.locator("[data-audit-request-id]")).toHaveCount(2);
   await expect(page.getByText("Fixture", { exact: true }).first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(page.viewportSize()!.width);
   await page.getByRole("button", { name: "Clear audit search" }).click();
   await expect(page.locator(".audit-view")).toHaveAttribute("data-audit-query", "");
-  await expect(page.locator(".audit-count")).toHaveText(`${initialTotal + 6} requests`);
-  await expect(page.locator("[data-attempt-id]")).toHaveCount(Math.min(initialTotal + 6, 12));
+  await expect(page.locator(".audit-count")).toHaveText(`${initialTotal + 2} requests`);
+  await expect(page.locator("[data-audit-request-id]")).toHaveCount(Math.min(initialTotal + 2, 12));
   await page.screenshot({ path: testInfo.outputPath(`actual-audit-collapsed-${testInfo.project.name}.png`), fullPage: true });
   await page.waitForTimeout(1_200);
 
   await search.fill(`${turnId!} typesafe/jev-1.13 success`);
   await expect(page.getByText(/matching request/)).toBeVisible();
-  await expect(page.locator("[data-attempt-id]")).toHaveCount(1);
-  const detailAttemptId = await page.locator("[data-attempt-id]").getAttribute("data-attempt-id");
+  await expect(page.locator("[data-audit-request-id]")).toHaveCount(1);
+  await page.locator("[data-audit-request-id]").getByRole("button").click();
+  await expect(page.locator("[data-attempt-id]")).toHaveCount(3);
+  const detailAttemptId = await page.locator("[data-attempt-id]").filter({ hasText: "Classification" }).getAttribute("data-attempt-id");
   expect(detailAttemptId).not.toBeNull();
   await search.fill(turnId!);
   await expect(page.locator("[data-attempt-id]")).toHaveCount(3);
@@ -49,8 +51,8 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   await page.getByRole("button", { name: "Clear search" }).click();
   await expect(search).toHaveValue("");
   await expect(page.locator(".audit-view")).toHaveAttribute("data-audit-query", "");
-  await expect(page.locator(".audit-count")).toHaveText(`${initialTotal + 6} requests`);
-  await expect(page.locator("[data-attempt-id]")).toHaveCount(Math.min(initialTotal + 6, 12));
+  await expect(page.locator(".audit-count")).toHaveText(`${initialTotal + 2} requests`);
+  await expect(page.locator("[data-audit-request-id]")).toHaveCount(Math.min(initialTotal + 2, 12));
 
   const selected = page.locator(`[data-attempt-id="${detailAttemptId!}"]`);
   await selected.getByRole("button").click();
@@ -86,9 +88,9 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   await expect(producer.getByTestId("connection-status")).toContainText("Connected");
   const liveTurnId = await sendMessage(producer, `Classify note ${liveMarker}: a carrier scan is missing.`, true);
   expect(liveTurnId).not.toBeNull();
-  await expect(page.locator("[data-attempt-id]")).toHaveCount(3, { timeout: 15_000 });
+  await expect(page.locator("[data-audit-request-id]")).toHaveCount(1, { timeout: 15_000 });
   await search.fill(liveTurnId!);
-  await expect(page.locator("[data-attempt-id]")).toHaveCount(3, { timeout: 15_000 });
+  await expect(page.locator("[data-audit-request-id]")).toHaveCount(1, { timeout: 15_000 });
   await producer.close();
   await page.getByRole("button", { name: "Clear audit search" }).click();
 
@@ -96,7 +98,7 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   await sendMessage(page, '<img src=x onerror="window.__auditXss=1"> inspect BB-1042');
   await page.getByRole("button", { name: "Audit", exact: true }).click();
   await search.fill("<img onerror");
-  await expect(page.locator("[data-attempt-id]").first()).toContainText("<img");
+  await expect(page.locator("[data-audit-request-id]").first()).toContainText("<img");
   expect(await page.evaluate(() => (window as typeof window & { __auditXss?: number }).__auditXss)).toBeUndefined();
   await page.getByRole("button", { name: "Clear audit search" }).click();
   await expect(page.locator(".audit-view")).toHaveAttribute("data-audit-query", "");
@@ -110,5 +112,5 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   await expect(page.getByText("Fresh workspace ready")).toBeVisible();
   await page.getByRole("button", { name: "Audit", exact: true }).click();
   await expect.poll(async () => (await resetMarkers.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-reset-id")))).some((id) => !resetIds.includes(id))).toBe(true);
-  await expect(page.locator("[data-attempt-id]").first()).toBeVisible();
+  await expect(page.locator("[data-audit-request-id]").first()).toBeVisible();
 });

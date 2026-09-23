@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { AgentViewContext, AuditAttemptDetail, AuditAttemptSummary, AuditPage, CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, ToolCatalogueEntry, ToolCategory, TutorialState, WorkspaceSnapshot } from "../shared/contracts";
+import type { AgentViewContext, AuditAttemptDetail, AuditAttemptSummary, AuditRequestSummary, AuditPage, CommandReceipt, CommandResult, OrderSummary, ReviewedProposal, ToolCatalogueEntry, ToolCategory, TutorialState, WorkspaceSnapshot } from "../shared/contracts";
 import { exploreScenarios, type ExploreScenarioId } from "../shared/explore";
 import { targets } from "../shared/targets";
 import { Button } from "./components/ui/button";
@@ -223,8 +223,8 @@ function ExploreView({ entries, connected, busy, scenarioActive, notice, runScen
 }
 
 const durationText = (duration: number | null): string => duration === null ? "Unknown" : duration < 1_000 ? `${Math.round(duration)} ms` : `${(duration / 1_000).toFixed(duration < 10_000 ? 2 : 1)} s`;
-const tokenText = (attempt: AuditAttemptSummary): string => attempt.totalTokens === null ? "Unknown" : attempt.totalTokens.toLocaleString();
-const costText = (attempt: AuditAttemptSummary): string => {
+const tokenText = (attempt: Pick<AuditAttemptSummary, "totalTokens">): string => attempt.totalTokens === null ? "Unknown" : attempt.totalTokens.toLocaleString();
+const costText = (attempt: { readonly mode: string; readonly costUsd: number | null }): string => {
   if (attempt.mode === "scripted") return "Fixture";
   if (attempt.costUsd === null) return "Unknown";
   if (attempt.costUsd === 0) return "$0";
@@ -237,9 +237,9 @@ const modelText = (attempt: AuditAttemptSummary): string => {
   if (normalized.startsWith("jev-1.13")) return "Jev 1.13";
   return normalized;
 };
-const outcomeText: Record<AuditAttemptSummary["outcome"], string> = {
+const outcomeText: Record<AuditRequestSummary["outcome"], string> = {
   running: "Running", success: "Completed", error: "Error", credits_exhausted: "Credits exhausted",
-  timeout: "Timed out", cancelled: "Cancelled", interrupted: "Interrupted",
+  unknown: "Unknown", timeout: "Timed out", cancelled: "Cancelled", interrupted: "Interrupted",
 };
 type AuditTab = "request" | "response" | "application";
 const consentResultText = (bodyText: string): string | null => {
@@ -289,11 +289,12 @@ function AuditView({ page, details, loading, error, revision, connected, focused
   connected: boolean;
   focusedAttemptId: string | null;
   onFocusedAttemptRendered: (attemptId: string) => void;
-  requestPage: (query: string, cursor?: string | null, appendAttempts?: boolean, markerCursor?: string | null, appendMarkers?: boolean) => void;
+  requestPage: (query: string, cursor?: string | null, appendRequests?: boolean, markerCursor?: string | null, appendMarkers?: boolean) => void;
   requestDetail: (attemptId: string, applicationCursor?: string | null, append?: boolean) => void;
 }) {
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [openRequests, setOpenRequests] = useState<ReadonlySet<string>>(new Set());
   const [tab, setTab] = useState<AuditTab>("request");
   const acknowledgedFocus = useRef<string | null>(null);
   useEffect(() => {
@@ -325,25 +326,55 @@ function AuditView({ page, details, loading, error, revision, connected, focused
     }));
     return () => { cancelled = true; };
   }, [focusedAttemptId, details, page?.attempts, onFocusedAttemptRendered]);
+  useEffect(() => {
+    if (focusedAttemptId === null) return;
+    const attempt = page?.attempts.find((entry) => entry.id === focusedAttemptId);
+    const request = page?.requests.find((entry) => entry.turnId === attempt?.turnId && entry.generation === attempt?.generation);
+    if (request !== undefined) setOpenRequests((current) => new Set(current).add(request.id));
+  }, [focusedAttemptId, page?.requests]);
+  const toggleRequest = (requestId: string) => setOpenRequests((current) => {
+    const next = new Set(current);
+    if (next.has(requestId)) next.delete(requestId); else next.add(requestId);
+    return next;
+  });
   const open = (attemptId: string) => {
     if (openId === attemptId) { setOpenId(null); return; }
     setOpenId(attemptId);
     setTab("request");
     if (details[attemptId] === undefined) requestDetail(attemptId);
   };
-  const visible = page?.attempts ?? [];
+  const visible = page?.requests ?? [];
   return <main className="audit-view" aria-labelledby="audit-title" data-audit-query={page?.query ?? "loading"}>
-    <div className="audit-heading"><h1 id="audit-title">Audit</h1><span>Retained inference history</span></div>
+    <div className="audit-heading"><h1 id="audit-title">Audit</h1><span>Requests</span></div>
     <div className="audit-toolbar">
-      <label className="audit-filter"><span aria-hidden="true">⌕</span><span className="sr-only">Search audit history</span><input type="search" value={query} maxLength={160} onChange={(event) => setQuery(event.target.value)} placeholder="Filter requests..." autoComplete="off" />{query.length > 0 && <Button variant="icon" aria-label="Clear audit search" onClick={() => setQuery("")}>×</Button>}</label>
+      <label className="audit-filter"><span aria-hidden="true">⌕</span><span className="sr-only">Search audit history</span><input type="search" value={query} maxLength={160} onChange={(event) => setQuery(event.target.value)} placeholder="Search requests and turns" autoComplete="off" />{query.length > 0 && <Button variant="icon" aria-label="Clear audit search" onClick={() => setQuery("")}>×</Button>}</label>
       <span className="audit-count" aria-live="polite">{page === null ? "Loading requests" : query.trim().length > 0 ? `${page.total} matching ${page.total === 1 ? "request" : "requests"}` : `${page.total} ${page.total === 1 ? "request" : "requests"}`}</span>
     </div>
     {error !== null && <p className="audit-load-error" role="alert">{error}</p>}
     {page !== null && page.markers.length > 0 && <div className="audit-markers" aria-label="Reset history">{page.markers.map((marker) => <details key={marker.id} data-reset-id={marker.id}><summary><span>Workspace reset</span><span>{new Date(marker.occurredAt).toLocaleString()}</span></summary><pre>{marker.bodyText}</pre></details>)}{page.markerNextCursor !== null && <div className="audit-more"><Button variant="quiet" disabled={loading} onClick={() => requestPage(query, null, false, page.markerNextCursor, true)}>{loading ? "Loading…" : "Load earlier resets"}</Button></div>}</div>}
-    {visible.length === 0 && !loading ? <div className="audit-empty">{query.trim().length > 0 ? <>No requests match this filter. <Button variant="link" onClick={() => setQuery("")}>Clear search</Button></> : "No inference attempts have been recorded yet."}</div> : <div className="audit-scroll"><table className="audit-table" aria-label="Inference requests"><colgroup><col className="audit-col-time" /><col /><col className="audit-col-model" /><col className="audit-col-outcome" /><col className="audit-col-duration" /><col className="audit-col-tokens" /><col className="audit-col-cost" /></colgroup><thead><tr><th scope="col">At</th><th scope="col">Request</th><th scope="col">Model</th><th scope="col">Outcome</th><th scope="col" className="audit-number">Duration</th><th scope="col" className="audit-number">Tokens</th><th scope="col" className="audit-number">Cost</th></tr></thead><tbody>{visible.map((attempt) => {
-      const expanded = openId === attempt.id;
-      return <Fragment key={attempt.id}><tr className={`audit-summary${expanded ? " audit-summary-open" : ""}`} data-attempt-id={attempt.id}><td>{new Date(attempt.startedAt).toLocaleTimeString([], { hour12: false })}</td><td><button type="button" className="audit-expand" aria-expanded={expanded} aria-controls={`audit-detail-${attempt.id}`} onClick={() => open(attempt.id)}><span aria-hidden="true">{expanded ? "⌄" : "›"}</span><span>{attempt.requestLabel}</span></button></td><td><span>{modelText(attempt)}</span>{attempt.mode === "scripted" && <small>Fixture</small>}</td><td className={`audit-outcome audit-outcome-${attempt.outcome}`}>{outcomeText[attempt.outcome]}</td><td className="audit-number">{durationText(attempt.durationMs)}</td><td className="audit-number">{tokenText(attempt)}</td><td className="audit-number">{costText(attempt)}</td></tr>{expanded && <tr><td colSpan={7} className="audit-detail-cell"><AuditDetails detail={details[attempt.id] ?? null} tab={tab} setTab={setTab} loadMore={(attemptId, cursor) => requestDetail(attemptId, cursor, true)} filterTurn={(turnId) => setQuery(turnId)} revealToolResult={focusedAttemptId === attempt.id} /></td></tr>}</Fragment>;
-    })}</tbody></table></div>}
+    {visible.length === 0 && !loading ? <div className="audit-empty">{query.trim().length > 0 ? <>No requests match this filter. <Button variant="link" onClick={() => setQuery("")}>Clear search</Button></> : "No inference attempts have been recorded yet."}</div> : <>
+      <p className="audit-scroll-hint">Scroll the table sideways for totals →</p>
+      <div className="audit-scroll" tabIndex={0} role="region" aria-label="Audit requests, scroll horizontally"><table className="audit-table" aria-label="User requests"><colgroup><col className="audit-col-time" /><col /><col className="audit-col-turns" /><col className="audit-col-outcome" /><col className="audit-col-request-duration" /><col className="audit-col-tokens" /><col className="audit-col-cost" /></colgroup><thead><tr><th scope="col">Started</th><th scope="col">Request</th><th scope="col" className="audit-number">Turns</th><th scope="col">Outcome</th><th scope="col" className="audit-number">Completed request</th><th scope="col" className="audit-number">Total tokens</th><th scope="col" className="audit-number">Total cost</th></tr></thead><tbody>{visible.map((request) => {
+        const expanded = openRequests.has(request.id);
+        const turns = page!.attempts.filter((attempt) => attempt.turnId === request.turnId && attempt.generation === request.generation);
+        return <Fragment key={request.id}>
+          <tr className={`audit-summary audit-request-summary${expanded ? " audit-summary-open" : ""}`} data-audit-request-id={request.id} data-audit-turn-id={request.turnId}>
+            <td>{new Date(request.startedAt).toLocaleTimeString([], { hour12: false })}</td>
+            <td><button type="button" className="audit-expand" aria-expanded={expanded} aria-controls={`audit-turns-${request.id}`} onClick={() => toggleRequest(request.id)}><span aria-hidden="true">{expanded ? "⌄" : "›"}</span><span>{request.requestLabel}<small>{[...new Set(turns.map(modelText))].join(" · ")}</small></span></button></td>
+            <td className="audit-number">{request.turnCount}</td><td className={`audit-outcome audit-outcome-${request.outcome}`}>{outcomeText[request.outcome]}</td><td className="audit-number">{durationText(request.durationMs)}</td><td className="audit-number">{tokenText(request)}</td><td className="audit-number">{costText(request)}</td>
+          </tr>
+          <tr hidden={!expanded}><td colSpan={7} className="audit-turns-cell" id={`audit-turns-${request.id}`}>
+            {expanded && <><div className="audit-turns-heading"><h2>Turns</h2><span>Oldest first · Model-call duration per turn</span></div>
+              <table className="audit-table audit-turns-table" aria-label={`Turns for ${request.requestLabel}`}><colgroup><col /><col className="audit-col-model" /><col className="audit-col-outcome" /><col className="audit-col-duration" /><col className="audit-col-tokens" /><col className="audit-col-cost" /></colgroup><thead><tr><th scope="col">Turn</th><th scope="col">Model</th><th scope="col">Outcome</th><th scope="col" className="audit-number">Duration</th><th scope="col" className="audit-number">Tokens</th><th scope="col" className="audit-number">Cost</th></tr></thead><tbody>{turns.map((attempt, index) => {
+                const detailOpen = openId === attempt.id;
+                return <Fragment key={attempt.id}><tr className={`audit-summary${detailOpen ? " audit-summary-open" : ""}`} data-attempt-id={attempt.id}><td><button type="button" className="audit-expand" aria-expanded={detailOpen} aria-controls={`audit-detail-${attempt.id}`} onClick={() => open(attempt.id)}><span aria-hidden="true">{detailOpen ? "⌄" : "›"}</span><span>Turn {index + 1} · {attempt.kind === "decisions" ? "Classification" : "Chat"}<small>{new Date(attempt.startedAt).toLocaleTimeString([], { hour12: false })}</small></span></button></td><td><span>{modelText(attempt)}</span>{attempt.mode === "scripted" && <small>Fixture</small>}</td><td className={`audit-outcome audit-outcome-${attempt.outcome}`}>{outcomeText[attempt.outcome]}</td><td className="audit-number">{durationText(attempt.durationMs)}</td><td className="audit-number">{tokenText(attempt)}</td><td className="audit-number">{costText(attempt)}</td></tr>{detailOpen && <tr><td colSpan={6} className="audit-detail-cell"><AuditDetails detail={details[attempt.id] ?? null} tab={tab} setTab={setTab} loadMore={(attemptId, cursor) => requestDetail(attemptId, cursor, true)} filterTurn={(turnId) => setQuery(turnId)} revealToolResult={focusedAttemptId === attempt.id} /></td></tr>}</Fragment>;
+              })}</tbody></table>
+            </>}
+          </td></tr>
+        </Fragment>;
+      })}</tbody></table></div>
+      <p className="audit-duration-note">Request duration measures send to completed work. Tokens and cost total all turns. Unknown means the measurement was not recorded.</p>
+    </>}
     {page?.nextCursor !== null && page?.nextCursor !== undefined && <div className="audit-more"><Button variant="quiet" disabled={loading} onClick={() => requestPage(query, page.nextCursor, true)}>{loading ? "Loading…" : "Load more"}</Button></div>}
   </main>;
 }
