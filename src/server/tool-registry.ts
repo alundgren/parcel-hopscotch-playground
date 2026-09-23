@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import type { AgentUiOperation, ReviewedProposal } from "../shared/contracts.js";
-import { OrderStatus, ProposalChange, ResolutionFamily, ReviewedProposal as ReviewedProposalSchema, TutorialId, TutorialState } from "../shared/contracts.js";
+import { OrderStatus, ResolutionFamily, ReviewedProposal as ReviewedProposalSchema, TutorialId, TutorialState } from "../shared/contracts.js";
 import type { RequestIdentity } from "./identity.js";
 import type { WorkspaceRepositoryService } from "./persistence.js";
 import { ProviderError, type JevRequest, type JevResult } from "./providers/contracts.js";
@@ -69,7 +69,9 @@ const orderResult = Schema.Struct({
 });
 const orderReceiptResult = Schema.Struct({
   id: Schema.String, kind: Schema.Literals(["accept", "undo", "reset"]), title: Schema.String,
-  committedAt: Schema.String, change: ProposalChange, totalChanges: Schema.Int,
+  committedAt: Schema.String,
+  change: Schema.Struct({ orderId: Schema.String, family: ResolutionFamily, before: Schema.String, after: Schema.String, effect: Schema.String }),
+  committedVersion: Schema.Int, totalChanges: Schema.Int,
 });
 const orderListResult = Schema.Struct({
   id: Schema.String,
@@ -120,7 +122,7 @@ const specs = {
     output: Schema.Struct({ count: Schema.Int, queueTotals: Schema.Struct({ ready: Schema.Int, review: Schema.Int, waiting: Schema.Int }), orders: Schema.Array(orderListResult) }),
   },
   getOrder: {
-    description: "Look up an order ID and read its current details, completion state, and latest receipt affecting it, including an Undo. A resolved order may still be Ready for a separate reviewed packing batch; completed orders leave the Work queue. Compare the current value with the receipt change before claiming acceptance did or did not apply. Use this for order IDs, not classifyNote.",
+    description: "Look up an order ID and read its current details, completion state, and latest receipt affecting it, including an Undo. committedVersion is the order version after that receipt was accepted. A resolved order may still be Ready for a separate reviewed packing batch; completed orders leave the Work queue. Compare the current value with the receipt change before claiming acceptance did or did not apply. Use this for order IDs, not classifyNote.",
     category: "Read", purpose: "Inspect an order", allowedEffects: ["read_workspace"],
     example: { arguments: { orderId: "BB-1042" }, result: { order: {
       id: "BB-1042", item: "Woven basket", issue: "Street number needs checking.", status: "review", family: "address", version: 1,
@@ -180,18 +182,18 @@ const specs = {
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareResolution: {
-    description: "Prepare the existing authoritative resolution for any conventional exception family. The user must accept the preview.",
+    description: "Prepare the existing authoritative resolution for an unresolved exception. This does not release the order to packing. The user must accept the preview.",
     category: "Prepare", purpose: "Prepare a reviewed resolution", allowedEffects: ["create_reviewed_proposal"],
     example: { arguments: { orderId: "BB-1090" }, result: proposalExample("resolution", "Review resolution", bundleExample) },
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareBatch: {
-    description: "Prepare all currently eligible ready orders with exact inclusions and omissions. The user must accept the preview.",
+    description: "Prepare one batch containing all currently eligible Ready orders with exact inclusions and omissions. This tool has no order selector and cannot release only one Ready order. The user must inspect and accept or cancel the entire preview.",
     category: "Prepare", purpose: "Prepare a batch", allowedEffects: ["create_reviewed_proposal"],
     example: { arguments: {}, result: proposalExample("batch", "Review 1 change", substitutionExample) }, input: EmptyInput, output: ProposalOutput,
   },
   prepareUndo: {
-    description: "Prepare a checked reversal of a current user's receipt. The user must accept the preview.",
+    description: "Prepare a checked reversal of every change in one of the current user's receipts. This tool cannot undo selected orders from a batch receipt. The user must accept the entire preview.",
     category: "Prepare", purpose: "Prepare an undo", allowedEffects: ["create_reviewed_proposal"],
     example: { arguments: { receiptId: "receipt_example" }, result: proposalExample("undo", "Undo 1 accepted change", undoExample) },
     input: Schema.Struct({ receiptId: Identifier }), output: ProposalOutput,

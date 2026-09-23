@@ -44,6 +44,10 @@ describe("agent tool registry", () => {
     expect(tools.navigate?.validateArguments({ view: "work", url: "https://example.test" })).toBe(false);
     expect(tools.highlight?.validateArguments({ target: "#app", selector: "body" })).toBe(false);
     expect(tools.prepareBatch?.validateArguments({ commit: true })).toBe(false);
+    expect(tools.prepareBatch?.validateArguments({ orderId: "BB-1051" })).toBe(false);
+    expect(tools.prepareUndo?.validateArguments({ receiptId: "receipt_123", orderId: "BB-1051" })).toBe(false);
+    expect(tools.prepareBatch?.description).toContain("all currently eligible Ready orders");
+    expect(tools.prepareUndo?.description).toContain("every change in one");
     expect(tools.startTutorial?.validateArguments({ tutorialId: "address-correction" })).toBe(true);
     expect(tools.startTutorial?.validateArguments({ tutorialId: "invented-lesson", orderId: "BB-1042" })).toBe(false);
     expect(findRegisteredTool(registry, "constructor")).toBeNull();

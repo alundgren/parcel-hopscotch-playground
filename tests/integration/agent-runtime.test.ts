@@ -473,9 +473,12 @@ describe("agent runtime", () => {
       expect(round).toBe(2);
       const request = replyRequest as MinistralRequest | null;
       const system = request?.messages.find((message) => message.role === "system");
-      expect(system?.content).toContain("Resolved Ready means the resolution was accepted but packing is a separate step");
+      expect(system?.content).toContain("Resolved Ready means the change was accepted but packing is pending");
+      expect(system?.content).toContain("no single-order packing tool exists");
+      expect(system?.content).toContain("Undo reverses the whole receipt, never selected orders");
       const read = toolPayloads(request?.messages ?? []).find((entry) => entry.id === "read_accepted")?.payload;
-      expect(read).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 2, businessValue: "Sage stoneware mug, quantity 1, £24.00", status: "ready", completed: false, resolved: true }, latestReceipt: { kind: "accept", totalChanges: 1, change: { before: "Blue stoneware mug, quantity 1, £24.00", after: "Sage stoneware mug, quantity 1, £24.00" } } } });
+      expect(read).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 2, businessValue: "Sage stoneware mug, quantity 1, £24.00", status: "ready", completed: false, resolved: true }, latestReceipt: { kind: "accept", committedVersion: 2, totalChanges: 1, change: { before: "Blue stoneware mug, quantity 1, £24.00", after: "Sage stoneware mug, quantity 1, £24.00" } } } });
+      expect(JSON.stringify(read)).not.toContain('"expectedVersion"');
       expect(turn.history.filter((message) => message.role === "assistant" && message.toolCalls !== undefined)).toHaveLength(1);
       expect(coordinator.acknowledgeComplete(identity, 1, turnId, "accepted-order")).toBe(true);
       yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
@@ -489,7 +492,8 @@ describe("agent runtime", () => {
       yield* Effect.promise(() => waitForTurn(repository, packedTurnId, ["waiting_for_ui"]));
       const packedRequest = replyRequest as MinistralRequest | null;
       const packedRead = toolPayloads(packedRequest?.messages ?? []).findLast((entry) => entry.id === "read_accepted")?.payload;
-      expect(packedRead).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 3, businessValue: "Sage stoneware mug, quantity 1, £24.00", completed: true, resolved: true }, latestReceipt: { totalChanges: 6, change: { orderId: "BB-1051", after: "Sage stoneware mug, quantity 1, £24.00 · Packing" } } } });
+      expect(packedRead).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 3, businessValue: "Sage stoneware mug, quantity 1, £24.00", completed: true, resolved: true }, latestReceipt: { committedVersion: 3, totalChanges: 6, change: { orderId: "BB-1051", after: "Sage stoneware mug, quantity 1, £24.00 · Packing" } } } });
+      expect(JSON.stringify(packedRead)).not.toContain('"expectedVersion"');
       expect(coordinator.acknowledgeComplete(identity, 1, packedTurnId, "packed-order")).toBe(true);
       yield* repository.completeAgentMeasurement(identity, 1, packedTurnId, 60);
     }));

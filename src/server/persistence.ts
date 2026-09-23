@@ -20,7 +20,7 @@ interface AppliedChange extends PreparedPolicy { readonly committedVersion: numb
 interface StoredReceipt { readonly public: CommandReceipt; readonly applied: ReadonlyArray<AppliedChange> }
 
 export interface CommandCommit { readonly receipt: CommandReceipt; readonly snapshot: WorkspaceSnapshot; readonly generationChanged: boolean }
-export interface OrderReceiptSummary { readonly id: string; readonly kind: CommandReceipt["kind"]; readonly title: string; readonly committedAt: string; readonly change: ProposalChange; readonly totalChanges: number }
+export interface OrderReceiptSummary { readonly id: string; readonly kind: CommandReceipt["kind"]; readonly title: string; readonly committedAt: string; readonly change: Pick<ProposalChange, "orderId" | "family" | "before" | "after" | "effect">; readonly committedVersion: number; readonly totalChanges: number }
 export interface OrderProgress { readonly order: OrderSummary; readonly completed: boolean; readonly resolved: boolean; readonly latestReceipt: OrderReceiptSummary | null }
 export interface ScenarioCommit { readonly message: string; readonly snapshot: WorkspaceSnapshot }
 export interface TutorialCommit { readonly advanced: boolean; readonly snapshot: WorkspaceSnapshot }
@@ -633,10 +633,16 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
         SELECT 1 FROM json_each(r.payload_json, '$.public.changes') AS change
         WHERE json_extract(change.value, '$.orderId') = ?
       ) ORDER BY r.committed_at DESC, r.rowid DESC LIMIT 1`).get(user.id, generation, orderId) as { payload_json: string } | undefined;
-    const receipt = receiptRow === undefined ? null : (JSON.parse(receiptRow.payload_json) as StoredReceipt).public;
-    const latestReceipt = receipt === null ? null : {
-      id: receipt.id, kind: receipt.kind, title: receipt.title, committedAt: receipt.committedAt,
-      change: receipt.changes.find((change) => change.orderId === orderId)!, totalChanges: receipt.changes.length,
+    const storedReceipt = receiptRow === undefined ? null : JSON.parse(receiptRow.payload_json) as StoredReceipt;
+    const applied = storedReceipt?.applied.find((entry) => entry.change.orderId === orderId);
+    if (storedReceipt !== null && applied === undefined) throw fail("receipt_state_invalid", "The saved receipt does not contain this order's applied change.");
+    const latestReceipt = storedReceipt === null || applied === undefined ? null : {
+      id: storedReceipt.public.id, kind: storedReceipt.public.kind, title: storedReceipt.public.title, committedAt: storedReceipt.public.committedAt,
+      change: {
+        orderId: applied.change.orderId, family: applied.change.family, before: applied.change.before,
+        after: applied.change.after, effect: applied.change.effect,
+      },
+      committedVersion: applied.committedVersion, totalChanges: storedReceipt.public.changes.length,
     };
     return { order, completed: Number(row.completed) !== 0, resolved: Number(row.resolved) !== 0, latestReceipt };
   });
