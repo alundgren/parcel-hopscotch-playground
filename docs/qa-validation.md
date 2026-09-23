@@ -198,10 +198,24 @@ that cleanup was attempted.
 
 ## Automated checks and independent verification
 
-`vp run check` passed with 191 application tests and 18 QA-helper tests, including
-the desktop/narrow component tests, type checks, build, real-browser offline
-adapter exercises, accounting stops, continuation, information separation, and
-memory validation. Live providers are not used by these tests or CI.
+`vp run check` passed at `5c402cd` with 191 application tests and 18 QA-helper
+tests, including the desktop/narrow component tests, type checks, build,
+real-browser offline adapter exercises, accounting stops, continuation,
+information separation, and memory validation. Live providers are not used by
+these tests or CI.
+
+Completion review found that an unreadable accounting table made the coordinator
+reject null usage totals, preventing inspection and closure. The correction at
+`0a3a7fe` preserves the last known numeric totals, records unavailable accounting,
+and blocks new inference. If accounting returns, the run can reconcile its
+unfinished turn. If the app stops without final accounting, the run closes with
+an explicit missing-final-usage record instead of inventing a total.
+
+After that correction, `vp run test:qa` passed all 21 QA-helper tests, type checks,
+and build. The added wrapper regression covers ledger loss, restoration, and
+shutdown with missing final accounting; the browser test also stops the real
+offline app while its ledger table is missing. All four retained live run records
+from the earlier format still load as closed with their recorded costs unchanged.
 
 An earlier full check failed the existing provider-audit test's one-second
 wall-clock assertion at 1,284 ms while live work and targeted verification were
