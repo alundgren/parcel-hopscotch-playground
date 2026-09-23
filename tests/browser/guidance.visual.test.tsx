@@ -248,6 +248,9 @@ test.each(["empty", "unrelated"] as const)("Audit guide does not complete for an
   if (kind === "empty") await expect.element(page.getByText("No correlated application result was recorded.")).toBeVisible();
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   await expect.element(page.getByRole("complementary", { name: "Task trail" })).toHaveAttribute("data-guidance-status", "active");
+  const note = document.querySelector(".work-note")!;
+  expect(overlapArea(note, document.querySelector(".topbar")!)).toBe(0);
+  expect(overlapArea(note, page.getByRole("searchbox").element())).toBe(0);
   if (kind === "empty") await checkpoint("guidance-audit-no-result");
 });
 

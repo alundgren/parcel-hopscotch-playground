@@ -24,12 +24,14 @@ export interface GuideDisplayProps {
   readonly showPause?: boolean;
 }
 
-const placeNote = (target: HTMLElement): NotePosition => {
+const placeNote = (target: HTMLElement, noteHeight: number): NotePosition => {
   const rect = target.getBoundingClientRect();
   const width = Math.min(340, window.innerWidth - 24);
   const left = Math.min(Math.max(12, rect.left), window.innerWidth - width - 12);
-  const above = rect.bottom + 264 > window.innerHeight && rect.top > 206;
-  const top = above ? Math.max(12, rect.top - 202) : Math.min(window.innerHeight - 260, rect.bottom + 12);
+  const below = rect.bottom + 12;
+  const above = rect.top - noteHeight - 12;
+  const top = below + noteHeight <= window.innerHeight - 12 ? below
+    : above >= 12 ? above : Math.max(12, window.innerHeight - noteHeight - 12);
   return { top: Math.max(12, top), left, width, target: rect };
 };
 
@@ -41,14 +43,15 @@ export function GuideDisplay({ registry, targetId, entityId, title, note, progre
   const target = targetId === null ? null : registry.find(targetId, entityId);
   useLayoutEffect(() => {
     if (phase !== "active" || target === null) { setPosition(null); return; }
-    const update = () => setPosition(placeNote(target.element));
+    const update = () => setPosition(placeNote(target.element, noteElement.current?.getBoundingClientRect().height ?? 180));
     update();
     const observer = new ResizeObserver(update);
     observer.observe(target.element);
+    if (noteElement.current !== null) observer.observe(noteElement.current);
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
     return () => { observer.disconnect(); window.removeEventListener("resize", update); window.removeEventListener("scroll", update, true); };
-  }, [phase, target?.element, revision]);
+  }, [phase, target?.element, revision, position === null]);
   useEffect(() => {
     if (phase !== "active" || target === null) return;
     const rect = target.element.getBoundingClientRect();
