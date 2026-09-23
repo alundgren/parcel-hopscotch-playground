@@ -138,22 +138,21 @@ test('offline browser actions, verifier facts, gate, and cleanup', { timeout: 12
     const missing = new DatabaseSync(join(directory, 'parcel-workspace.sqlite'));
     missing.exec('ALTER TABLE provider_attempts RENAME TO provider_attempts_missing');
     missing.close();
-    try {
-      await assert.rejects(command({ action: 'snapshot' }), /accounting is unavailable/);
-      const unavailable = await run(adapter, ['status', '--run-dir', directory]);
-      assert.equal(unavailable.stopReason, 'accounting_unavailable');
-      assert.equal(unavailable.usage.knownCostUsd, null);
-      assert.equal(unavailable.paidTurnsAllowed, false);
-    } finally {
-      const restored = new DatabaseSync(join(directory, 'parcel-workspace.sqlite'));
-      restored.exec('ALTER TABLE provider_attempts_missing RENAME TO provider_attempts');
-      restored.close();
-    }
+    await assert.rejects(command({ action: 'snapshot' }), /accounting is unavailable/);
+    const unavailable = await run(adapter, ['status', '--run-dir', directory]);
+    assert.equal(unavailable.stopReason, 'accounting_unavailable');
+    assert.equal(unavailable.usage.knownCostUsd, null);
+    assert.equal(unavailable.paidTurnsAllowed, false);
     const stopped = await run(adapter, ['stop', '--run-dir', directory]);
     started = false;
     assert.equal(stopped.stopReason, 'manual_stop');
-    assert.equal(stopped.usage.requestCount, count);
-    assert.equal((await run(adapter, ['stop', '--run-dir', directory])).usage.requestCount, count);
+    assert.equal(stopped.usage.accountingAvailable, false);
+    assert.equal(stopped.usage.requestCount, null);
+    assert.equal((await run(adapter, ['stop', '--run-dir', directory])).usage.requestCount, null);
+    const restored = new DatabaseSync(join(directory, 'parcel-workspace.sqlite'));
+    restored.exec('ALTER TABLE provider_attempts_missing RENAME TO provider_attempts');
+    restored.close();
+    assert.equal((await run(adapter, ['status', '--run-dir', directory])).usage.requestCount, count);
     assert.equal((await run(adapter, ['status', '--run-dir', directory])).deadlineAt, initial.deadlineAt);
     await assert.rejects(fetch(`${initial.url}/api/health`, { signal: AbortSignal.timeout(1000) }));
     await assert.rejects(run(adapter, ['serve', '--run-dir', directory, '--mode', 'offline']), /already has a Parcel session/);

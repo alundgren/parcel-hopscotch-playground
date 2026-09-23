@@ -103,6 +103,15 @@ cancelled calls count. Any completed live attempt with unknown cost blocks new
 inference. Only app-key inference counts; Codex usage is excluded. Offline mode
 is explicitly labeled and cannot demonstrate live answer quality.
 
+If the application ledger becomes unreadable, `status` and `resume` report
+`accounting.available: false`. The run keeps its last known numeric reading and
+any in-flight turn; those numbers are not current totals. New app turns stop.
+If the ledger becomes readable again, `resume` records its cumulative totals and
+finishes the reserved turn. `stop` first shuts down the adapter, then closes the
+run even if final accounting remains unavailable. In that case the closed record
+has `finalUsageMissing: true`; report final dollars, requests, and tokens as
+unknown rather than repeating the last known reading as a final total.
+
 Measure completed work and committed visible changes, not first tokens. The
 adapter's verifier facts retain app completion measurements. Browser-command
 duration includes driver overhead and must not be presented as pure app latency.
@@ -115,8 +124,8 @@ vp run qa -- resume --run RUN_DIR
 vp run qa -- stop --run RUN_DIR --reason 'Exploration finished; unresolved findings retained.'
 ```
 
-Resume reconciles an interrupted coordinator's turn reservation with the same
-adapter and ledger. It preserves the original deadline and spending total.
+Resume reconciles an interrupted coordinator's turn reservation when the same
+adapter can read its ledger. It preserves the original deadline and spending total.
 After the adapter has stopped, inspect the retained evidence or start a new run;
 do not restart a stopped adapter with a new allowance under the old run ID.
 `show --run RUN_DIR` reads the retained report without starting the app.

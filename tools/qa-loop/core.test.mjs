@@ -60,6 +60,42 @@ test('time, threshold, unknown cost, and busy state block new paid turns', async
   assert.equal((await loadRun({ runDir })).usage.unknownCostRequests, 1);
 });
 
+test('unavailable accounting preserves numeric readings and blocks paid turns until a newer ledger reading', async () => {
+  const { runDir } = await fixture();
+  await updateRun({ runDir, event: { type: 'usage.record', usage: usage(0.03, 2) }, now: start });
+  await updateRun({ runDir, event: { type: 'scenario.start', scenarioId: 'queue' }, now: start });
+  await updateRun({ runDir, event: { type: 'turn.start', scenarioId: 'queue', id: 'unreadable-turn' }, now: start });
+  const unavailable = await updateRun({ runDir, event: { type: 'accounting.unavailable' }, now: '2026-09-23T12:01:00.000Z' });
+  assert.deepEqual(unavailable.usage, usage(0.03, 2));
+  assert.deepEqual(unavailable.accounting, { available: false, unavailableAt: '2026-09-23T12:01:00.000Z', finalUsageMissing: false });
+  assert.equal(runDecision(unavailable, { now: start }).reason, 'accounting-unavailable');
+  await assert.rejects(updateRun({ runDir, event: { type: 'turn.finish', id: 'unreadable-turn', usage: usage(0.03, 2) } }), /restore accounting/);
+  await assert.rejects(updateRun({ runDir, event: { type: 'turn.start', scenarioId: 'queue', id: 'another-turn' } }), /accounting-unavailable/);
+  await assert.rejects(closeRun({ runDir, reason: 'not stopped' }), /final accounting availability/);
+  assert.equal((await loadRun({ runDir })).inFlight.id, 'unreadable-turn');
+  const restored = await updateRun({ runDir, event: { type: 'usage.record', usage: usage(0.04, 3) }, now: '2026-09-23T12:02:00.000Z' });
+  assert.equal(restored.accounting.available, true);
+  assert.equal(runDecision(restored, { now: start }).reason, 'turn-in-flight');
+  await updateRun({ runDir, event: { type: 'turn.finish', id: 'unreadable-turn', usage: usage(0.04, 3) }, now: '2026-09-23T12:03:00.000Z' });
+  assert.equal(runDecision(await loadRun({ runDir }), { now: start }).allowNewTurn, true);
+});
+
+test('closing with unavailable final accounting records the missing total and clears only the closed reservation', async () => {
+  const { runDir } = await fixture();
+  await updateRun({ runDir, event: { type: 'scenario.start', scenarioId: 'queue' }, now: start });
+  await updateRun({ runDir, event: { type: 'turn.start', scenarioId: 'queue', id: 'unfinished' }, now: start });
+  await updateRun({ runDir, event: { type: 'accounting.unavailable' }, now: start });
+  const closed = await closeRun({ runDir, reason: 'Adapter stopped; final accounting unavailable', finalAccountingUnavailable: true, now: '2026-09-23T12:02:00.000Z' });
+  assert.equal(closed.status, 'closed');
+  assert.equal(closed.inFlight, null);
+  assert.deepEqual(closed.usage, usage(0, 0));
+  assert.deepEqual(closed.accounting, { available: false, unavailableAt: start, finalUsageMissing: true });
+  assert.equal(runDecision(closed).reason, 'closed');
+  assert.throws(() => validateRun({ ...closed, accounting: { ...closed.accounting, available: true } }), /unavailableAt/);
+  const legacy = { ...closed }; delete legacy.accounting;
+  assert.equal(validateRun(legacy).status, 'closed');
+});
+
 test('invalid records and transitions never replace the last valid file', async () => {
   const { runDir, run } = await fixture();
   await assert.rejects(updateRun({ runDir, event: { type: 'finding.add', finding: finding() }, now: start }), /unknown observation/);

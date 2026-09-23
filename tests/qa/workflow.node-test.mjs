@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 import { cumulativeUsage, generatePacket, initialize, main, repositoryRoot } from '../../scripts/qa.mjs';
 import { loadRun, promoteMemory, updateRun } from '../../tools/qa-loop/core.mjs';
 
@@ -93,4 +95,67 @@ test('accounting integration keeps cumulative cost and tokens separate from adap
   const usage = { knownCostUsd: 0.01, unknownCostRequests: 1, inputTokens: 90, outputTokens: 12, requestCount: 2 };
   assert.deepEqual(cumulativeUsage({ usage: { ...usage, runningRequests: 0, activeTurns: 0, accountingMode: 'live provider audit' } }), usage);
   assert.throws(() => cumulativeUsage({}), /cumulative app usage/);
+  assert.throws(() => cumulativeUsage({ usage: { ...usage, requestCount: null } }), /numeric cumulative app usage/);
+});
+
+test('wrapper preserves last known usage through an unreadable ledger, restoration, and stopped final accounting', async (t) => {
+  const data = await fixture(t);
+  const adapterFile = path.join(data.directory, 'accounting-adapter.mjs');
+  const accountingUrl = pathToFileURL(path.join(repositoryRoot, 'qa/parcel/accounting.mjs')).href;
+  await writeFile(adapterFile, `import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { readAccounting, unavailableUsage } from '${accountingUrl}';
+const operation = process.argv[2];
+const directory = process.argv[process.argv.indexOf('--run-dir') + 1];
+const stateFile = join(directory, 'adapter-stub.json');
+const stopped = (() => { try { return JSON.parse(readFileSync(stateFile, 'utf8')).stopped; } catch { return false; } })();
+if (operation === 'command') throw new Error('The wrapper should reject a new turn first.');
+if (operation === 'stop') writeFileSync(stateFile, JSON.stringify({ stopped: true }));
+let usage;
+try { usage = readAccounting(join(directory, 'parcel-workspace.sqlite'), 'live'); }
+catch { usage = unavailableUsage(); }
+const final = stopped || operation === 'stop';
+console.log(JSON.stringify({ usage, busy: false, paidTurnsAllowed: !final && usage.accountingAvailable,
+  stopReason: final ? 'manual_stop' : usage.accountingAvailable ? null : 'accounting_unavailable' }));
+`);
+  data.config.adapter = path.relative(repositoryRoot, adapterFile);
+  await writeFile(path.join(data.directory, 'config.json'), JSON.stringify(data.config));
+  const created = await initialize(data.options);
+  const database = new DatabaseSync(path.join(created.runDir, 'parcel-workspace.sqlite'));
+  t.after(() => database.close());
+  database.exec("CREATE TABLE provider_attempts (mode TEXT, outcome TEXT, cost_usd REAL, input_tokens INTEGER, output_tokens INTEGER); CREATE TABLE agent_turns (status TEXT)");
+  database.exec("INSERT INTO provider_attempts VALUES ('live', 'complete', 0.01, 20, 10)");
+  const initial = await main(['status', '--run', created.runDir]);
+  assert.deepEqual(initial.run.usage, { knownCostUsd: 0.01, unknownCostRequests: 0, inputTokens: 20, outputTokens: 10, requestCount: 1 });
+  await updateRun({ runDir: created.runDir, event: { type: 'scenario.start', scenarioId: 'queue-triage' } });
+  await updateRun({ runDir: created.runDir, event: { type: 'turn.start', scenarioId: 'queue-triage', id: 'unreadable-turn' } });
+  database.exec('ALTER TABLE provider_attempts RENAME TO unreadable_attempts');
+  const unavailable = await main(['status', '--run', created.runDir]);
+  assert.equal(unavailable.adapter.usage.knownCostUsd, null);
+  assert.equal(unavailable.run.usage.knownCostUsd, 0.01);
+  assert.equal(unavailable.run.accounting.available, false);
+  assert.equal(unavailable.run.inFlight.id, 'unreadable-turn');
+  assert.equal(unavailable.decision.reason, 'accounting-unavailable');
+  const resumedUnavailable = await main(['resume', '--run', created.runDir]);
+  assert.equal(resumedUnavailable.run.inFlight.id, 'unreadable-turn');
+  const requestFile = path.join(data.directory, 'request.json');
+  await writeFile(requestFile, JSON.stringify({ action: 'chat', text: 'Can I start another turn?' }));
+  await assert.rejects(main(['browser', '--run', created.runDir, '--input', requestFile]), /accounting-unavailable/);
+  database.exec('ALTER TABLE unreadable_attempts RENAME TO provider_attempts');
+  database.exec("INSERT INTO provider_attempts VALUES ('live', 'complete', 0.02, 30, 15)");
+  const restored = await main(['resume', '--run', created.runDir]);
+  assert.equal(restored.run.accounting.available, true);
+  assert.equal(restored.run.inFlight, null);
+  assert.deepEqual(restored.run.usage, { knownCostUsd: 0.03, unknownCostRequests: 0, inputTokens: 50, outputTokens: 25, requestCount: 2 });
+  assert.equal(restored.decision.allowNewTurn, true);
+  await updateRun({ runDir: created.runDir, event: { type: 'turn.start', scenarioId: 'queue-triage', id: 'unfinished-final-turn' } });
+  database.exec('ALTER TABLE provider_attempts RENAME TO unreadable_attempts');
+  const stopped = await main(['stop', '--run', created.runDir, '--reason', 'Adapter stopped without final ledger']);
+  assert.equal(stopped.status, 'closed');
+  assert.equal(stopped.inFlight, null);
+  assert.equal(stopped.accounting.available, false);
+  assert.equal(stopped.accounting.finalUsageMissing, true);
+  assert.equal(stopped.usage.knownCostUsd, 0.03);
+  assert.equal((await main(['status', '--run', created.runDir])).decision.reason, 'closed');
+  assert.equal((await main(['resume', '--run', created.runDir])).run.accounting.finalUsageMissing, true);
 });

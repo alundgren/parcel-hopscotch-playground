@@ -58,6 +58,15 @@ function usage(value) {
   if (value.unknownCostRequests > value.requestCount) throw new Error('unknown requests exceed request count');
   return value;
 }
+const accountingFor = (run) => run.accounting ?? { available: true, unavailableAt: null, finalUsageMissing: false };
+function accounting(value, status) {
+  exact(value, ['available', 'unavailableAt', 'finalUsageMissing'], 'accounting');
+  if (typeof value.available !== 'boolean' || typeof value.finalUsageMissing !== 'boolean') throw new Error('accounting flags must be boolean');
+  if (value.available ? value.unavailableAt !== null : !iso(value.unavailableAt)) throw new Error('accounting.unavailableAt is invalid');
+  if (value.finalUsageMissing && (status !== 'closed' || value.available)) throw new Error('missing final accounting requires a closed unavailable run');
+  if (status === 'closed' && !value.available && !value.finalUsageMissing) throw new Error('closed unavailable accounting must report missing final usage');
+  return value;
+}
 function observation(value) {
   exact(value, ['id', 'scenarioId', 'at', 'action', 'result', 'durationMs', 'evidence'], 'observation');
   string(value.id, 'observation.id', 100); string(value.scenarioId, 'observation.scenarioId', 100);
@@ -115,7 +124,7 @@ function unique(items, label) {
   if (new Set(items).size !== items.length) throw new Error(`${label} contains duplicates`);
 }
 export function validateRun(value) {
-  exact(value, ['version', 'id', 'status', 'createdAt', 'updatedAt', 'closedAt', 'closeReason', 'revision', 'settings', 'model', 'persona', 'scenarios', 'currentScenarioId', 'consumedLessons', 'usage', 'inFlight', 'observations', 'findings', 'coverage'], 'run');
+  exact(value, ['version', 'id', 'status', 'createdAt', 'updatedAt', 'closedAt', 'closeReason', 'revision', 'settings', 'model', 'persona', 'scenarios', 'currentScenarioId', 'consumedLessons', 'usage', 'accounting', 'inFlight', 'observations', 'findings', 'coverage'], 'run');
   if (value.version !== RECORD_VERSION) throw new Error('unsupported run version');
   string(value.id, 'run.id', 100); oneOf(value.status, new Set(['active', 'closed']), 'run.status');
   if (!iso(value.createdAt) || !iso(value.updatedAt)) throw new Error('run timestamps are invalid');
@@ -141,6 +150,7 @@ export function validateRun(value) {
   });
   unique(value.consumedLessons.map((item) => item.id), 'consumedLessons');
   usage(value.usage);
+  if (value.accounting !== undefined) accounting(value.accounting, value.status);
   if (value.inFlight !== null) {
     exact(value.inFlight, ['id', 'startedAt', 'scenarioId'], 'inFlight');
     string(value.inFlight.id, 'inFlight.id', 100);
@@ -213,7 +223,7 @@ export async function createRun({ rootDir = defaultRoot, revision, settings = { 
   const runDir = path.join(rootDir, id);
   const memory = memoryFile ? await loadMemory(memoryFile) : { version: RECORD_VERSION, lessons: [], regressions: [] };
   const consumedLessons = selectLessons(memory, { personaId: persona?.id, scenarioIds: scenarios?.map((item) => item.id), revision });
-  const run = validateRun({ version: RECORD_VERSION, id, status: 'active', createdAt: now, updatedAt: now, closedAt: null, closeReason: null, revision, settings, model, persona, scenarios, currentScenarioId: null, consumedLessons, usage: { knownCostUsd: 0, unknownCostRequests: 0, inputTokens: 0, outputTokens: 0, requestCount: 0 }, inFlight: null, observations: [], findings: [], coverage: [] });
+  const run = validateRun({ version: RECORD_VERSION, id, status: 'active', createdAt: now, updatedAt: now, closedAt: null, closeReason: null, revision, settings, model, persona, scenarios, currentScenarioId: null, consumedLessons, usage: { knownCostUsd: 0, unknownCostRequests: 0, inputTokens: 0, outputTokens: 0, requestCount: 0 }, accounting: { available: true, unavailableAt: null, finalUsageMissing: false }, inFlight: null, observations: [], findings: [], coverage: [] });
   await mkdir(runDir, { mode: 0o700 });
   await writeJson(path.join(runDir, 'run.json'), run);
   return { runDir, run };
@@ -227,6 +237,7 @@ export function runDecision(run, { now = new Date().toISOString(), usage: curren
   if (!iso(now)) throw new Error('now is invalid');
   for (const key of Object.keys(run.usage)) if (currentUsage[key] < run.usage[key]) throw new Error(`usage.${key} cannot decrease`);
   if (run.status !== 'active') return { allowNewTurn: false, reason: 'closed' };
+  if (!accountingFor(run).available) return { allowNewTurn: false, reason: 'accounting-unavailable' };
   if (run.inFlight || adapterBusy) return { allowNewTurn: false, reason: 'turn-in-flight' };
   if (Date.parse(now) >= Date.parse(run.createdAt) + run.settings.durationMinutes * 60_000) return { allowNewTurn: false, reason: 'time-limit' };
   if (currentUsage.unknownCostRequests > 0) return { allowNewTurn: false, reason: 'unknown-cost' };
@@ -247,6 +258,7 @@ export async function updateRun({ runDir, event, now = new Date().toISOString() 
       'finding.update': ['type', 'findingId', 'finding'],
       'coverage.add': ['type', 'scenarioId', 'outcome', 'evidence', 'at'],
       'usage.record': ['type', 'usage'],
+      'accounting.unavailable': ['type'],
       'turn.start': ['type', 'scenarioId', 'id'],
       'turn.finish': ['type', 'id', 'usage'],
     };
@@ -273,8 +285,12 @@ export async function updateRun({ runDir, event, now = new Date().toISOString() 
         usage(event.usage);
         for (const key of Object.keys(next.usage)) if (event.usage[key] < next.usage[key]) throw new Error(`usage.${key} cannot decrease`);
         next.usage = event.usage;
+        next.accounting = { available: true, unavailableAt: null, finalUsageMissing: false };
         break;
       }
+      case 'accounting.unavailable':
+        next.accounting = { available: false, unavailableAt: accountingFor(next).unavailableAt ?? now, finalUsageMissing: false };
+        break;
       case 'turn.start': {
         const decision = runDecision(next, { now });
         if (!decision.allowNewTurn) throw new Error(`new paid turn stopped: ${decision.reason}`);
@@ -285,9 +301,11 @@ export async function updateRun({ runDir, event, now = new Date().toISOString() 
       }
       case 'turn.finish':
         if (!next.inFlight || next.inFlight.id !== event.id) throw new Error('turn id mismatch');
+        if (!accountingFor(next).available) throw new Error('restore accounting before finishing an in-flight turn');
         usage(event.usage);
         for (const key of Object.keys(next.usage)) if (event.usage[key] < next.usage[key]) throw new Error(`usage.${key} cannot decrease`);
         next.usage = event.usage;
+        next.accounting = { available: true, unavailableAt: null, finalUsageMissing: false };
         next.inFlight = null;
         break;
       default: throw new Error('unknown event type');
@@ -298,15 +316,20 @@ export async function updateRun({ runDir, event, now = new Date().toISOString() 
     return next;
   });
 }
-export async function closeRun({ runDir, reason, now = new Date().toISOString() }) {
+export async function closeRun({ runDir, reason, finalAccountingUnavailable = false, now = new Date().toISOString() }) {
   await ensureDirectory(runDir, false, true);
   return withLock(runDir, async () => {
     const run = await loadRun({ runDir });
     if (run.status === 'closed') return run;
-    if (run.inFlight) throw new Error('finish or account for the in-flight turn before closing');
+    if (typeof finalAccountingUnavailable !== 'boolean') throw new Error('finalAccountingUnavailable must be boolean');
+    if (finalAccountingUnavailable !== !accountingFor(run).available) throw new Error('final accounting availability must match the last adapter reading');
+    if (run.inFlight && !finalAccountingUnavailable) throw new Error('finish or account for the in-flight turn before closing');
     string(reason, 'close reason', 500);
     if (!iso(now)) throw new Error('now is invalid');
-    const next = validateRun({ ...run, status: 'closed', closeReason: reason, closedAt: now, updatedAt: now });
+    const next = validateRun({ ...run, status: 'closed', closeReason: reason, closedAt: now, updatedAt: now,
+      inFlight: null, accounting: finalAccountingUnavailable
+        ? { ...accountingFor(run), finalUsageMissing: true }
+        : accountingFor(run) });
     await writeJson(path.join(runDir, 'run.json'), next);
     return next;
   });

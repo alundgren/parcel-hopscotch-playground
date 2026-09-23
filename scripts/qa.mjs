@@ -139,21 +139,25 @@ async function adapterCall(runDir, command, extra = []) {
 
 export function cumulativeUsage(status) {
   if (!status?.usage) throw new Error('Adapter did not return cumulative app usage.');
-  return Object.fromEntries(['knownCostUsd', 'unknownCostRequests', 'inputTokens', 'outputTokens', 'requestCount']
+  const result = Object.fromEntries(['knownCostUsd', 'unknownCostRequests', 'inputTokens', 'outputTokens', 'requestCount']
     .map((key) => [key, status.usage[key]]));
+  if (!Number.isFinite(result.knownCostUsd) || result.knownCostUsd < 0
+    || ['unknownCostRequests', 'inputTokens', 'outputTokens', 'requestCount'].some((key) => !Number.isSafeInteger(result[key]) || result[key] < 0)
+    || result.unknownCostRequests > result.requestCount) throw new Error('Adapter did not return numeric cumulative app usage.');
+  return result;
 }
 
 async function recordUsage(runDir, status) {
-  const usage = cumulativeUsage(status);
   const run = await loadRun({ runDir });
-  if (run.status === 'active') return updateRun({ runDir, event: { type: 'usage.record', usage } });
-  return run;
+  if (run.status !== 'active') return run;
+  if (status?.usage?.accountingAvailable === false) return updateRun({ runDir, event: { type: 'accounting.unavailable' } });
+  return updateRun({ runDir, event: { type: 'usage.record', usage: cumulativeUsage(status) } });
 }
 
 export async function sessionStatus(runDir) {
   const adapter = await adapterCall(runDir, 'status');
   let run = await recordUsage(runDir, adapter);
-  if (run.status === 'active' && run.inFlight && !adapter.busy) {
+  if (run.status === 'active' && run.inFlight && !adapter.busy && run.accounting?.available !== false) {
     run = await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: cumulativeUsage(adapter) } });
   }
   return { run, adapter, decision: runDecision(run, { adapterBusy: adapter.busy }) };
@@ -215,7 +219,7 @@ export async function browserCommand(runDir, request) {
   }
   await recordUsage(runDir, status);
   const currentRun = await loadRun({ runDir });
-  if (currentRun.inFlight && !status.busy) {
+  if (currentRun.inFlight && !status.busy && currentRun.accounting?.available !== false) {
     await updateRun({ runDir, event: { type: 'turn.finish', id: currentRun.inFlight.id, usage: cumulativeUsage(status) } });
   }
   const observationId = randomUUID();
@@ -233,7 +237,10 @@ export async function browserCommand(runDir, request) {
     },
   } });
   if (failure) throw new Error(`Adapter command failed. Observation ${observationId}; local evidence ${evidenceName}.`);
-  return { observationId, response, busy: status.busy, appUsage: cumulativeUsage(status), adapterCommandDurationMs: durationMs };
+  return { observationId, response, busy: status.busy,
+    appUsage: currentRun.accounting?.available === false ? null : cumulativeUsage(status),
+    ...(currentRun.accounting?.available === false ? { lastKnownAppUsage: currentRun.usage, accountingAvailable: false } : {}),
+    adapterCommandDurationMs: durationMs };
 }
 
 async function serve(runDir) {
@@ -262,11 +269,13 @@ async function serve(runDir) {
 }
 
 async function stop(runDir, reason) {
-  await adapterCall(runDir, 'stop');
-  const status = await adapterCall(runDir, 'status');
+  const stopped = await adapterCall(runDir, 'stop');
+  if (stopped.busy || stopped.paidTurnsAllowed || !['manual_stop', 'deadline', 'application_exited', 'browser_disconnected', 'startup_failed'].includes(stopped.stopReason)
+    && !/^signal_(SIGINT|SIGTERM)$/.test(stopped.stopReason ?? '')) throw new Error('Adapter did not confirm shutdown; run remains active.');
+  const status = await adapterCall(runDir, 'status').catch(() => stopped);
   let run = await recordUsage(runDir, status);
-  if (run.inFlight) run = await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: cumulativeUsage(status) } });
-  return closeRun({ runDir, reason });
+  if (run.inFlight && run.accounting?.available !== false) run = await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: cumulativeUsage(status) } });
+  return closeRun({ runDir, reason, finalAccountingUnavailable: run.accounting?.available === false });
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -299,10 +308,11 @@ export async function main(argv = process.argv.slice(2)) {
       return promoteMemory({ ...selected, runDir, memoryFile: await repositoryFile(context.config.memoryFile) });
     }
     case 'resume': {
-      const { run, adapter } = await sessionStatus(requireRun());
+      const status = await sessionStatus(requireRun());
+      const { run, adapter } = status;
+      if (run.accounting?.available === false) return status;
       if (adapter.busy) throw new Error('An app turn is still running.');
-      if (run.inFlight) await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: cumulativeUsage(adapter) } });
-      return sessionStatus(runDir);
+      return status;
     }
     case 'stop': return stop(requireRun(), options.reason ?? 'Session completed; unfinished findings retained.');
     default: throw new Error(`Unknown QA command: ${command}`);
