@@ -38,6 +38,8 @@ jobs:
           run-install: false
       - run: vp install --frozen-lockfile
       - run: vp exec playwright install --with-deps chromium
+      - name: Check exploratory QA tooling with scripted providers
+        run: vp run test:qa
       - run: vp run proof:visual
         env:
           CI: true
