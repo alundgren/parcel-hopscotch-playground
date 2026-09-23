@@ -199,7 +199,16 @@ export const AuditApplicationRecord = Schema.Struct({
   bodyText: Schema.String,
 });
 export type AuditApplicationRecord = typeof AuditApplicationRecord.Type;
+export const AuditRequestSummary = Schema.Struct({
+  id: Schema.String, generation: Schema.Int, turnId: Schema.String,
+  requestLabel: Schema.String, startedAt: Schema.String, turnCount: Schema.Int,
+  outcome: Schema.Literals(["running", "success", "error", "credits_exhausted", "timeout", "cancelled", "interrupted", "unknown"]),
+  durationMs: Schema.NullOr(Schema.Number), totalTokens: Schema.NullOr(Schema.Number),
+  costUsd: Schema.NullOr(Schema.Number), mode: Schema.Literals(["live", "scripted", "unavailable", "mixed"]),
+});
+export type AuditRequestSummary = typeof AuditRequestSummary.Type;
 export const AuditPage = Schema.Struct({
+  requests: Schema.Array(AuditRequestSummary),
   query: Schema.String, attempts: Schema.Array(AuditAttemptSummary), total: Schema.Int,
   nextCursor: Schema.NullOr(Schema.String), markers: Schema.Array(AuditApplicationRecord),
   markerNextCursor: Schema.NullOr(Schema.String),

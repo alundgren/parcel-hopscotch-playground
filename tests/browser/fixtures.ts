@@ -146,6 +146,12 @@ export const failedAttempt: AuditAttemptSummary = {
 
 export const auditPage: AuditPage = {
   query: "",
+  requests: [completedAttempt, failedAttempt].map((attempt) => ({
+    id: attempt.id, generation: attempt.generation, turnId: attempt.turnId,
+    requestLabel: attempt.requestLabel, startedAt: attempt.startedAt, turnCount: 1,
+    outcome: attempt.outcome, durationMs: attempt.id === completedAttempt.id ? 1810 : null,
+    totalTokens: attempt.totalTokens, costUsd: attempt.costUsd, mode: attempt.mode,
+  })),
   attempts: [completedAttempt, failedAttempt],
   total: 2,
   nextCursor: null,
@@ -210,3 +216,18 @@ export const createWorkspace = (overrides: WorkspaceOverrides = {}) => ({
   requestAuditDetail: vi.fn(),
   ...overrides,
 });
+
+export const groupedAuditPage: AuditPage = {
+  query: "", total: 2, nextCursor: null, markers: [], markerNextCursor: null,
+  requests: [
+    { id: "mug-1", generation: 1, turnId: "mug", requestLabel: "teach me how to fix the stone mug problem", startedAt: "2026-09-23T06:25:40Z", turnCount: 2, outcome: "success", durationMs: 1120, totalTokens: 5661, costUsd: 0.000299, mode: "live" },
+    { id: "candle-1", generation: 1, turnId: "candle", requestLabel: "open the matched candle review for me", startedAt: "2026-09-23T06:24:21Z", turnCount: 3, outcome: "success", durationMs: 1430, totalTokens: 10558, costUsd: 0.000410, mode: "live" },
+  ],
+  attempts: [
+    { ...completedAttempt, id: "mug-1", turnId: "mug", requestLabel: "teach me how to fix the stone mug problem", startedAt: "2026-09-23T06:25:40Z", durationMs: 554, totalTokens: 2757, costUsd: 0.000253 },
+    { ...completedAttempt, id: "mug-2", turnId: "mug", requestLabel: "teach me how to fix the stone mug problem", startedAt: "2026-09-23T06:25:41Z", durationMs: 362, totalTokens: 2904, costUsd: 0.000046 },
+    { ...completedAttempt, id: "candle-1", turnId: "candle", requestLabel: "open the matched candle review for me", startedAt: "2026-09-23T06:24:21Z", durationMs: 543, totalTokens: 3473, costUsd: 0.000322 },
+    { ...completedAttempt, id: "candle-2", turnId: "candle", requestLabel: "open the matched candle review for me", startedAt: "2026-09-23T06:24:21Z", durationMs: 316, totalTokens: 3518, costUsd: 0.000043 },
+    { ...completedAttempt, id: "candle-3", turnId: "candle", requestLabel: "open the matched candle review for me", startedAt: "2026-09-23T06:24:22Z", durationMs: 336, totalTokens: 3567, costUsd: 0.000045 },
+  ],
+};

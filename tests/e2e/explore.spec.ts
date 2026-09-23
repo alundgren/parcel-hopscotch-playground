@@ -139,7 +139,7 @@ test("opens the exact Jev trace and recovers completed examples through review",
   await page.waitForTimeout(500);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __agentCompleteAcks: number }).__agentCompleteAcks)).toBe(0);
   const expanded = page.locator('.audit-summary[aria-hidden="false"]');
-  const row = page.locator(".audit-summary[data-attempt-id]").first();
+  const row = page.locator(".audit-summary[data-attempt-id]").filter({ hasText: "Classification" });
   await expect(row).toBeVisible();
   const attemptId = await row.getAttribute("data-attempt-id");
   expect(attemptId).not.toBeNull();

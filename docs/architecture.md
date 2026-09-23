@@ -42,7 +42,7 @@ C4Container
 - The tool registry supplies typed input/output contracts, permitted effects, and Explore examples.
 - The agent runtime coordinates bounded turns and validates every requested tool. UI guidance addresses registered target IDs and advances tutorials from verified app events.
 - OpenRouter adapters normalize chat and decision responses, cancellation, failures, usage, and actual billing data.
-- Audit records provider attempts and app outcomes using allowlisted payloads and complete-duration measurements.
+- Audit records provider attempts and app outcomes using allowlisted payloads and complete-duration measurements. Its request list groups calls by owner, generation, and agent turn ID before pagination, returns every call for the selected requests, and uses retained completion records for request outcomes and send-to-completed-work duration.
 
 Keep these responsibilities as plain modules in one application. Separate packages only when a concrete reuse need justifies them.
 

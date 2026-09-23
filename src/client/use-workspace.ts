@@ -77,7 +77,7 @@ export function useWorkspace() {
   const pendingRef = useRef(new Map<string, PendingCommand>());
   const turnStartedRef = useRef(new Map<string, number>());
   const auditPageRef = useRef<AuditPage | null>(null);
-  const pendingAuditPagesRef = useRef(new Map<string, { readonly appendAttempts: boolean; readonly appendMarkers: boolean }>());
+  const pendingAuditPagesRef = useRef(new Map<string, { readonly appendRequests: boolean; readonly appendMarkers: boolean }>());
   const pendingAuditDetailsRef = useRef(new Map<string, { readonly attemptId: string; readonly append: boolean }>());
   stateRef.current = snapshot;
   auditPageRef.current = auditPage;
@@ -140,9 +140,10 @@ export function useWorkspace() {
         if (pending === undefined) return;
         pendingAuditPagesRef.current.delete(message.requestId);
         const current = auditPageRef.current;
-        const next = current !== null && current.query === message.page.query && pending.appendAttempts
+        const next = current !== null && current.query === message.page.query && pending.appendRequests
           ? {
               ...message.page,
+              requests: [...current.requests.filter((request) => !message.page.requests.some((incoming) => incoming.id === request.id)), ...message.page.requests],
               attempts: [...current.attempts, ...message.page.attempts.filter((attempt) => !current.attempts.some((existing) => existing.id === attempt.id))],
               markers: current.markers,
               markerNextCursor: current.markerNextCursor,
@@ -150,6 +151,7 @@ export function useWorkspace() {
           : current !== null && current.query === message.page.query && pending.appendMarkers
             ? {
                 ...message.page,
+                requests: current.requests,
                 attempts: current.attempts,
                 total: current.total,
                 nextCursor: current.nextCursor,
@@ -270,11 +272,11 @@ export function useWorkspace() {
     socket.send(JSON.stringify({ type: "command_visible_ack", requestId: requestId(), generation, receiptId, durationMs }));
   }, []);
 
-  const requestAudit = useCallback((query: string, cursor: string | null = null, appendAttempts = false, markerCursor: string | null = null, appendMarkers = false) => {
+  const requestAudit = useCallback((query: string, cursor: string | null = null, appendRequests = false, markerCursor: string | null = null, appendMarkers = false) => {
     const socket = socketRef.current;
     if (socket === null || socket.readyState !== WebSocket.OPEN) { setAuditError("Reconnect to load Audit."); return; }
     const id = requestId();
-    pendingAuditPagesRef.current.set(id, { appendAttempts, appendMarkers });
+    pendingAuditPagesRef.current.set(id, { appendRequests, appendMarkers });
     setAuditLoading(true);
     setAuditError(null);
     socket.send(JSON.stringify({ type: "request_audit", requestId: id, query, cursor, markerCursor }));

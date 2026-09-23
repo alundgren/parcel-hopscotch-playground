@@ -759,3 +759,55 @@ describe("provider attempt audit", () => {
     expect(result.every((page) => page.serverTurnDurationMs === 125.25 && page.serverTurnMeasurement === "complete")).toBe(true);
   });
 });
+
+it("paginates complete requests, retains totals and measurements through reset, and isolates repeated prompts and generations", async () => {
+  const filename = await workspace();
+  const owner = identity("grouped-owner@example.test");
+  const other = identity("grouped-other@example.test");
+  const data = await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+    const repository = yield* WorkspaceRepository;
+    yield* repository.snapshot(owner);
+    yield* repository.snapshot(other);
+    const makeCall = (who: RequestIdentity, generation: number, turnId: string, index: number, unknown = false) => Effect.gen(function* () {
+      const started = yield* repository.startProviderAttempt({ identity: who, generation, requestId: `${turnId}:${index}`, turnId,
+        kind: index === 1 ? "decisions" : "chat", mode: "live", provider: "OpenRouter", model: "test/model",
+        request: { messages: [{ role: "user", content: "Same prompt" }] }, requestBytes: 10 });
+      yield* repository.finishProviderAttempt(who, started.id, { outcome: "success", provider: "test", actualModel: "test/model", providerRequestId: null, generationId: null,
+        response: { content: index === 1 ? "unique-match" : "done" }, responseBytes: 10, inputTokens: 2, outputTokens: 1,
+        totalTokens: unknown ? null : 3, costUsd: unknown ? null : 0.00001, errorCode: null, errorMessage: null, retryCount: 0, durationMs: 4 });
+      return started.id;
+    });
+    const ids: string[] = [];
+    for (let index = 0; index < 24; index++) ids.push(yield* makeCall(owner, 1, "group-a", index));
+    yield* repository.recordApplicationAudit(owner, 1, { kind: "turn", label: "Completed agent turn", outcome: "complete", turnId: "group-a",
+      body: { measurement: "complete", completeDurationMs: 4321 } });
+    yield* makeCall(owner, 1, "group-b", 0, true);
+    yield* makeCall(other, 1, "group-a", 0);
+    const first = yield* repository.auditPage(owner, "", null, 1);
+    const second = yield* repository.auditPage(owner, "", first.nextCursor, 1);
+    const matched = yield* repository.auditPage(owner, ids[1]!);
+    const matchedBody = yield* repository.auditPage(owner, "unique-match");
+    const denied = yield* repository.auditPage(other, ids[1]!);
+    const reset = yield* repository.prepareReset(owner, 1);
+    yield* repository.accept(owner, 1, reset.id, "reset-grouped");
+    yield* makeCall(owner, 2, "group-a", 0);
+    const afterReset = yield* repository.auditPage(owner, "");
+    return { ids, first, second, matched, matchedBody, denied, afterReset };
+  }));
+  expect(data.first.total).toBe(2);
+  expect(data.first.requests).toHaveLength(1);
+  expect(data.first.requests[0]).toMatchObject({ turnId: "group-b", totalTokens: null, costUsd: null, durationMs: null, outcome: "unknown" });
+  expect(data.second.requests).toHaveLength(1);
+  expect(data.second.nextCursor).toBeNull();
+  expect(data.second.attempts.map((attempt) => attempt.id)).toEqual(data.ids);
+  expect(data.second.requests[0]).toMatchObject({ turnId: "group-a", turnCount: 24, totalTokens: 72, durationMs: 4321, outcome: "success" });
+  expect(data.second.requests[0]!.costUsd).toBeCloseTo(0.00024, 9);
+  expect(data.matched.requests).toEqual(data.second.requests);
+  expect(data.matched.attempts).toHaveLength(24);
+  expect(data.matchedBody.attempts).toHaveLength(24);
+  expect(data.denied.requests).toHaveLength(0);
+  expect(data.afterReset.total).toBe(3);
+  expect(data.afterReset.requests.filter((request) => request.turnId === "group-a")).toHaveLength(2);
+  expect(data.afterReset.requests.find((request) => request.turnId === "group-a" && request.generation === 1)).toMatchObject({ durationMs: 4321, outcome: "success", turnCount: 24 });
+  expect(data.afterReset.requests.find((request) => request.turnId === "group-a" && request.generation === 2)).toMatchObject({ durationMs: null, outcome: "unknown", turnCount: 1 });
+});

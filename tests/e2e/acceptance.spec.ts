@@ -112,10 +112,10 @@ test("isolates turns, provider failures, audit history, accepted work, and reset
     await expect(second.getByText("Find BB-1088, open it, and highlight the evidence.")).toHaveCount(0);
 
     await first.getByRole("button", { name: "Audit", exact: true }).click();
-    await expect(first.locator(".audit-summary")).toHaveCount(5);
+    await expect(first.locator("[data-audit-request-id]")).toHaveCount(3);
     await expect(first.getByText("Error", { exact: true }).first()).toBeVisible();
     await second.getByRole("button", { name: "Audit", exact: true }).click();
-    await expect(second.locator(".audit-summary")).toHaveCount(0);
+    await expect(second.locator("[data-audit-request-id]")).toHaveCount(0);
 
     await first.getByRole("button", { name: "Work", exact: true }).click();
     await first.getByRole("button", { name: "Back to queue" }).click();
@@ -127,10 +127,10 @@ test("isolates turns, provider failures, audit history, accepted work, and reset
     await expect(second.getByText("Fresh workspace ready")).toHaveCount(0);
 
     await first.getByRole("button", { name: "Audit", exact: true }).click();
-    await expect(first.locator(".audit-summary")).toHaveCount(5);
+    await expect(first.locator("[data-audit-request-id]")).toHaveCount(3);
     await expect(first.getByText("Workspace reset", { exact: true })).toBeVisible();
     await second.getByRole("button", { name: "Audit", exact: true }).click();
-    await expect(second.locator(".audit-summary")).toHaveCount(0);
+    await expect(second.locator("[data-audit-request-id]")).toHaveCount(0);
   } finally {
     await Promise.allSettled([firstContext.close(), secondContext.close()]);
   }
@@ -154,6 +154,7 @@ test("records server-turn, browser completed-work, and accept-to-visible measure
   await page.getByRole("button", { name: "Audit", exact: true }).click();
   const search = page.getByLabel("Search audit history");
   await search.fill(turnId!);
+  await page.locator("[data-audit-request-id]").first().getByRole("button").click();
   const row = page.locator(".audit-summary[data-attempt-id]").first();
   await expect(row).toBeVisible();
   await row.getByRole("button").click();

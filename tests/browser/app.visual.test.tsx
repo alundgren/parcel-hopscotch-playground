@@ -2,7 +2,7 @@ import { render } from "vitest-browser-react";
 import { afterEach, beforeEach, describe, expect, test, vi, type TestContext } from "vite-plus/test";
 import { commands, page, userEvent } from "vite-plus/test/browser";
 import "../../src/client/styles.css";
-import { auditPage, createWorkspace, proposal, receipt, snapshot } from "./fixtures";
+import { groupedAuditPage, auditPage, createWorkspace, proposal, receipt, snapshot } from "./fixtures";
 
 const workspaceState = vi.hoisted(() => ({ current: null as ReturnType<typeof createWorkspace> | null }));
 vi.mock("../../src/client/use-workspace", () => ({ useWorkspace: () => workspaceState.current }));
@@ -247,11 +247,48 @@ describe("rendered Explore UI", () => {
 });
 
 describe("rendered Audit UI", () => {
+  test("groups requests with independent keyboard disclosures and complete totals", async () => {
+    workspaceState.current = createWorkspace({ auditPage: groupedAuditPage });
+    await render(<App />);
+    await page.getByRole("button", { name: "Audit", exact: true }).click();
+    await expect.element(page.getByText("2 requests", { exact: true })).toBeVisible();
+    expect(document.querySelectorAll("[data-audit-request-id]")).toHaveLength(2);
+    expect(document.querySelectorAll("[data-attempt-id]")).toHaveLength(0);
+    await checkpoint("audit-grouped-collapsed");
+    const candle = page.getByRole("button", { name: /open the matched candle review/ });
+    await candle.click();
+    await expect.element(candle).toHaveAttribute("aria-expanded", "true");
+    expect(document.querySelectorAll("[data-attempt-id]")).toHaveLength(3);
+    const first = document.querySelector("[data-audit-request-id='mug-1']")!;
+    const second = document.querySelector("[data-audit-request-id='candle-1']")!;
+    expect(first.textContent).toContain("5,661");
+    expect(second.textContent).toContain("10,558");
+    expect(second.textContent).toContain("$0.00041");
+    expectReadable(candle.element());
+    expectNotClipped(candle.element());
+    expectInside(candle.element(), second);
+    expectNoOverlap(first, second);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    document.querySelector(".audit-scroll")!.scrollLeft = 0;
+    await checkpoint("audit-grouped-expanded");
+    const mug = page.getByRole("button", { name: /teach me how to fix the stone mug/ });
+    (mug.element() as HTMLButtonElement).focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(mug).toHaveAttribute("aria-expanded", "true");
+    await expect.element(candle).toHaveAttribute("aria-expanded", "true");
+    expect(document.querySelectorAll("[data-attempt-id]")).toHaveLength(5);
+    await userEvent.keyboard("{Enter}");
+    await expect.element(mug).toHaveAttribute("aria-expanded", "false");
+    await expect.element(candle).toHaveAttribute("aria-expanded", "true");
+    expect(document.querySelectorAll("[data-attempt-id]")).toHaveLength(3);
+  });
+
   test("keeps long details inside the horizontal review panel and switches tabs", async () => {
     await render(<App />);
     await page.getByRole("button", { name: "Audit" }).click();
     await expect.element(page.getByRole("heading", { name: "Audit" })).toBeVisible();
     await page.getByRole("button", { name: /Summarise the ready orders/ }).click();
+    await page.getByRole("button", { name: /Turn 1 · Chat/ }).click();
     await expect.element(page.getByRole("tab", { name: "Request" })).toHaveAttribute("aria-selected", "true");
     const scroll = document.querySelector(".audit-scroll")!;
     const detail = document.querySelector(".audit-detail-cell")!;
@@ -279,7 +316,7 @@ describe("rendered Audit UI", () => {
   });
 
   test("renders an empty Audit state without page-wide overflow", async () => {
-    workspaceState.current = createWorkspace({ auditPage: { ...auditPage, query: "no-match", attempts: [], total: 0 }, auditError: null });
+    workspaceState.current = createWorkspace({ auditPage: { ...auditPage, query: "no-match", requests: [], attempts: [], total: 0 }, auditError: null });
     await render(<App />);
     await page.getByRole("button", { name: "Audit" }).click();
     await expect.element(page.getByText("No inference attempts have been recorded yet.")).toBeVisible();
