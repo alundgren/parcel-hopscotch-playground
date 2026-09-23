@@ -844,3 +844,33 @@ it("keeps reset receipts and visible-commit measurements linked across generatio
   expect(data.unrelated.requests).toHaveLength(0);
   expect(data.byNewTurnRecord.requests).toHaveLength(0);
 });
+
+it("searches retained request history within the browser response budget", async () => {
+  const filename = await workspace();
+  const owner = identity("audit-search-volume@example.test");
+  await runWithWorkspaceRepository(filename, Effect.gen(function* () {
+    const repository = yield* WorkspaceRepository;
+    yield* repository.snapshot(owner);
+    for (let index = 0; index < 30; index++) {
+      const turnId = `volume-turn-${index}`;
+      const proposalId = `volume-proposal-${index}`;
+      const receiptId = `volume-receipt-${index}`;
+      for (let call = 0; call < 2; call++) {
+        yield* repository.startProviderAttempt({ identity: owner, generation: 1, requestId: `${turnId}-${call}`, turnId,
+          kind: "chat", mode: "scripted", provider: "OpenRouter", model: "test/model", request: { messages: [{ role: "user", content: `Review order ${index}` }] }, requestBytes: 10 });
+      }
+      yield* repository.recordApplicationAudit(owner, 1, { kind: "tool", label: "Prepare review", outcome: "prepared", turnId, proposalId, body: { order: index } });
+      yield* repository.recordApplicationAudit(owner, 1, { kind: "ui", label: "Show review", outcome: "applied", turnId, proposalId, body: {} });
+      yield* repository.recordApplicationAudit(owner, 1, { kind: "receipt", label: "Accepted review", outcome: "accepted", proposalId, receiptId, body: {} });
+      yield* repository.recordApplicationAudit(owner, 1, { kind: "command_visible", label: "Visible review", outcome: "complete", receiptId, body: { durationMs: 10 } });
+    }
+    const started = performance.now();
+    const matched = yield* repository.auditPage(owner, "volume-receipt-29");
+    const absent = yield* repository.auditPage(owner, "no-such-record");
+    expect(matched.requests.map((request) => request.turnId)).toEqual(["volume-turn-29"]);
+    expect(matched.attempts).toHaveLength(2);
+    expect(absent.requests).toHaveLength(0);
+    // Two reads must finish well within the UI's five-second response expectation.
+    expect(performance.now() - started).toBeLessThan(3_000);
+  }));
+});

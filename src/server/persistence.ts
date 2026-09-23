@@ -1147,8 +1147,8 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
       ) LIKE ? ESCAPE '\\'`);
       parameters.push(`%${escapeLike(term)}%`);
     }
-    // Select whole requests before loading their calls so filtering and pagination cannot split totals.
-    const requestGroups = `WITH matching AS (
+    // Materialize matches so grouping cannot repeat the correlated audit search for each call.
+    const requestGroups = `WITH matching AS MATERIALIZED (
       SELECT DISTINCT pa.generation, pa.turn_id FROM provider_attempts pa WHERE ${where.join(" AND ")}
     ), grouped AS (
       SELECT pa.generation, pa.turn_id, MIN(pa.started_at) AS started_at, MIN(pa.rowid) AS first_row
