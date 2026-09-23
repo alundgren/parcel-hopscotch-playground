@@ -18,9 +18,12 @@ const port = process.env.PARCEL_E2E_PORT === undefined
   ? await allocatePort()
   : Number(process.env.PARCEL_E2E_PORT);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid Playwright server port.");
+// Playwright workers load this config again and must use the same server port.
 process.env.PARCEL_E2E_PORT = String(port);
 const origin = `http://127.0.0.1:${port}`;
-const databasePath = ".tmp/playwright.sqlite";
+if (process.env.PARCEL_E2E_DATABASE_PATH === undefined) {
+  throw new Error("Start Playwright with vp run test:e2e or scripts/run-e2e.mjs.");
+}
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -62,7 +65,7 @@ export default defineConfig({
   webServer: [
     {
       command:
-        `vp run build && node scripts/clean-playwright-db.mjs && NODE_ENV=test AGENT_PROVIDER_MODE=scripted ENABLE_DEV_IDENTITY=true DEV_USER_EMAIL=playwright@example.test PUBLIC_ORIGIN=${origin} DATABASE_PATH=${databasePath} HOST=127.0.0.1 PORT=${port} vp run start`,
+        `vp run build && NODE_ENV=test AGENT_PROVIDER_MODE=scripted ENABLE_DEV_IDENTITY=true DEV_USER_EMAIL=playwright@example.test PUBLIC_ORIGIN=${origin} DATABASE_PATH="$PARCEL_E2E_DATABASE_PATH" HOST=127.0.0.1 PORT=${port} vp run start`,
       url: `${origin}/api/health`,
       reuseExistingServer: false,
       timeout: 120_000,

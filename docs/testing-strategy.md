@@ -27,7 +27,7 @@ Avoid a test that merely repeats a type check, snapshots a large object without 
 
 ## Keep the routine commands efficient
 
-`vp run test:unit` and `vp run test:integration` run in Node without a browser. `vp run test:browser` mounts the actual React app at desktop and narrow widths without starting the server. `vp run test:e2e` builds and starts the app once on an available loopback port with a freshly cleared SQLite file, then runs the real workflow suite. `vp run proof:visual` captures Browser Mode checkpoints and an HTML report. Use `vp run proof:e2e` when a server-backed screenshot is needed for review. Ordinary passing E2E tests keep no manual screenshots; Playwright still retains failure screenshots and traces.
+`vp run test:unit` and `vp run test:integration` run in Node without a browser. `vp run test:browser` mounts the actual React app at desktop and narrow widths without starting the server. `vp run test:e2e` builds and starts the app once on an available loopback port with a private SQLite file that is removed when the command ends. Use `node scripts/run-e2e.mjs tests/e2e/workspace.spec.ts --project=desktop` for a focused server-backed run. `vp run proof:visual` captures Browser Mode checkpoints and an HTML report. Use `vp run proof:e2e` when a server-backed screenshot is needed for review. Ordinary passing E2E tests keep no manual screenshots; Playwright still retains failure screenshots and traces.
 
 Wait for a specific state with locator assertions. Keep a fixed delay only when elapsed time is the contract, such as confirming a cancelled turn does not arrive late. For a visual checkpoint, wait for the intended state, fonts, images, and rendering before capture, then inspect the PNG at both widths.
 

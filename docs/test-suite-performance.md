@@ -193,8 +193,8 @@ Explore and tutorials, kept waits for late replies and cancellation, and moved
 successful E2E screenshots to an explicit proof command. Each mutable E2E test
 now gets a separate user; setup and cleanup resets that did not prove reset
 behavior were removed. The built-app runner uses its own loopback port and
-SQLite file in this checkout, so another checkout cannot answer its health
-check or browser requests.
+SQLite file for each invocation, so another checkout cannot answer its health
+check or browser requests and overlapping runs do not clear each other's data.
 
 Node tests use up to four workers on the measured four-core VM. Browser Mode
 stays at one worker because running both viewport instances together made its
