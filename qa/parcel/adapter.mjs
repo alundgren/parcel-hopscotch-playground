@@ -9,6 +9,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readAccounting, paidTurnDecision, isTerminalTurn, reconcileInterrupted, unavailableUsage } from './accounting.mjs';
 import { installPaidTurnGate } from './browser-gate.mjs';
+import { boundedSnapshotText } from './snapshot.mjs';
 
 const repo = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const require = createRequire(join(repo, 'package.json'));
@@ -101,7 +102,10 @@ async function runBrowserAction(page, request, directory) {
   if (!request || typeof request !== 'object') throw new Error('The browser request must be an object.');
   const action = request.action;
   if (action === 'snapshot') {
-    return { title: await page.title(), url: page.url(), accessibility: (await page.locator('body').ariaSnapshot()).slice(0, 24000), visibleText: (await page.locator('body').innerText()).slice(0, 24000) };
+    const accessibility = boundedSnapshotText(await page.locator('body').ariaSnapshot());
+    const visibleText = boundedSnapshotText(await page.locator('body').innerText());
+    return { title: await page.title(), url: page.url(), accessibility: accessibility.text, visibleText: visibleText.text,
+      truncated: { accessibility: accessibility.truncated, visibleText: visibleText.truncated } };
   }
   if (action === 'screenshot') {
     const label = request.label ?? 'checkpoint';

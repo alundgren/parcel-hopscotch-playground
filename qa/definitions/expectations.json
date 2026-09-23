@@ -61,12 +61,13 @@
     },
     {
       "id": "resolution-before-packing",
-      "status": "user-reported, to verify against persisted receipts and order state",
+      "status": "user-reported behavior, checked against deterministic receipt and order tests",
       "source": "docs/qa-validation.md#owner-reported-incident",
       "scenarios": [
         "accepted-resolution-packing"
       ],
-      "expected": "Fresh BB-1051 has one blue stoneware mug at GBP 24.00 and one available sage mug, version 1, unresolved and incomplete. Accepting substitution changes blue to sage at the same price, reserves one sage mug, and reaches version 2 with resolved true but completed false and Ready status. Read the accepted receipt and current order before explaining an already-accepted response. Do not invent a version mismatch, claim nothing changed, propose the same substitution again, or suggest rejecting an accepted resolution. Explain Ready and offer a separate reviewed ready batch for packing. The operator must inspect all included orders and accept through the UI. If included, BB-1051 reaches version 3 and completed true with a packing receipt."
+      "setup": "The local seed starts with four sage mugs. Before this mission, use Advance stock scenario three times through the normal UI and verify MUG-SAGE quantity is one. BB-1051 must remain version 1, unresolved, and incomplete. Keep this fixture setup separate from the explorer's mission.",
+      "expected": "BB-1051 has one blue stoneware mug at GBP 24.00 and, after the documented fixture setup, one available sage mug, version 1, unresolved and incomplete. Accepting substitution changes blue to sage at the same price, reserves one sage mug, and reaches version 2 with resolved true but completed false and Ready status. Read the accepted receipt and current order before explaining an already-accepted response. Do not invent a version mismatch, claim nothing changed, propose the same substitution again, or suggest rejecting an accepted resolution. Explain Ready and offer a separate reviewed ready batch for packing. The operator must inspect all included orders and accept through the UI. If included, BB-1051 reaches version 3 and completed true with a packing receipt."
     },
     {
       "id": "user-comprehension",

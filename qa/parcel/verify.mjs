@@ -23,6 +23,7 @@ try {
     receipts: rows('SELECT id, generation, proposal_id, payload_json, committed_at, undone_by FROM receipts ORDER BY committed_at'),
     inventory: rows('SELECT sku, quantity, version FROM inventory ORDER BY sku'),
     turns: rows('SELECT id, generation, status, started_at, finished_at, complete_duration_ms, measurement, server_duration_ms, server_measurement FROM agent_turns ORDER BY started_at'),
+    commands: rows("SELECT receipt_id AS receiptId, json_extract(body_json, '$.durationMs') AS durationMs, json_extract(body_json, '$.metric') AS metric, completed_at AS at FROM audit_records WHERE kind = 'command_visible' ORDER BY completed_at"),
     audit: rows('SELECT kind, label, outcome, request_id, turn_id, proposal_id, receipt_id, completed_at FROM audit_records ORDER BY completed_at'),
     attempts: rows('SELECT id, turn_id, mode, kind, outcome, cost_usd, input_tokens, output_tokens, started_at, completed_at, error_code FROM provider_attempts ORDER BY started_at'),
   };

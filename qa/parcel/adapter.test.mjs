@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { paidTurnDecision, readAccounting, reconcileInterrupted, unavailableUsage } from './accounting.mjs';
+import { boundedSnapshotText } from './snapshot.mjs';
 
 const exec = promisify(execFile);
 const adapter = fileURLToPath(new URL('./adapter.mjs', import.meta.url));
@@ -15,6 +16,17 @@ const run = async (script, flags, environment = process.env) => {
   const { stdout } = await exec(process.execPath, [script, ...flags], { env: environment, maxBuffer: 3_000_000, timeout: 140_000 });
   return JSON.parse(stdout);
 };
+
+test('long conversations preserve current work and the newest answer within the snapshot limit', () => {
+  const start = 'Review 6 changes. Accept 6 changes. Cancel.\n';
+  const latest = '\nLatest answer: this order is resolved and awaits packing.\nMessage. Send message.';
+  const result = boundedSnapshotText(start + 'An earlier conversation.\n'.repeat(2000) + latest);
+  assert.equal(result.truncated, true);
+  assert.ok(result.text.length <= 24_000);
+  assert.ok(result.text.startsWith(start));
+  assert.ok(result.text.endsWith(latest));
+  assert.deepEqual(boundedSnapshotText('Ready 6'), { text: 'Ready 6', truncated: false });
+});
 
 test('ledger includes every attempt and stops on unknown cost', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'parcel-qa-ledger-'));
@@ -90,10 +102,18 @@ test('offline browser actions, verifier facts, gate, and cleanup', { timeout: 12
     await command({ action: 'click', locator: { by: 'id', id: 'target-order-BB-1042' } });
     await command({ action: 'click', locator: { by: 'role', role: 'button', name: 'Review change' } });
     await command({ action: 'click', locator: { by: 'role', role: 'button', name: 'Accept 1 change' } });
-    const facts = await run(adapter, ['verify', '--run-dir', directory]);
+    let facts = await run(adapter, ['verify', '--run-dir', directory]);
+    const visibleDeadline = Date.now() + 5000;
+    while (facts.commands.length === 0 && Date.now() < visibleDeadline) {
+      await new Promise((done) => setTimeout(done, 100));
+      facts = await run(adapter, ['verify', '--run-dir', directory]);
+    }
     assert.equal(facts.queue.find((order) => order.order_id === 'BB-1042').status, 'ready');
     assert.match(facts.queue.find((order) => order.order_id === 'BB-1042').state_json, /41 Willow Lane/);
     assert.equal(facts.receipts.length, 1);
+    assert.equal(facts.commands[0]?.receiptId, facts.receipts[0].id);
+    assert.equal(facts.commands[0]?.metric, 'accept_to_visible_commit');
+    assert.ok(Number.isFinite(facts.commands[0]?.durationMs) && facts.commands[0].durationMs >= 0);
     assert.ok(facts.audit.some((record) => record.kind === 'receipt'));
     await command({ action: 'chat', text: 'Show me the orders that need review.' });
     const deadline = Date.now() + 10_000;

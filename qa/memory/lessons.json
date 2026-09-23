@@ -14,5 +14,19 @@
       "synthetic": true
     }
   ],
-  "regressions": []
+  "regressions": [
+    {
+      "id": "triage-filtered-counts",
+      "personaId": "new-operator",
+      "scenarioId": "queue-triage",
+      "sourceRevision": "37c4cfa231412aa543c3ef1570c1a4d662b63931",
+      "findingId": "triage-status-counts",
+      "setup": "Use the synthetic initial queue of 24 orders with six ready, fourteen review, and four waiting.",
+      "action": "Ask which orders can be worked now and which need review or waiting. Also check a ready-only or review-only list query.",
+      "expected": "Whole-queue totals remain accurate despite filtering; BB-1112 remains classified as ready. Evaluate factual wording separately from counts.",
+      "reviewedBy": "Independent Sol High verifier for tool cases; root verifier for fresh live UI result",
+      "reviewedAt": "2026-09-23T19:30:21.083Z",
+      "synthetic": true
+    }
+  ]
 }

@@ -18,6 +18,11 @@ transitions. It is evidence of one user's difficulty, not a frequency estimate.
 The investigator must check receipts and persisted order state. The explorer
 receives the operator's task without the expected explanation.
 
+The local fixture starts with four sage mugs. The verifier caught the difference
+from the reported one-mug starting condition. Prepare that condition with three
+ordinary `Advance stock scenario` actions, then verify one available mug and
+BB-1051 at version 1 before the mission. Do not silently assume the seed has one.
+
 ## First live session
 
 Run `2026-09-23T19-06-48-037Z-7493d01f-722f-434b-9d30-eabb3893667d`
