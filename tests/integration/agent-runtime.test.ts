@@ -473,9 +473,10 @@ describe("agent runtime", () => {
       expect(round).toBe(2);
       const request = replyRequest as MinistralRequest | null;
       const system = request?.messages.find((message) => message.role === "system");
-      expect(system?.content).toContain("Resolved Ready means the change was accepted but packing is pending");
-      expect(system?.content).toContain("no single-order packing tool exists");
-      expect(system?.content).toContain("Undo reverses the whole receipt, never selected orders");
+      expect(system?.content).toContain("Explain before and after, including recorded price or stock effects");
+      expect(system?.content).toContain("Resolved Ready means changed but packing is pending; never say no action remains");
+      expect(system?.content).toContain("a person reviews and accepts the full eligible Ready batch");
+      expect(system?.content).toContain("Undo reverses a whole receipt, never selected batch orders");
       const read = toolPayloads(request?.messages ?? []).find((entry) => entry.id === "read_accepted")?.payload;
       expect(read).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 2, businessValue: "Sage stoneware mug, quantity 1, £24.00", status: "ready", completed: false, resolved: true }, latestReceipt: { kind: "accept", committedVersion: 2, totalChanges: 1, change: { before: "Blue stoneware mug, quantity 1, £24.00", after: "Sage stoneware mug, quantity 1, £24.00" } } } });
       expect(JSON.stringify(read)).not.toContain('"expectedVersion"');
@@ -782,9 +783,22 @@ describe("agent runtime", () => {
       const proposal = yield* repository.prepareBatch(identity, 1);
       const proposalContext = yield* repository.resolveAgentViewContext(identity, 1, { view: "work", focus: { kind: "proposal", proposalId: proposal.id } });
       expect(proposalContext.focus?.kind).toBe("proposal");
+      expect(proposal.changes.length).toBeGreaterThan(1);
+      expect(proposal.changes[0]).toHaveProperty("expectedVersion", 1);
       const committed = yield* repository.accept(identity, 1, proposal.id, "context-receipt-key");
       const receiptContext = yield* repository.resolveAgentViewContext(identity, 1, { view: "work", focus: { kind: "receipt", receiptId: committed.receipt.id } });
-      expect(receiptContext.focus?.kind).toBe("receipt");
+      if (receiptContext.focus?.kind !== "receipt") throw new Error("Expected selected receipt context.");
+      expect(receiptContext.focus.receipt.changes).toHaveLength(proposal.changes.length);
+      expect(receiptContext.focus.receipt.changes).toEqual(proposal.changes.map((change) => ({
+        orderId: change.orderId, family: change.family, before: change.before, after: change.after,
+        effect: change.effect, committedVersion: change.expectedVersion + 1,
+      })));
+      expect(committed.receipt.changes[0]).toHaveProperty("expectedVersion", 1);
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: "turn_12345678-receipt-context", requestId: "request-receipt-context", message: "Explain this accepted receipt.", viewContext: { view: "work", focus: { kind: "receipt", receiptId: committed.receipt.id } }, connectionId: "connection-receipt-context", send: async () => undefined }));
+      yield* Effect.promise(() => waitForTurn(repository, "turn_12345678-receipt-context", ["complete"]));
+      const acceptedContext = captured.find((message) => message.role === "system" && message.content.startsWith("Authenticated application context:"));
+      expect(acceptedContext?.content).toContain('"committedVersion":2');
+      expect(acceptedContext?.content).not.toContain("expectedVersion");
       yield* Effect.promise(() => expect(Effect.runPromise(repository.resolveAgentViewContext(identity, 1, { view: "work", focus: { kind: "order", orderId: "BB-1051" } }))).rejects.toMatchObject({ code: "invalid_view_context" }));
 
       yield* Effect.promise(() => expect(coordinator.start({ repository, hub, identity, generation: 1, turnId: "turn_12345678-invalid-context", requestId: "request-invalid-context", message: "Explain this.", viewContext: { view: "work", focus: { kind: "order", orderId: "BB-9999" } }, connectionId: "connection-invalid-context", send: async () => undefined })).rejects.toMatchObject({ code: "invalid_view_context" }));

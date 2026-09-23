@@ -18,9 +18,14 @@ interface PreparedPolicy extends ResolutionPolicy { readonly priorStatus: OrderS
 interface StoredProposal { readonly public: ReviewedProposal; readonly policies: ReadonlyArray<PreparedPolicy>; readonly undoReceiptId?: string }
 interface AppliedChange extends PreparedPolicy { readonly committedVersion: number }
 interface StoredReceipt { readonly public: CommandReceipt; readonly applied: ReadonlyArray<AppliedChange> }
+type ReceiptBusinessChange = Pick<ProposalChange, "orderId" | "family" | "before" | "after" | "effect">;
+interface CommittedReceiptChange extends ReceiptBusinessChange { readonly committedVersion: number }
+const receiptBusinessChange = (change: ProposalChange): ReceiptBusinessChange => ({
+  orderId: change.orderId, family: change.family, before: change.before, after: change.after, effect: change.effect,
+});
 
 export interface CommandCommit { readonly receipt: CommandReceipt; readonly snapshot: WorkspaceSnapshot; readonly generationChanged: boolean }
-export interface OrderReceiptSummary { readonly id: string; readonly kind: CommandReceipt["kind"]; readonly title: string; readonly committedAt: string; readonly change: Pick<ProposalChange, "orderId" | "family" | "before" | "after" | "effect">; readonly committedVersion: number; readonly totalChanges: number }
+export interface OrderReceiptSummary { readonly id: string; readonly kind: CommandReceipt["kind"]; readonly title: string; readonly committedAt: string; readonly change: ReceiptBusinessChange; readonly committedVersion: number; readonly totalChanges: number }
 export interface OrderProgress { readonly order: OrderSummary; readonly completed: boolean; readonly resolved: boolean; readonly latestReceipt: OrderReceiptSummary | null }
 export interface ScenarioCommit { readonly message: string; readonly snapshot: WorkspaceSnapshot }
 export interface TutorialCommit { readonly advanced: boolean; readonly snapshot: WorkspaceSnapshot }
@@ -74,7 +79,7 @@ export type ResolvedAgentViewContext =
   | { readonly view: "work" | "explore" | "audit"; readonly focus: null }
   | { readonly view: "work"; readonly focus: { readonly kind: "order"; readonly order: { readonly id: string; readonly item: string; readonly issue: string; readonly status: OrderStatus; readonly businessValue: string; readonly evidence: ReadonlyArray<{ readonly label: string; readonly value: string }> } } }
   | { readonly view: "work"; readonly focus: { readonly kind: "proposal"; readonly proposal: Pick<ReviewedProposal, "id" | "kind" | "title" | "ready" | "changes" | "omissions" | "effects"> } }
-  | { readonly view: "work"; readonly focus: { readonly kind: "receipt"; readonly receipt: Pick<CommandReceipt, "id" | "kind" | "title" | "changes" | "undoable"> } };
+  | { readonly view: "work"; readonly focus: { readonly kind: "receipt"; readonly receipt: Pick<CommandReceipt, "id" | "kind" | "title" | "undoable"> & { readonly changes: ReadonlyArray<CommittedReceiptChange> } } };
 export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly snapshot: (identity: RequestIdentity, now?: number) => Effect.Effect<WorkspaceSnapshot, WorkspaceStoreError>;
   readonly orderIds: (identity: RequestIdentity) => Effect.Effect<ReadonlyArray<string>, WorkspaceStoreError>;
@@ -638,10 +643,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     if (storedReceipt !== null && applied === undefined) throw fail("receipt_state_invalid", "The saved receipt does not contain this order's applied change.");
     const latestReceipt = storedReceipt === null || applied === undefined ? null : {
       id: storedReceipt.public.id, kind: storedReceipt.public.kind, title: storedReceipt.public.title, committedAt: storedReceipt.public.committedAt,
-      change: {
-        orderId: applied.change.orderId, family: applied.change.family, before: applied.change.before,
-        after: applied.change.after, effect: applied.change.effect,
-      },
+      change: receiptBusinessChange(applied.change),
       committedVersion: applied.committedVersion, totalChanges: storedReceipt.public.changes.length,
     };
     return { order, completed: Number(row.completed) !== 0, resolved: Number(row.resolved) !== 0, latestReceipt };
@@ -1082,8 +1084,12 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     }
     const row = database.prepare("SELECT payload_json FROM receipts WHERE id = ? AND user_id = ? AND generation = ?").get(context.focus.receiptId, user.id, generation) as { payload_json: string } | undefined;
     if (row === undefined) throw fail("invalid_view_context", "The selected receipt is not available in this workspace.");
-    const receipt = (JSON.parse(row.payload_json) as StoredReceipt).public;
-    return { view: "work", focus: { kind: "receipt", receipt: { id: receipt.id, kind: receipt.kind, title: receipt.title, changes: receipt.changes, undoable: receipt.undoable } } };
+    const storedReceipt = JSON.parse(row.payload_json) as StoredReceipt;
+    const receipt = storedReceipt.public;
+    return { view: "work", focus: { kind: "receipt", receipt: {
+      id: receipt.id, kind: receipt.kind, title: receipt.title, undoable: receipt.undoable,
+      changes: storedReceipt.applied.map((applied) => ({ ...receiptBusinessChange(applied.change), committedVersion: applied.committedVersion })),
+    } } };
   });
   const completeAgentMeasurement: WorkspaceRepositoryService["completeAgentMeasurement"] = (identity, generation, turnId, durationMs) => command(() => transact(database, () => {
     if (!Number.isFinite(durationMs) || durationMs < 0 || durationMs > 10 * 60_000) throw fail("invalid_duration", "The completed-turn duration is invalid.");
