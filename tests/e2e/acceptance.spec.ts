@@ -4,7 +4,7 @@ import { expect, test, type Browser, type BrowserContext, type Page, type TestIn
 const identityHeader = "Cf-Access-Authenticated-User-Email";
 
 const projectIdentity = (testInfo: TestInfo, purpose: string) =>
-  `acceptance-${purpose}-${testInfo.project.name}@example.test`;
+  `acceptance-${purpose}-${testInfo.project.name}-${testInfo.retry}-${testInfo.repeatEachIndex}@example.test`;
 
 const openWorkspace = async (page: Page) => {
   await page.goto("/");
@@ -75,7 +75,7 @@ test("cancels an active provider request when reset commits and retains its audi
 const isolatedContext = async (browser: Browser, testInfo: TestInfo, identity: string): Promise<BrowserContext> => {
   const viewport = testInfo.project.use.viewport ?? { width: 1440, height: 1000 };
   return browser.newContext({
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: testInfo.project.use.baseURL,
     viewport,
     ...(process.env.RECORD_VIDEO === "true" ? { recordVideo: { dir: testInfo.outputPath("isolation-videos"), size: viewport } } : {}),
     extraHTTPHeaders: { [identityHeader]: identity },

@@ -20,6 +20,18 @@ test cannot prove server authorization or persistence. A Node test cannot
 prove a control is reachable. Keep an E2E flow for each important connection
 between layers without repeating every UI state in a slower runner.
 
+Test the contract at its owner. For a reviewed change, a Node integration test
+should prove owner checks, stale-version rejection, and the exact SQLite write.
+A Browser Mode test should prove the review content and reachable Accept action.
+One E2E test should prove that accepting in the browser produces a visible saved
+result after reload. Do not add a second full browser journey for each business
+rule already proved at the server. This division is an inference from the
+different observations each runner can make, not a prescribed test ratio.
+Name each test for the outcome it protects. Keep test data small and typed, and
+assert user-visible text or state instead of private component internals.
+[Playwright best practices](https://playwright.dev/docs/best-practices),
+[Testing Library queries](https://testing-library.com/docs/queries/about/).
+
 Browser Mode uses a real browser, CSS, browser APIs, and user events. A
 component test can run without the application server or a production build.
 It can inspect computed layout and capture pixels. Browser startup still costs
@@ -125,6 +137,12 @@ file in a container; disposable files avoid container startup.
   touch the same exclusive resource. Tune worker count to CPU, memory, and
   database behavior. [Vitest parallelism](https://vitest.dev/guide/parallelism),
   [parallel and sequential files](https://vitest.dev/guide/recipes/parallel-sequential).
+  `fileParallelism: false` limits the run to one worker even if `maxWorkers` is
+  higher. Put Node and browser tests in separate inline projects so the Node
+  files can use a small worker pool without multiplying browser instances.
+  Inline projects share the Vite server when their Vite configuration matches.
+  [Vitest file parallelism](https://vitest.dev/config/fileparallelism),
+  [projects](https://vitest.dev/guide/projects).
 
 ## Startup and measurement
 
@@ -132,6 +150,9 @@ file in a container; disposable files avoid container startup.
   local command may use Vite and a Node test server; a final command should
   still exercise the production build. If local runs reuse a server, verify
   its configuration and disposable database so a stale process cannot pass.
+  When several checkouts share a VM, allocate a distinct loopback port and
+  database path per run. A fixed port can serve another checkout's app and
+  produce misleading test failures before that process exits.
   [Playwright web server](https://playwright.dev/docs/test-webserver).
 - Keep Vitest `setupFiles` small because they run before each test file. Use
   `globalSetup` for expensive process-level work and fixtures for state that
@@ -141,6 +162,12 @@ file in a container; disposable files avoid container startup.
   [global setup](https://vitest.dev/config/globalsetup),
   [projects](https://vitest.dev/guide/projects),
   [Vite+ Vitest guide](https://viteplus.dev/guide/vitest-v5).
+- Preserve Browser Mode's default per-test isolation. Reusing the same iframe
+  across component tests can leak DOM and module state. Keep browser-specific
+  setup in its project; root `setupFiles` also run in inline projects and can
+  repeat expensive setup in every file.
+  [Browser isolation](https://vitest.dev/config/browser/isolate),
+  [Vitest setup files](https://vitest.dev/config/setupfiles).
 - Retain failure traces. Continuous tracing and rich reports for every passing
   test add work; use them when investigating a problem or collecting visual
   proof. `trace: "on-first-retry"` is useful when CI retries a failed test;
@@ -157,48 +184,39 @@ or worker settings are suspect.
 [Vitest profiling](https://vitest.dev/guide/profiling-test-performance),
 [CLI](https://vitest.dev/guide/cli).
 
-In the reported Parcel Hopscotch run, the 34 Playwright test bodies totaled
-about 116 seconds with one worker. The source contains 22.1 seconds of fixed
-waits and 18 successful full-page screenshot calls per viewport. Some waits
-check timed behavior, so these are candidates for experiments, not promised
-savings. `playwright.config.ts` also builds the app before every E2E run.
-Use `node scripts/benchmark-tests.mjs --label NAME --runs 3` to compare complete
-command medians after every run passes.
+## Parcel Hopscotch case study
 
-## Recommended changes for Parcel Hopscotch
+The draft review found 22.1 seconds of fixed waits in the E2E source and 18
+successful full-page screenshots per viewport. Some fixed waits verify delayed
+behavior, so those remain. The implementation removed routine pauses in
+Explore and tutorials, kept waits for late replies and cancellation, and moved
+successful E2E screenshots to an explicit proof command. Each mutable E2E test
+now gets a separate user; setup and cleanup resets that did not prove reset
+behavior were removed. The built-app runner uses its own loopback port and
+SQLite file in this checkout, so another checkout cannot answer its health
+check or browser requests.
 
-1. Remove the unconditional `pause()` calls in `tutorials.spec.ts` and
-   `explore.spec.ts`, and the two screenshot pauses in `audit.spec.ts`, after
-   checking each assertion. These account for 25.8 seconds across both
-   viewports in the reported run. Wait for the intended UI state and rendering
-   before a screenshot. Keep explicit time checks that test delayed replies,
-   cancellation, and session replacement. Do not count all 25.8 seconds as a
-   guaranteed saving until a passing benchmark confirms it.
-2. Move routine successful E2E screenshots behind a visual-proof command.
-   There are 18 full-page screenshot calls per viewport. Keep failure capture
-   in ordinary runs and selected checkpoint PNGs for UI review. Measure the
-   time saved; screenshot cost is not yet separated from test duration.
-3. Add one Playwright fixture that assigns a unique test identity before the
-   first navigation. The acceptance tests already use the identity header;
-   the remaining files use the same development user. Fresh identity data
-   should allow setup resets to be removed from tests that do not verify reset.
-   Then benchmark `workers: 1` and `workers: 2`. Try `fullyParallel` only after
-   tests are independent and file-level parallelism is stable.
-4. Audit duplicate UI assertions. Browser Mode already covers catalogue
-   filtering and Audit tab controls. Keep E2E checks that prove registry data,
-   live Audit updates, tutorial persistence across reload, human acceptance,
-   and WebSocket behavior. Remove a duplicate browser journey only after its
-   distinct server assertion remains in an E2E or integration test.
-5. Measure the production build and server startup separately. The E2E
-   `webServer` builds and typechecks on every invocation. If that dominates
-   focused local runs, add a separate local command using Vite and the test
-   server. Keep the built-app run as the final check.
-6. Review Vitest's global `fileParallelism: false` after database-writing tests
-   have separate temporary files. Increase workers only if a benchmark shows
-   a stable improvement on the machine that runs the checks.
+Node tests use up to four workers on the measured four-core VM. Browser Mode
+stays at one worker because running both viewport instances together made its
+measured command slower. Playwright uses two workers. Desktop E2E still covers
+all real-server flows. Narrow E2E keeps workspace and tutorial flows, where
+stacked chat or guidance can change interaction; Browser Mode covers Explore
+and Audit at both widths. The E2E matrix changed from 34 to 26 tests, so the
+E2E wall times are different workloads.
 
-Apply one change at a time. Record complete command medians and test failures,
-and run the full desktop and narrow suite after changing identity or worker
-settings. The first two changes reduce work without changing which real app
-parts the E2E tests exercise. Identity isolation is the prerequisite for useful
-Playwright parallelism.
+| Command | Before | After | Passing tests before → after |
+| --- | ---: | ---: | ---: |
+| Node unit | 8.2 s | 3.5 s | 94 → 94 |
+| Node integration | 53.5 s | 19.3 s | 72 → 72 |
+| Browser Mode | 14.8 s | 14.5 s | 30 → 30 |
+| Built-app E2E | 207.2 s | 109.1 s | 34 → 26 |
+
+These are one passing command run per setting on the same four-core VM, not
+medians or isolated measurements of each edit. The E2E change includes fewer
+narrow cases, so do not attribute the whole 98-second difference to waits or
+screenshots. For a reliable comparison on another project, run
+`node scripts/benchmark-tests.mjs --label NAME --runs 3` on an idle host and
+compare passing medians with the test matrix recorded alongside them. This
+app still compiles a production build for each E2E command; a separate local
+development-server command is worth considering only if focused E2E runs are
+frequent enough to justify maintaining it.

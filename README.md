@@ -41,6 +41,7 @@ vp run check
 vp run test:browser
 vp run test:e2e
 vp run proof:visual
+vp run proof:e2e
 vp run benchmark:providers -- --mode fixture --output-dir /tmp/parcel-provider-benchmark-fixture
 ```
 
@@ -69,11 +70,12 @@ state before capture. Attach selected PNGs with `gh pr create --attach` or
 
 `vp run test:e2e` retains Playwright for complete flows through real WebSockets,
 SQLite, reloads, and separate browser sessions. It starts a loopback-only server
-with disposable data and stops it on exit. Port 4173 must be free. Failure
+with disposable data on an available port and stops it on exit. Failure
 screenshots and traces go to `test-results/` with a report in `playwright-report/`.
 
-See [browser testing](docs/browser-testing.md) for coverage, visual review,
-Trace View, and timing commands. If capture or inspection fails, record the exact
+See [the testing strategy](docs/testing-strategy.md) for where new tests belong
+and [browser testing](docs/browser-testing.md) for visual review, Trace View,
+and timing commands. If capture or inspection fails, record the exact
 error and leave visual approval pending. Report security rejections and stop the
 rejected operation.
 

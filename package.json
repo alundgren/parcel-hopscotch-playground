@@ -14,6 +14,7 @@
     "test:unit": "vp test run --project=server tests/unit",
     "test:integration": "vp test run --project=server tests/integration",
     "test:e2e": "vp exec playwright test",
+    "proof:e2e": "E2E_VISUAL_PROOF=true vp exec playwright test",
     "proof:visual": "rm -rf artifacts/visual && VISUAL_PROOF=true vp test run --project=browser-*",
     "proof:video": "RECORD_VIDEO=true PROOF_DEMO=true vp exec playwright test tests/e2e/acceptance.spec.ts --grep 'rejects a stale batch|records server-turn'",
     "benchmark:providers": "vp exec tsx --env-file-if-exists=.env.local src/server/provider-benchmark-cli.ts",

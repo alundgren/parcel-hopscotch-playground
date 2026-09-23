@@ -6,8 +6,8 @@ starting the application server or compiling a production bundle. Playwright
 still tests workflows that depend on WebSockets, SQLite, reloads, or multiple
 browser sessions. Both use the pinned Playwright browser installation.
 
-For a reusable guide to choosing test environments and reducing suite time,
-see [fast browser and database tests](test-suite-performance.md).
+Read [the testing strategy](testing-strategy.md) before adding coverage. For
+reusable setup advice, see [fast browser and database tests](test-suite-performance.md).
 
 ## Commands
 
@@ -18,11 +18,12 @@ vp run test:integration
 vp run test:browser
 vp run test:e2e
 vp run proof:visual
+vp run proof:e2e
 ```
 
 The unit and integration suites use Node. Browser Mode mounts the application
 with typed, controlled workspace data. The E2E suite starts the built application
-with disposable SQLite data, a local test identity, and scripted providers.
+with disposable SQLite data, a separate test identity, and scripted providers.
 Ordinary checks do not make paid inference requests.
 
 ## Inspect rendered pixels
@@ -81,6 +82,10 @@ default trace directory so browser instances have separate temporary trace files
 `vp exec playwright show-trace <trace.zip>` to inspect one. Successful E2E runs
 avoid continuous recording. For a focused video rerun, use `RECORD_VIDEO=true vp run test:e2e`.
 `vp run proof:video` records the existing paced batch and stale-review flows.
+Successful E2E screenshots are captured only by `vp run proof:e2e`. That
+command waits for fonts, images, and rendering before each checkpoint and
+retains the images in Playwright's test output. Normal E2E runs keep only
+failure screenshots and traces.
 
 ## Coverage boundaries
 

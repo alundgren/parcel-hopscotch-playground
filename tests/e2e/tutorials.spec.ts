@@ -1,16 +1,11 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { capture, test } from "./support";
+import { expect, type Page, type TestInfo } from "@playwright/test";
 
 const coach = (page: Page) => page.getByRole("complementary", { name: / tutorial$/ });
-const pause = (page: Page) => page.waitForTimeout(700);
 
-const resetWorkspace = async (page: Page) => {
+const openWorkspace = async (page: Page) => {
   await page.goto("/");
   await expect(page.getByTestId("connection-status")).toContainText("Connected");
-  await page.getByRole("button", { name: "Reset my demo" }).click();
-  await expect(page.getByRole("heading", { name: "Reset my demo" })).toBeVisible();
-  await page.getByRole("button", { name: "Reset my demo" }).click();
-  await expect(page.getByText("Fresh workspace ready")).toBeVisible();
-  await page.getByRole("button", { name: "Back to work" }).click();
 };
 
 const startTutorial = async (page: Page, message: string, title: string) => {
@@ -20,25 +15,22 @@ const startTutorial = async (page: Page, message: string, title: string) => {
   await expect(page.getByText("The tutorial is ready. Your verified work advances it, and you can dismiss it at any time.")).toBeVisible();
   await expect(page.getByLabel(`${title} tutorial`)).toBeVisible();
   await expect(composer).toBeEnabled();
-  await pause(page);
 };
 
 const reviewIndividual = async (page: Page, orderId: string) => {
   await page.locator(`#target-order-${orderId}`).click();
   await page.getByRole("button", { name: "Review change" }).click();
   await expect(page.locator("#target-proposal-review")).toBeVisible();
-  await pause(page);
 };
 
 const acceptIndividual = async (page: Page) => {
   await page.locator("#target-proposal-accept").click();
   await expect(page.getByText("Accepted by you")).toBeVisible();
-  await pause(page);
 };
 
 test("teaches address correction and completes a separate case without agent assistance", async ({ page, context }, testInfo: TestInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await resetWorkspace(page);
+  await openWorkspace(page);
   await startTutorial(page, "Teach me the address correction tutorial.", "Address correction");
   await page.getByRole("button", { name: "Dismiss tutorial" }).focus();
   await expect(page.getByRole("button", { name: "Dismiss tutorial" })).toBeFocused();
@@ -52,7 +44,6 @@ test("teaches address correction and completes a separate case without agent ass
 
   await page.locator("#target-order-BB-1042").click();
   await expect(coach(page)).toHaveAttribute("data-tutorial-step", "1");
-  await pause(page);
   await context.setOffline(true);
   await expect(page.getByTestId("connection-status")).toContainText("Offline");
   await context.setOffline(false);
@@ -62,7 +53,7 @@ test("teaches address correction and completes a separate case without agent ass
   await expect(page.getByTestId("connection-status")).toContainText("Connected");
   await expect(coach(page)).toHaveAttribute("data-tutorial-step", "1");
   await expect(page.getByTestId("order-list")).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath(`recovery-order-list-${testInfo.project.name}.png`), fullPage: true });
+  await capture(page, testInfo, `recovery-order-list-${testInfo.project.name}.png`);
   await page.locator("#target-order-BB-1042").click();
   await expect(page.locator("#target-order-BB-1042-evidence")).toBeVisible();
   await expect(coach(page)).toHaveAttribute("data-tutorial-step", "1");
@@ -73,8 +64,7 @@ test("teaches address correction and completes a separate case without agent ass
 
   await page.getByRole("button", { name: "Review change" }).click();
   await expect(coach(page)).toHaveAttribute("data-tutorial-step", "2");
-  await pause(page);
-  await page.screenshot({ path: testInfo.outputPath(`actual-address-tutorial-${testInfo.project.name}.png`), fullPage: true });
+  await capture(page, testInfo, `actual-address-tutorial-${testInfo.project.name}.png`);
   await acceptIndividual(page);
   await expect(coach(page)).toHaveAttribute("data-tutorial-step", "3");
   await page.reload();
@@ -109,7 +99,7 @@ test("teaches address correction and completes a separate case without agent ass
 });
 
 test("teaches substitution review, survives navigation and cancellation, and reset clears guidance", async ({ page }) => {
-  await resetWorkspace(page);
+  await openWorkspace(page);
   await startTutorial(page, "Teach me the substitution tutorial.", "Substitution review");
 
   await page.getByRole("button", { name: "Audit", exact: true }).click();
@@ -143,20 +133,17 @@ test("teaches substitution review, survives navigation and cancellation, and res
 });
 
 test("teaches two distinct batch approvals while preserving explicit human acceptance", async ({ page }) => {
-  await resetWorkspace(page);
+  await openWorkspace(page);
   await startTutorial(page, "Teach me the batch approval tutorial.", "Batch approval");
 
   await page.getByRole("button", { name: /^Ready / }).click();
   await expect(coach(page)).toHaveAttribute("data-tutorial-step", "1");
-  await pause(page);
   await page.locator("#target-batch-review").click();
   await expect(page.getByRole("heading", { name: "Review 3 changes" })).toBeVisible();
   await expect(page.getByLabel("Orders left out")).toContainText("Outside this tutorial group.");
   await expect(page.getByText("Accepted by you")).toHaveCount(0);
-  await pause(page);
   await page.locator("#target-proposal-accept").click();
   await expect(page.getByText("Accepted by you")).toBeVisible();
-  await pause(page);
   await page.locator("#target-receipt-back").click();
   await expect(coach(page)).toHaveAttribute("data-tutorial-phase", "practice");
 
@@ -169,10 +156,6 @@ test("teaches two distinct batch approvals while preserving explicit human accep
   await page.locator("#target-receipt-back").click();
   await expect(coach(page)).toHaveAttribute("data-tutorial-phase", "complete");
   await expect(coach(page)).toContainText("Practice complete. You reviewed and approved a separate ready group.");
-  await pause(page);
   await page.getByRole("button", { name: "Dismiss tutorial" }).click();
   await page.locator("#target-receipt-back").click();
-  await page.getByRole("button", { name: "Reset my demo" }).click();
-  await page.getByRole("button", { name: "Reset my demo" }).click();
-  await expect(page.getByText("Fresh workspace ready")).toBeVisible();
 });
