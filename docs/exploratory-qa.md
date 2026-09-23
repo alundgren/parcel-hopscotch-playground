@@ -61,6 +61,8 @@ JSON
 Use the returned controls to click, fill, press keys, ask a chat question,
 reload, resize, or take a screenshot. Each command records local evidence and
 returns an observation ID for the debrief. The role packet gives command examples.
+Screenshot labels use 1–80 letters, numbers, dashes, or underscores, without
+spaces. Report unexplained failures to the coordinator before repeating them.
 The adapter controls its browser and blocks new paid WebSocket requests at the
 spending limit. Packet filtering limits accidental disclosure, but an agent with
 general shell access is not technically prevented from reading repository files.

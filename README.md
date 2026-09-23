@@ -86,6 +86,8 @@ lessons. Its default time limit is two hours and its app spending stop threshold
 is $0.10. Codex usage is outside that allowance. Live QA uses only the explicitly
 supplied `PARCEL_QA_API_KEY`; `vp run test:qa` exercises the helpers and actual
 browser with scripted providers and makes no paid requests.
+The [initial validation report](docs/qa-validation.md) records the live findings,
+verified corrections, spending, and remaining work.
 
 ## Local container review
 

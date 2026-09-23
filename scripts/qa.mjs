@@ -172,6 +172,7 @@ export async function generatePacket(runDir, role, scenarioId) {
       `Work in ${repositoryRoot}.`,
       `Use node scripts/qa.mjs browser --run ${runDir} --input - and provide one JSON request through stdin.`,
       'Commands: {"action":"snapshot"}, {"action":"chat","text":"your question"}, {"action":"click","locator":{"by":"role","role":"button","name":"visible name"}}, {"action":"fill","locator":{"by":"placeholder","placeholder":"visible placeholder"},"text":"value"}, {"action":"press","locator":{"by":"role","role":"textbox","name":"visible name"},"key":"Enter"}, {"action":"screenshot","label":"state"}, {"action":"viewport","width":320,"height":900}, {"action":"reload"}.',
+      'Screenshot labels must be 1–80 letters, numbers, dashes, or underscores, such as saved-receipt-desktop; do not use spaces. If a command fails without a useful explanation, report its observation ID to the coordinator before repeating it.',
       'Use the returned visible controls. Inspect screenshot files with the image tool. Do not read other run files or use the verify, event, packet, or direct adapter commands.',
       'Report the observation IDs returned by the browser wrapper. Stop on a time or spending limit. Budget, permission, and adapter failures are test obstacles, not proof of a product defect.',
     ].join(' ');
@@ -189,6 +190,10 @@ export async function browserCommand(runDir, request) {
   const run = await loadRun({ runDir });
   if (run.status !== 'active' || !run.currentScenarioId) throw new Error('Start a mission before using the browser.');
   if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Browser request must be an object.');
+  if (request.action === 'screenshot' && request.label !== undefined
+    && (typeof request.label !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(request.label))) {
+    throw new Error('Screenshot label must be 1–80 letters, numbers, dashes, or underscores; use saved-receipt-desktop, without spaces.');
+  }
   let turnId = null;
   if (request.action === 'chat') {
     const before = await sessionStatus(runDir);
