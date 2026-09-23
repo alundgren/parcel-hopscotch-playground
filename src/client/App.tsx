@@ -527,7 +527,7 @@ export default function App() {
     if (agentOperation === null || snapshot === null) return;
     if (agentOperation.kind === "offer_guide" || agentOperation.kind === "show_note") {
       const current = currentViewContext();
-      const context = createGuidanceContext({ snapshot, location: current, problem: guideProblem, connected: status === "connected", observedTargetIds: current.guidance?.visibleTargetIds, disabledTargetIds: current.guidance?.disabledTargetIds });
+      const context = createGuidanceContext({ snapshot, presentedProposal: view === "work" ? proposal : null, location: current, problem: guideProblem, connected: status === "connected", observedTargetIds: current.guidance?.visibleTargetIds, disabledTargetIds: current.guidance?.disabledTargetIds });
       if (agentOperation.contextRef !== context.publicContext.contextRef) {
         acknowledgeAgentOperation(agentOperation, "stale_context", current);
         return;
@@ -606,7 +606,7 @@ export default function App() {
     const detail = cause.detail;
     if (snapshot === null || detail?.kind !== "stale_review" || guideSession?.phase === "active") return;
     const problem: GuidanceProblem = { kind: "stale_review", proposalId: detail.proposalId, orderId: detail.orderId, reason: detail.reason, resolved: detail.resolved, expectedVersion: detail.expectedVersion, ...(detail.currentVersion === null ? {} : { currentVersion: detail.currentVersion }) };
-    const context = createGuidanceContext({ snapshot, location: { view: "work", focus: { kind: "proposal", proposalId: detail.proposalId } }, problem, connected: status === "connected", observedTargetIds: guideTargets.visibleTargetIds(), disabledTargetIds: guideTargets.disabledTargetIds() });
+    const context = createGuidanceContext({ snapshot, presentedProposal: view === "work" ? proposal : null, location: { view: "work", focus: { kind: "proposal", proposalId: detail.proposalId } }, problem, connected: status === "connected", observedTargetIds: guideTargets.visibleTargetIds(), disabledTargetIds: guideTargets.disabledTargetIds() });
     const entry = context.guideEntries.find(({ guide }) => guide.id === workGuides.staleReview);
     if (entry === undefined) return;
     const origin: GuidanceReturnContext = { view: "work", focusKind: "proposal", focusId: detail.proposalId, filter: queueFilter };
@@ -769,7 +769,7 @@ export default function App() {
   };
   const explainAudit = () => {
     if (snapshot === null || guideSession?.phase === "active") return;
-    const context = createGuidanceContext({ snapshot, location: { view: "audit", focus: null }, connected: status === "connected", observedTargetIds: guideTargets.visibleTargetIds(), disabledTargetIds: guideTargets.disabledTargetIds() });
+    const context = createGuidanceContext({ snapshot, presentedProposal: view === "work" ? proposal : null, location: { view: "audit", focus: null }, connected: status === "connected", observedTargetIds: guideTargets.visibleTargetIds(), disabledTargetIds: guideTargets.disabledTargetIds() });
     const entry = context.guideEntries.find(({ guide }) => guide.id === auditGuides.inspectRequest);
     if (entry === undefined) return;
     const origin: GuidanceReturnContext = { view, focusKind: selectedOrderId !== null ? "order" : proposal !== null ? "proposal" : receipt !== null ? "receipt" : null, focusId: selectedOrderId ?? proposal?.id ?? receipt?.id ?? null, filter: view === "work" ? queueFilter : null };

@@ -28,7 +28,7 @@ export interface GuidanceInput {
   readonly generation: number;
   readonly sequence: number;
   readonly orders: ReadonlyArray<GuidanceOrder>;
-  readonly currentProposal: { readonly id: string; readonly ready: boolean; readonly changes: ReadonlyArray<{ readonly orderId: string }> } | null;
+  readonly presentedProposal: { readonly id: string; readonly ready: boolean; readonly changes: ReadonlyArray<{ readonly orderId: string }> } | null;
   readonly location: GuidanceLocation;
   readonly problem: GuidanceProblem | null;
   readonly connected: boolean;

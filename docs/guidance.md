@@ -30,6 +30,12 @@ facts. It restricts guidance turns to read and guidance tools, including a
 dispatcher check if a model requests a forbidden command anyway. Showing an
 offer is distinct from accepting it. Show me is a local human action.
 
+Proposal availability follows the review displayed in the initiating tab. The
+server resolves that focused proposal under the current user's identity.
+Registered disabled controls can reduce the advertised availability. Preparing
+a different proposal in another tab must preserve agreement between the open
+review and its guidance; a two-tab test covers this case.
+
 ## Adding a module
 
 Use the Work and Audit public entries as examples, not as a second catalogue

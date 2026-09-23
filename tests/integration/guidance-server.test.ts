@@ -11,7 +11,7 @@ import type { JevAdapter, MinistralAdapter, MinistralResult } from "../../src/se
 import { providerFailure } from "../../src/server/providers/http";
 import type { RealtimeHubService } from "../../src/server/realtime";
 import type { ServerMessage } from "../../src/shared/contracts";
-import { auditGuidanceTargets, workGuidanceTargets } from "../../src/modules/guidance";
+import { auditGuidanceTargets, createGuidanceContext, workGuidanceTargets } from "../../src/modules/guidance";
 
 const paths: string[] = [];
 const config: ServerConfig = { environment: "test", host: "127.0.0.1", port: 0, publicOrigin: "http://127.0.0.1", databasePath: ":memory:", allowDevelopmentIdentity: true, developmentEmail: "guide@example.test", agentMode: "scripted", openRouterApiKey: null };
@@ -75,6 +75,42 @@ describe("server guidance", () => {
     });
     const state = await useRepository(filename, (repository) => repository.snapshot(owner));
     expect(state.orders.find((order) => order.id === "BB-1051")?.version).toBe(1);
+  });
+
+  it("uses the owner-validated focused proposal when a different proposal is latest", async () => {
+    const filename = await workspace();
+    const checkFocused = (owner: ReturnType<typeof identity>, advances: number, latestOrderId: string) => useRepository(filename, (repository) => Effect.gen(function* () {
+      yield* repository.snapshot(owner);
+      const stale = yield* repository.prepareResolution(owner, 1, "BB-1051");
+      for (let step = 0; step < advances; step += 1) yield* repository.advanceScenario(owner, 1);
+      const presented = yield* repository.prepareResolution(owner, 1, "BB-1051");
+      const latest = yield* repository.prepareResolution(owner, 1, latestOrderId);
+      const snapshot = yield* repository.snapshot(owner);
+      const location = { view: "work" as const, focus: { kind: "proposal" as const, proposalId: presented.id } };
+      const resolved = yield* repository.resolveAgentViewContext(owner, 1, location);
+      const conflict = yield* repository.resolveGuidanceProblem(owner, 1, stale.id);
+      if (resolved.focus?.kind !== "proposal") throw new Error("Expected the focused proposal.");
+      const context = createGuidanceContext({
+        snapshot,
+        location,
+        presentedProposal: resolved.focus.proposal,
+        problem: { kind: "stale_review", proposalId: stale.id, orderId: conflict.orderId, reason: conflict.reason, resolved: conflict.resolved },
+      });
+      const availability = context.targetEntries.find((entry) => entry.target.id === workGuidanceTargets.proposalReview("BB-1051"))?.target.availability;
+      return { snapshot, presented, latest, availability };
+    }));
+
+    const ready = await checkFocused(identity("focused-ready@example.test"), 1, "BB-1076");
+    expect(ready.presented.ready).toBe(true);
+    expect(ready.latest.ready).toBe(false);
+    expect(ready.snapshot.currentProposal?.id).toBe(ready.latest.id);
+    expect(ready.availability).toEqual({ available: true, reason: null });
+
+    const held = await checkFocused(identity("focused-held@example.test"), 4, "BB-1042");
+    expect(held.presented).toMatchObject({ ready: false, changes: [] });
+    expect(held.latest.ready).toBe(true);
+    expect(held.snapshot.currentProposal?.id).toBe(held.latest.id);
+    expect(held.availability).toEqual({ available: false, reason: "This proposal is held and cannot be accepted." });
   });
 
   it("exposes only bounded guidance tools and denies injected write and direct navigation calls", async () => {

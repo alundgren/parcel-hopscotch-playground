@@ -553,11 +553,12 @@ export const makeAgentCoordinator = (
             ...(guidanceLocation.guidance?.problem === undefined ? {} : { problem: guidanceLocation.guidance.problem }),
           },
         };
-        await Effect.runPromise(repository.resolveAgentViewContext(active.identity, active.generation, location));
+        const resolvedLocation = await Effect.runPromise(repository.resolveAgentViewContext(active.identity, active.generation, location));
         const snapshot = await Effect.runPromise(repository.snapshot(active.identity));
         if (snapshot.generation !== active.generation) throw new Error("This workspace was reset while the turn was running.");
         const detail = guidanceLocation.guidance?.problem === undefined ? null : await Effect.runPromise(repository.resolveGuidanceProblem(active.identity, active.generation, guidanceLocation.guidance.problem.proposalId));
-        const current = createGuidanceContext({ snapshot, location, problem: detail === null ? null : guidanceProblem(detail), connected: active.connected, observedTargetIds: location.guidance?.visibleTargetIds, disabledTargetIds: location.guidance?.disabledTargetIds });
+        const presentedProposal = resolvedLocation.focus?.kind === "proposal" ? resolvedLocation.focus.proposal : null;
+        const current = createGuidanceContext({ snapshot, location, presentedProposal, problem: detail === null ? null : guidanceProblem(detail), connected: active.connected, observedTargetIds: location.guidance?.visibleTargetIds, disabledTargetIds: location.guidance?.disabledTargetIds });
         latestGuidanceLocation = location;
         return current;
       };

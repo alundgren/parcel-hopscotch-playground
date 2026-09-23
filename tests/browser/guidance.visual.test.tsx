@@ -201,8 +201,8 @@ test("busy and held actions report the same disabled state as the rendered contr
   await page.getByRole("textbox", { name: "Message" }).fill("Explain this held proposal.");
   await page.getByRole("button", { name: "Send message" }).click();
   const location = workspaceState.current.sendAgentMessage.mock.calls.at(-1)![1];
-  const context = createGuidanceContext({ snapshot: workspaceState.current.snapshot!, location, problem, observedTargetIds: location.guidance?.visibleTargetIds, disabledTargetIds: location.guidance?.disabledTargetIds });
-  expect(context.publicContext.targets.find((target) => target.label === "Fresh proposal review")?.availability.available).toBe(false);
+  const context = createGuidanceContext({ snapshot: workspaceState.current.snapshot!, location, presentedProposal: held, problem, observedTargetIds: location.guidance?.visibleTargetIds, disabledTargetIds: location.guidance?.disabledTargetIds });
+  expect(context.publicContext.targets.find((target) => target.label === "Fresh proposal review")?.availability).toEqual({ available: false, reason: "This proposal is held and cannot be accepted." });
 });
 
 test("Audit guide explains an empty result area without claiming a result", async () => {

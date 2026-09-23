@@ -27,8 +27,9 @@ export type GuidanceTargetId = typeof workGuidanceTargets.queue |
   (typeof auditGuidanceTargets)[keyof typeof auditGuidanceTargets];
 
 export interface CreateGuidanceContextInput {
-  readonly snapshot: Pick<WorkspaceSnapshot, "generation" | "sequence" | "orders" | "currentProposal">;
+  readonly snapshot: Pick<WorkspaceSnapshot, "generation" | "sequence" | "orders">;
   readonly location: AgentViewContext;
+  readonly presentedProposal?: GuidanceInput["presentedProposal"];
   readonly problem?: GuidanceProblem | null;
   readonly connected?: boolean;
   readonly observedTargetIds?: ReadonlyArray<string>;
@@ -42,14 +43,15 @@ const locationFocus = (location: AgentViewContext): GuidanceLocation["focus"] =>
   return { kind: "receipt", id: location.focus.receiptId };
 };
 
-export const createGuidanceContext = ({ snapshot, location, problem = null, connected = true, observedTargetIds = [], disabledTargetIds = [] }: CreateGuidanceContextInput) => {
+export const createGuidanceContext = ({ snapshot, location, presentedProposal = null, problem = null, connected = true, observedTargetIds = [], disabledTargetIds = [] }: CreateGuidanceContextInput) => {
   const focus = locationFocus(location);
   const entityId = problem?.orderId ?? (focus?.kind === "order" ? focus.id : null);
+  const focusedProposal = location.view === "work" && focus?.kind === "proposal" && presentedProposal?.id === focus.id ? presentedProposal : null;
   const input: GuidanceInput = {
     generation: snapshot.generation,
     sequence: snapshot.sequence,
     orders: snapshot.orders,
-    currentProposal: snapshot.currentProposal,
+    presentedProposal: focusedProposal,
     location: { view: location.view, focus },
     problem,
     connected,

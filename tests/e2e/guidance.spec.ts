@@ -122,3 +122,36 @@ test("runs an Audit guide through the same notes and trail and pauses on manual 
   await expect(trail(page)).toHaveCount(0);
   await expect(notes(page)).toHaveCount(0);
 });
+
+test("explains the displayed ready proposal when another tab prepares a held proposal", async ({ page, context }) => {
+  await openWorkspace(page);
+  const second = await context.newPage();
+  try {
+    await openWorkspace(second);
+    await page.getByRole("button", { name: "Review ready orders" }).click();
+    await second.getByRole("button", { name: "Advance stock scenario" }).click();
+    await expect(second.getByRole("status")).toContainText("Scenario advanced");
+    await page.getByRole("button", { name: /Accept \d+ changes/ }).click();
+    await page.getByRole("button", { name: "Show me", exact: true }).click();
+    await page.getByRole("button", { name: "Review change", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Accept 1 change", exact: true })).toBeEnabled();
+    await expect(trail(page)).toHaveAttribute("data-guidance-step", "2");
+
+    await second.locator("#target-order-BB-1076").click();
+    await second.getByRole("button", { name: "Review change", exact: true }).click();
+    await expect(second.getByRole("button", { name: "Held", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Accept 1 change", exact: true })).toBeEnabled();
+
+    await page.getByPlaceholder("Message...").fill("Explain the action on this review.");
+    await page.getByRole("button", { name: "Send message" }).click();
+    await expect(notes(page)).toContainText("The earlier proposal is stale. Nothing was applied.");
+    await expect(page.getByPlaceholder("Message...")).toBeEnabled();
+    await expect(trail(page)).toHaveAttribute("data-guidance-step", "2");
+    await page.getByRole("button", { name: "Accept 1 change", exact: true }).click();
+    await expect(page.getByText("Accepted by you")).toBeVisible();
+    await page.getByRole("button", { name: "Return to work", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Decisions" })).toBeVisible();
+    await expect(trail(page)).toHaveAttribute("data-guidance-status", "complete");
+    await expect(second.getByRole("button", { name: "Held", exact: true })).toBeDisabled();
+  } finally { await second.close(); }
+});

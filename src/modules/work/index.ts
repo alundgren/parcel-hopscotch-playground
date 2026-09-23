@@ -61,13 +61,13 @@ const workTargets = (input: GuidanceInput): ReadonlyArray<GuidanceTargetDefiniti
   const review = reviewChangeAvailability({ connected: input.connected, order, resolved: input.problem?.resolved });
   const exists = { available: order !== null, reason: order === null ? "This item is no longer available." : null };
   const queue = { available: true, reason: null };
-  const proposal = input.currentProposal;
+  const proposal = input.presentedProposal;
   const proposalReview = proposal === null || proposal.id === input.problem?.proposalId
     ? { available: false, reason: "Prepare a fresh review first." }
-    : !proposal.changes.some((change) => change.orderId === entityId)
-      ? { available: false, reason: "This proposal is for another item." }
-      : !proposal.ready
-        ? { available: false, reason: "This proposal is held and cannot be accepted." }
+    : !proposal.ready
+      ? { available: false, reason: "This proposal is held and cannot be accepted." }
+      : !proposal.changes.some((change) => change.orderId === entityId)
+        ? { available: false, reason: "This proposal is for another item." }
         : !input.connected
           ? { available: false, reason: "Reconnect to accept this proposal." }
           : { available: true, reason: null };

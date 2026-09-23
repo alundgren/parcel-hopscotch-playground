@@ -6,16 +6,20 @@ import type { WorkspaceSnapshot } from "../../src/shared/contracts";
 const order = { id: "BB-1051", item: "Stoneware mug", issue: "Review replacement", status: "ready" as const, statusLabel: "Ready", family: "substitution" as const, version: 2, resolved: false, businessValue: "Blue mug", targetId: "target-order-BB-1051", evidence: [] };
 const proposal = (id: string, ready: boolean): NonNullable<WorkspaceSnapshot["currentProposal"]> => ({
   id, generation: 1, kind: "resolution", title: "Review replacement", ready, createdAt: "2026-09-23T00:00:00.000Z",
-  changes: [{ orderId: order.id, family: order.family, before: "Blue mug", after: "Sage mug", effect: "Reserve one mug.", expectedVersion: 2 }],
-  omissions: [], effects: [],
+  changes: ready ? [{ orderId: order.id, family: order.family, before: "Blue mug", after: "Sage mug", effect: "Reserve one mug.", expectedVersion: 2 }] : [],
+  omissions: ready ? [] : [{ orderId: order.id, reason: "No stock remains." }], effects: [],
 });
-const contextFor = (currentProposal: WorkspaceSnapshot["currentProposal"], visibleTargetIds: ReadonlyArray<string> = [], disabledTargetIds: ReadonlyArray<string> = []) => createGuidanceContext({
-  snapshot: { generation: 1, sequence: 3, orders: [order], currentProposal },
-  location: { view: "work", focus: { kind: "order", orderId: order.id } },
-  problem: { kind: "stale_review", proposalId: "proposal_old", orderId: order.id, reason: "stock_changed", resolved: false },
-  observedTargetIds: visibleTargetIds,
-  disabledTargetIds,
-});
+const contextFor = (presentedProposal: WorkspaceSnapshot["currentProposal"], visibleTargetIds: ReadonlyArray<string> = [], disabledTargetIds: ReadonlyArray<string> = [], latestPending: WorkspaceSnapshot["currentProposal"] = null) => {
+  const snapshot = { generation: 1, sequence: 3, orders: [order], currentProposal: latestPending };
+  return createGuidanceContext({
+    snapshot,
+    location: { view: "work", focus: { kind: "proposal", proposalId: presentedProposal?.id ?? "proposal_unshown" } },
+    presentedProposal,
+    problem: { kind: "stale_review", proposalId: "proposal_old", orderId: order.id, reason: "stock_changed", resolved: false },
+    observedTargetIds: visibleTargetIds,
+    disabledTargetIds,
+  });
+};
 const target = (context: ReturnType<typeof contextFor>, id: string) => context.targetEntries.find((entry) => entry.target.id === id)?.target;
 
 describe("Work guidance facts", () => {
@@ -35,13 +39,18 @@ describe("Work guidance facts", () => {
     expect(text).toContain("Use Review change");
   });
 
-  it("uses the current proposal readiness for its review target", () => {
+  it("uses the presented proposal readiness for its review target", () => {
     const id = workGuidanceTargets.proposalReview(order.id);
     expect(target(contextFor(null), id)?.availability).toEqual({ available: false, reason: "Prepare a fresh review first." });
     expect(target(contextFor(proposal("proposal_old", true)), id)?.availability).toEqual({ available: false, reason: "Prepare a fresh review first." });
     expect(target(contextFor(proposal("proposal_fresh", false)), id)?.availability).toEqual({ available: false, reason: "This proposal is held and cannot be accepted." });
     expect(target(contextFor(proposal("proposal_fresh", true)), id)?.availability).toEqual({ available: true, reason: null });
     expect(contextFor(proposal("proposal_fresh", false)).publicContext.contextRef).not.toBe(contextFor(proposal("proposal_fresh", true)).publicContext.contextRef);
+    expect(target(contextFor(null, [], [], proposal("proposal_latest", true)), id)?.availability).toEqual({ available: false, reason: "Prepare a fresh review first." });
+    expect(target(contextFor(proposal("proposal_fresh", false), [], [], proposal("proposal_latest", true)), id)?.availability).toEqual({ available: false, reason: "This proposal is held and cannot be accepted." });
+    expect(target(contextFor(proposal("proposal_fresh", true), [], [], proposal("proposal_latest", false)), id)?.availability).toEqual({ available: true, reason: null });
+    const mismatched = createGuidanceContext({ snapshot: { generation: 1, sequence: 3, orders: [order] }, location: { view: "work", focus: { kind: "proposal", proposalId: "proposal_other" } }, presentedProposal: proposal("proposal_fresh", true), problem: { kind: "stale_review", proposalId: "proposal_old", orderId: order.id, reason: "stock_changed", resolved: false } });
+    expect(target(mismatched, id)?.availability).toEqual({ available: false, reason: "Prepare a fresh review first." });
   });
 
   it("uses registered disabled controls only to reduce availability", () => {
