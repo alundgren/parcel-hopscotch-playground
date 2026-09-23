@@ -1,5 +1,18 @@
 {
   "version": 1,
-  "lessons": [],
+  "lessons": [
+    {
+      "id": "triage-compare-all-statuses",
+      "personaId": "new-operator",
+      "scenarioId": "queue-triage",
+      "sourceRevision": "37c4cfa231412aa543c3ef1570c1a4d662b63931",
+      "summary": "For the synthetic initial queue, verify broad shift-triage advice against all 24 orders: six ready, fourteen review, four waiting. BB-1112 is ready despite a duplicate-related issue. Check counts and per-order classification separately; one can be correct while the other is wrong.",
+      "sourceObservationId": "895264a7-860c-41a5-9ece-a3ffdcd6790c",
+      "sourceFindingId": null,
+      "reviewedBy": "root coordinator, checked against persisted fixture and rendered UI",
+      "reviewedAt": "2026-09-23T19:11:13.066Z",
+      "synthetic": true
+    }
+  ],
   "regressions": []
 }
