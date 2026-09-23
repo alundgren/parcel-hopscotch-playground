@@ -4,11 +4,13 @@ Work, Explore, and Audit support order details, proposal review, acceptance, Und
 
 ## Work and chat
 
-Use work paper `#F9F6F0`, outer neutral `#E9ECE8`, graphite text `#425057`, secondary text `#626C6D`, and separators `#D1D6D0`. Chat uses muted blue `#D6E1E6`, ink `#334E5B`, and human messages `#C1D2DA`. Keep the 24px work/chat gap and 360px desktop chat width. Agent proposals use `#E5EEF2`; tutorials use dark blue with paper text. Ready states and ordinary work actions use sage `#3D6034`.
+Use work paper `#F9F6F0`, outer neutral `#E9ECE8`, graphite text `#425057`, secondary text `#626C6D`, and separators `#D1D6D0`. Chat uses muted blue `#D6E1E6`, ink `#334E5B`, and human messages `#C1D2DA`. Keep the 24px work/chat gap and 360px default desktop chat width. A double-left-chevron control may widen chat on explicit request, up to 560px while leaving room for Work; a double-right-chevron restores the default. Hide the width control when chat stacks below Work. Agent proposals use `#E5EEF2`; tutorials use dark blue with paper text. Ready states and ordinary work actions use sage `#3D6034`.
 
 The explicit feedback was that brown on brown obscured business data versus agent guidance. These colors override the house palette's usual brown text. Use the system UI font. The brand icon is 32px in the top-left header.
 
 Chat has familiar messages and a composer with placeholder Message and an accessible icon-only Send control. It has no visible title, contextual subtitle, composer label, or explanatory footer. Use subheadings sparingly elsewhere. Queue rows are compact. Order details show evidence and the exact proposed change. Tutorials contain a short instruction, progress, and dismissal.
+
+Assistant messages render their existing Markdown as readable headings, emphasis, lists, links, and code within the chat palette. Keep human messages literal. Long code scrolls inside its block. Plain multiline answers such as queue totals keep their line breaks. The width control has an accessible name, tooltip, and visible keyboard focus; width changes do not alter a draft or current work.
 
 Proposal review shows included changes, before/after values, consequences, and exclusions. Human acceptance leads to a receipt and safe Undo. Green means deterministic eligibility checks passed; pair it with text.
 
