@@ -452,6 +452,49 @@ describe("agent runtime", () => {
     }));
   });
 
+  it("passes current accepted order value and its receipt to the model without preparing another change", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let round = 0;
+    let packed = false;
+    let replyRequest: MinistralRequest | null = null;
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      if (round++ === 0) return result([{ id: "read_accepted", name: "getOrder", arguments: { orderId: "BB-1051" } }]);
+      replyRequest = request;
+      return result([], packed ? "The accepted batch released this order to packing." : "The blue mug was replaced with a sage mug at the same price. The order is Ready for a separate reviewed packing batch.");
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const proposal = yield* repository.prepareResolution(identity, 1, "BB-1051");
+      yield* repository.accept(identity, 1, proposal.id, "accepted-order-context-key");
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = "turn_12345678-accepted-order";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "accepted-order", message: "I reviewed 1051 but it says the resolution was already accepted. Did anything change?", viewContext: workView, connectionId: "accepted-order", send: async () => undefined }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(round).toBe(2);
+      const request = replyRequest as MinistralRequest | null;
+      const system = request?.messages.find((message) => message.role === "system");
+      expect(system?.content).toContain("Resolved Ready means the resolution was accepted but packing is a separate step");
+      const read = toolPayloads(request?.messages ?? []).find((entry) => entry.id === "read_accepted")?.payload;
+      expect(read).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 2, businessValue: "Sage stoneware mug, quantity 1, £24.00", status: "ready", completed: false, resolved: true }, latestReceipt: { kind: "accept", totalChanges: 1, change: { before: "Blue stoneware mug, quantity 1, £24.00", after: "Sage stoneware mug, quantity 1, £24.00" } } } });
+      expect(turn.history.filter((message) => message.role === "assistant" && message.toolCalls !== undefined)).toHaveLength(1);
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "accepted-order")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+      const batch = yield* repository.prepareBatch(identity, 1);
+      yield* repository.accept(identity, 1, batch.id, "accepted-order-batch-key");
+      packed = true;
+      round = 0;
+      replyRequest = null;
+      const packedTurnId = "turn_12345678-packed-order";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: packedTurnId, requestId: "packed-order", message: "Did BB-1051 move to packing?", viewContext: workView, connectionId: "packed-order", send: async () => undefined }));
+      yield* Effect.promise(() => waitForTurn(repository, packedTurnId, ["waiting_for_ui"]));
+      const packedRequest = replyRequest as MinistralRequest | null;
+      const packedRead = toolPayloads(packedRequest?.messages ?? []).findLast((entry) => entry.id === "read_accepted")?.payload;
+      expect(packedRead).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 3, businessValue: "Sage stoneware mug, quantity 1, £24.00", completed: true, resolved: true }, latestReceipt: { totalChanges: 6, change: { orderId: "BB-1051", after: "Sage stoneware mug, quantity 1, £24.00 · Packing" } } } });
+      expect(coordinator.acknowledgeComplete(identity, 1, packedTurnId, "packed-order")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, packedTurnId, 60);
+    }));
+  });
+
   it("retains six bounded list results, reaches a terminal state, and admits the next turn", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");

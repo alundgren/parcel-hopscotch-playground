@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
-import type { AgentViewContext, AuditApplicationRecord, AuditAttemptDetail, AuditAttemptMode, AuditAttemptSummary, AuditRequestSummary, AuditPage, CommandReceipt, OrderStatus, ReviewedProposal, TutorialId, TutorialState, WorkspaceSnapshot } from "../shared/contracts.js";
+import type { AgentViewContext, AuditApplicationRecord, AuditAttemptDetail, AuditAttemptMode, AuditAttemptSummary, AuditRequestSummary, AuditPage, CommandReceipt, OrderStatus, OrderSummary, ProposalChange, ReviewedProposal, TutorialId, TutorialState, WorkspaceSnapshot } from "../shared/contracts.js";
 import type { ChatMessage } from "./providers/contracts.js";
 import { targets } from "../shared/targets.js";
 import { tutorialBatchOrderIds, tutorialPublicState, tutorialRequiredOrderIds, tutorialStepMatches, type TutorialProgressEvent } from "../shared/tutorials.js";
@@ -20,6 +20,8 @@ interface AppliedChange extends PreparedPolicy { readonly committedVersion: numb
 interface StoredReceipt { readonly public: CommandReceipt; readonly applied: ReadonlyArray<AppliedChange> }
 
 export interface CommandCommit { readonly receipt: CommandReceipt; readonly snapshot: WorkspaceSnapshot; readonly generationChanged: boolean }
+export interface OrderReceiptSummary { readonly id: string; readonly kind: CommandReceipt["kind"]; readonly title: string; readonly committedAt: string; readonly change: ProposalChange; readonly totalChanges: number }
+export interface OrderProgress { readonly order: OrderSummary; readonly completed: boolean; readonly resolved: boolean; readonly latestReceipt: OrderReceiptSummary | null }
 export interface ScenarioCommit { readonly message: string; readonly snapshot: WorkspaceSnapshot }
 export interface TutorialCommit { readonly advanced: boolean; readonly snapshot: WorkspaceSnapshot }
 interface TutorialActionRevision { readonly tutorialId: TutorialId; readonly tutorialInstanceId: string; readonly expectedStep: number }
@@ -76,6 +78,7 @@ export type ResolvedAgentViewContext =
 export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly snapshot: (identity: RequestIdentity, now?: number) => Effect.Effect<WorkspaceSnapshot, WorkspaceStoreError>;
   readonly orderIds: (identity: RequestIdentity) => Effect.Effect<ReadonlyArray<string>, WorkspaceStoreError>;
+  readonly orderProgress: (identity: RequestIdentity, generation: number, orderId: string) => Effect.Effect<OrderProgress | null, WorkspaceCommandError>;
   readonly prepareResolution: (identity: RequestIdentity, generation: number, orderId: string) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
   readonly prepareBatch: (identity: RequestIdentity, generation: number) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
   readonly prepareUndo: (identity: RequestIdentity, generation: number, receiptId: string) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
@@ -562,7 +565,7 @@ const preparePolicy = (database: DatabaseSync, userId: string, orderId: string):
   const selected = rowFor(database, userId, orderId);
   if (selected === undefined) throw fail("order_not_found", "That order is not in this workspace.");
   if (Number(selected.completed) !== 0) throw fail("order_completed", "That order already moved to packing.");
-  if (Number(selected.resolved) !== 0) throw fail("already_resolved", "That resolution was already accepted.");
+  if (Number(selected.resolved) !== 0) throw fail("already_resolved", "That resolution was already accepted. Read the current order and its latest receipt before advising another action.");
   const facts = resolutionFacts[orderId];
   if (facts === undefined) throw fail("policy_missing", "This order has no resolution policy.");
   const affected = facts.affectedOrderId === undefined ? selected : rowFor(database, userId, facts.affectedOrderId);
@@ -612,6 +615,31 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
   };
   const snapshot: WorkspaceRepositoryService["snapshot"] = (identity, now) => Effect.try({ try: () => readSnapshot(database, identity, agentMode, now), catch: (error) => new WorkspaceStoreError({ message: `Could not read the workspace: ${String(error)}` }) });
   const orderIds: WorkspaceRepositoryService["orderIds"] = (identity) => snapshot(identity).pipe(Effect.map((state) => state.orders.map((order) => order.id)));
+  const orderProgress: WorkspaceRepositoryService["orderProgress"] = (identity, generation, orderId) => command(() => {
+    const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
+    const row = rowFor(database, user.id, orderId);
+    if (row === undefined) return null;
+    const active = Number(row.completed) === 0 ? readSnapshot(database, identity, agentMode).orders.find((order) => order.id === orderId) : undefined;
+    const order: OrderSummary = active ?? (() => {
+      const evidence = database.prepare("SELECT label, value, occurred_at FROM order_evidence WHERE user_id = ? AND order_id = ? ORDER BY occurred_at").all(user.id, orderId) as Array<{ label: string; value: string; occurred_at: string }>;
+      return {
+        id: row.id, item: row.item, issue: row.issue, status: row.status, statusLabel: statusLabels[row.status], family: row.family,
+        version: Number(row.version), businessValue: (JSON.parse(row.state_json) as OrderBusinessState).summary,
+        targetId: targets.orderRow(orderId), evidence: evidence.map((entry) => ({ label: entry.label, value: entry.value, occurredAt: entry.occurred_at, age: ageLabel(entry.occurred_at, Date.now()) })),
+      };
+    })();
+    const receiptRow = database.prepare(`SELECT r.payload_json FROM receipts r
+      WHERE r.user_id = ? AND r.generation = ? AND EXISTS (
+        SELECT 1 FROM json_each(r.payload_json, '$.public.changes') AS change
+        WHERE json_extract(change.value, '$.orderId') = ?
+      ) ORDER BY r.committed_at DESC, r.rowid DESC LIMIT 1`).get(user.id, generation, orderId) as { payload_json: string } | undefined;
+    const receipt = receiptRow === undefined ? null : (JSON.parse(receiptRow.payload_json) as StoredReceipt).public;
+    const latestReceipt = receipt === null ? null : {
+      id: receipt.id, kind: receipt.kind, title: receipt.title, committedAt: receipt.committedAt,
+      change: receipt.changes.find((change) => change.orderId === orderId)!, totalChanges: receipt.changes.length,
+    };
+    return { order, completed: Number(row.completed) !== 0, resolved: Number(row.resolved) !== 0, latestReceipt };
+  });
   const startTutorial: WorkspaceRepositoryService["startTutorial"] = (identity, generation, tutorialId) => command(() => transact(database, () => {
     const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
     const saved = tutorialRow(database, user.id, generation, tutorialId);
@@ -1390,7 +1418,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     }
     return rows.length;
   });
-  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, startTutorial, stopTutorial, recordTutorialAction, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, resolveAgentViewContext, completeAgentMeasurement, recordCommandMeasurement, recordApplicationAudit, auditPage, auditDetail, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
+  return WorkspaceRepository.of({ snapshot, orderIds, orderProgress, prepareResolution, prepareBatch, prepareUndo, prepareReset, startTutorial, stopTutorial, recordTutorialAction, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, resolveAgentViewContext, completeAgentMeasurement, recordCommandMeasurement, recordApplicationAudit, auditPage, auditDetail, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
 })));
 
 export const workspacePersistenceLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMode"] = "unavailable") => repositoryLayer(filename, agentMode);

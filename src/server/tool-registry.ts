@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import type { AgentUiOperation, ReviewedProposal } from "../shared/contracts.js";
-import { OrderStatus, ResolutionFamily, ReviewedProposal as ReviewedProposalSchema, TutorialId, TutorialState } from "../shared/contracts.js";
+import { OrderStatus, ProposalChange, ResolutionFamily, ReviewedProposal as ReviewedProposalSchema, TutorialId, TutorialState } from "../shared/contracts.js";
 import type { RequestIdentity } from "./identity.js";
 import type { WorkspaceRepositoryService } from "./persistence.js";
 import { ProviderError, type JevRequest, type JevResult } from "./providers/contracts.js";
@@ -63,7 +63,13 @@ const orderResult = Schema.Struct({
   family: ResolutionFamily,
   version: Schema.Int,
   businessValue: Schema.String,
+  completed: Schema.Boolean,
+  resolved: Schema.Boolean,
   evidence: Schema.Array(Schema.Struct({ label: Schema.String, value: Schema.String, occurredAt: Schema.String, age: Schema.String })),
+});
+const orderReceiptResult = Schema.Struct({
+  id: Schema.String, kind: Schema.Literals(["accept", "undo", "reset"]), title: Schema.String,
+  committedAt: Schema.String, change: ProposalChange, totalChanges: Schema.Int,
 });
 const orderListResult = Schema.Struct({
   id: Schema.String,
@@ -114,14 +120,14 @@ const specs = {
     output: Schema.Struct({ count: Schema.Int, queueTotals: Schema.Struct({ ready: Schema.Int, review: Schema.Int, waiting: Schema.Int }), orders: Schema.Array(orderListResult) }),
   },
   getOrder: {
-    description: "Look up an order ID such as BB-1042 and read its current details and evidence. Use this for order IDs, not classifyNote.",
+    description: "Look up an order ID and read its current details, completion state, and latest receipt affecting it, including an Undo. A resolved order may still be Ready for a separate reviewed packing batch; completed orders leave the Work queue. Compare the current value with the receipt change before claiming acceptance did or did not apply. Use this for order IDs, not classifyNote.",
     category: "Read", purpose: "Inspect an order", allowedEffects: ["read_workspace"],
     example: { arguments: { orderId: "BB-1042" }, result: { order: {
       id: "BB-1042", item: "Woven basket", issue: "Street number needs checking.", status: "review", family: "address", version: 1,
-      businessValue: "14 Willow Lane, Bath BA1 2AB",
+      businessValue: "14 Willow Lane, Bath BA1 2AB", completed: false, resolved: false,
       evidence: [{ label: "Customer", value: "The number is 41, not 14. Everything else is right.", occurredAt: "2026-09-21T08:40:00.000Z", age: "34 min ago" }],
-    } } },
-    input: OrderIdInput, output: Schema.Struct({ order: orderResult }),
+    }, latestReceipt: null } },
+    input: OrderIdInput, output: Schema.Struct({ order: orderResult, latestReceipt: Schema.NullOr(orderReceiptResult) }),
   },
   groupOrders: {
     description: "Return whole-queue counts and order IDs for one dimension: status or exception family. Separate groupings are not intersections. Use listOrders or getOrder for each order's status, family, and recorded issue.",

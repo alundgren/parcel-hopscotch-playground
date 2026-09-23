@@ -67,7 +67,12 @@ export const toolHandlers: ToolHandlers = {
       orders,
     };
   },
-  getOrder: async (context, input) => ({ order: orderOutput(await findOrder(context, (input as { orderId: string }).orderId)) }),
+  getOrder: async (context, input) => {
+    const orderId = (input as { orderId: string }).orderId;
+    const progress = await Effect.runPromise(context.repository.orderProgress(context.identity, context.generation, orderId));
+    if (progress === null) throw new ToolExecutionError("tool_failed", "That order is not in this workspace.");
+    return { order: { ...orderOutput(progress.order), completed: progress.completed, resolved: progress.resolved }, latestReceipt: progress.latestReceipt };
+  },
   groupOrders: async (context, input) => {
     const state = await snapshot(context);
     const groupBy = (input as { groupBy: "status" | "family" }).groupBy;
