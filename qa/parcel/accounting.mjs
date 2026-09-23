@@ -1,10 +1,17 @@
 import { DatabaseSync } from 'node:sqlite';
 
 const terminal = new Set(['complete', 'failed', 'cancelled', 'interrupted']);
-const emptyUsage = (mode) => ({
-  knownCostUsd: 0, unknownCostRequests: 0, inputTokens: 0, outputTokens: 0,
-  requestCount: 0, runningRequests: 0, activeTurns: 0,
-  accountingMode: mode === 'offline' ? 'scripted fixture; no paid inference' : 'live provider audit',
+export class AccountingUnavailableError extends Error {
+  constructor() {
+    super('Application accounting is unavailable; new browser actions are stopped.');
+    this.name = 'AccountingUnavailableError';
+  }
+}
+
+export const unavailableUsage = () => ({
+  knownCostUsd: null, unknownCostRequests: null, inputTokens: null, outputTokens: null,
+  requestCount: null, runningRequests: null, activeTurns: null,
+  accountingMode: 'unavailable', accountingAvailable: false,
 });
 
 export function readAccounting(databasePath, mode, retry = 0) {
@@ -24,6 +31,7 @@ export function readAccounting(databasePath, mode, retry = 0) {
       runningRequests: live.filter((attempt) => attempt.outcome === 'running').length,
       activeTurns,
       accountingMode: mode === 'offline' ? 'scripted fixture; no paid inference' : 'live provider audit',
+      accountingAvailable: true,
     };
   } catch (error) {
     if ((error?.code === 'SQLITE_BUSY' || /database is locked/.test(error?.message ?? '')) && retry < 5) {
@@ -31,7 +39,7 @@ export function readAccounting(databasePath, mode, retry = 0) {
       Atomics.wait(delay, 0, 0, 100);
       return readAccounting(databasePath, mode, retry + 1);
     }
-    if (error?.code === 'SQLITE_CANTOPEN' || /no such table/.test(error?.message ?? '')) return emptyUsage(mode);
+    if (error?.code === 'SQLITE_CANTOPEN' || /unable to open database file|no such table/.test(error?.message ?? '')) throw new AccountingUnavailableError();
     throw error;
   } finally {
     database?.close();
@@ -39,6 +47,7 @@ export function readAccounting(databasePath, mode, retry = 0) {
 }
 
 export function paidTurnDecision(usage, budgetUsd, pendingTurn) {
+  if (!usage?.accountingAvailable || !Number.isFinite(usage.knownCostUsd) || !Number.isInteger(usage.unknownCostRequests)) return { allowed: false, reason: 'accounting_unavailable' };
   if (usage.unknownCostRequests > 0) return { allowed: false, reason: 'unknown_cost' };
   if (usage.knownCostUsd >= budgetUsd) return { allowed: false, reason: 'budget_reached' };
   if (pendingTurn || usage.activeTurns > 0 || usage.runningRequests > 0) return { allowed: false, reason: 'turn_in_progress' };

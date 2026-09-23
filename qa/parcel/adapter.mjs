@@ -7,7 +7,7 @@ import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readAccounting, paidTurnDecision, isTerminalTurn, reconcileInterrupted } from './accounting.mjs';
+import { readAccounting, paidTurnDecision, isTerminalTurn, reconcileInterrupted, unavailableUsage } from './accounting.mjs';
 import { installPaidTurnGate } from './browser-gate.mjs';
 
 const repo = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -48,7 +48,7 @@ function publicStatus(session, usage, busy = false) {
     url: session.url,
     busy,
     deadlineAt: session.deadlineAt,
-    stopReason: session.stopReason ?? (decision.reason === 'unknown_cost' || decision.reason === 'budget_reached' ? decision.reason : null),
+    stopReason: session.stopReason ?? (['unknown_cost', 'budget_reached', 'accounting_unavailable'].includes(decision.reason) ? decision.reason : null),
     budgetUsd: session.budgetUsd,
     paidTurnsAllowed: session.state === 'running' && decision.allowed,
     usage,
@@ -174,7 +174,8 @@ async function daemon(directory, mode, budgetUsd, durationMinutes) {
     session.state = 'stopped';
     await persist();
     let finalStatus;
-    try { finalStatus = publicStatus(session, readAccounting(databasePath(directory), mode), false); } catch { finalStatus = { stopReason: reason }; }
+    try { finalStatus = publicStatus(session, readAccounting(databasePath(directory), mode), false); }
+    catch { finalStatus = publicStatus(session, unavailableUsage(), false); }
     if (connection) connection.end(JSON.stringify({ ok: true, result: finalStatus }) + '\n');
     await new Promise((done) => listener?.close(done) ?? done());
     await rm(socket, { force: true });
@@ -184,6 +185,13 @@ async function daemon(directory, mode, budgetUsd, durationMinutes) {
     const usage = readAccounting(databasePath(directory), mode);
     if (pendingTurn && isTerminalTurn(databasePath(directory), pendingTurn)) pendingTurn = null;
     return { usage, decision: paidTurnDecision(usage, budgetUsd, pendingTurn), busy: Boolean(pendingTurn || usage.activeTurns || usage.runningRequests) };
+  };
+  const currentForStatus = () => {
+    try { return current(); }
+    catch {
+      const usage = unavailableUsage();
+      return { usage, decision: paidTurnDecision(usage, budgetUsd, pendingTurn), busy: Boolean(pendingTurn) };
+    }
   };
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -233,12 +241,13 @@ async function daemon(directory, mode, budgetUsd, durationMinutes) {
               await finish('manual_stop', connection);
               return;
             }
-            const before = current();
             if (command.operation === 'status') {
+              const before = currentForStatus();
               connection.end(JSON.stringify({ ok: true, result: publicStatus(session, before.usage, before.busy) }) + '\n');
               return;
             }
             if (command.operation !== 'command') throw new Error('Unsupported adapter operation.');
+            const before = current();
             if (Date.now() >= Date.parse(session.deadlineAt)) throw new Error('The QA deadline has passed.');
             if (typeof command.request?.text === 'string' && secret && command.request.text.includes(secret)) throw new Error('Application key cannot be entered into the browser.');
             const gateBefore = await page.evaluate(() => window.__parcelQaGate.state());
@@ -282,7 +291,12 @@ async function daemon(directory, mode, budgetUsd, durationMinutes) {
 async function requestDaemon(directory, command) {
   const session = await readSession(directory);
   if (session.state !== 'running') {
-    if (command.operation === 'status' || command.operation === 'stop') return publicStatus(session, readAccounting(databasePath(directory), session.mode), false);
+    if (command.operation === 'status' || command.operation === 'stop') {
+      let usage;
+      try { usage = readAccounting(databasePath(directory), session.mode); }
+      catch { usage = unavailableUsage(); }
+      return publicStatus(session, usage, false);
+    }
     throw new Error(`Adapter stopped: ${session.stopReason ?? session.state}.`);
   }
   return new Promise((done, reject) => {
@@ -302,8 +316,9 @@ async function requestDaemon(directory, command) {
 }
 
 async function main() {
-  if (!['serve', 'daemon', 'command', 'status', 'stop'].includes(operation)) throw new Error('Use serve, command, status, or stop.');
+  if (!['serve', 'daemon', 'command', 'status', 'stop', 'verify'].includes(operation)) throw new Error('Use serve, command, status, stop, or verify.');
   const { directory } = options();
+  if (operation === 'verify') { await import('./verify.mjs'); return; }
   if (operation === 'daemon') {
     await daemon(directory, flag('--mode'), Number(flag('--budget-usd')), Number(flag('--duration-minutes')));
     return;

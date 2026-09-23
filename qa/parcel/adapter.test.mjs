@@ -7,11 +7,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { paidTurnDecision, readAccounting, reconcileInterrupted } from './accounting.mjs';
+import { paidTurnDecision, readAccounting, reconcileInterrupted, unavailableUsage } from './accounting.mjs';
 
 const exec = promisify(execFile);
 const adapter = fileURLToPath(new URL('./adapter.mjs', import.meta.url));
-const verifier = fileURLToPath(new URL('./verify.mjs', import.meta.url));
 const run = async (script, flags, environment = process.env) => {
   const { stdout } = await exec(process.execPath, [script, ...flags], { env: environment, maxBuffer: 3_000_000, timeout: 140_000 });
   return JSON.parse(stdout);
@@ -48,6 +47,19 @@ test('live mode requires its own explicit key', async () => {
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('missing accounting cannot authorize a paid turn', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'parcel-qa-missing-ledger-'));
+  try {
+    const path = join(directory, 'missing.sqlite');
+    assert.throws(() => readAccounting(path, 'live'), /accounting is unavailable/);
+    const database = new DatabaseSync(path);
+    database.exec('CREATE TABLE unrelated (id INTEGER)');
+    database.close();
+    assert.throws(() => readAccounting(path, 'live'), /accounting is unavailable/);
+    assert.deepEqual(paidTurnDecision(unavailableUsage(), 0.1, null), { allowed: false, reason: 'accounting_unavailable' });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('shutdown marks unfinished calls as unknown liability', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'parcel-qa-interrupted-'));
   const path = join(directory, 'ledger.sqlite');
@@ -78,7 +90,7 @@ test('offline browser actions, verifier facts, gate, and cleanup', { timeout: 12
     await command({ action: 'click', locator: { by: 'id', id: 'target-order-BB-1042' } });
     await command({ action: 'click', locator: { by: 'role', role: 'button', name: 'Review change' } });
     await command({ action: 'click', locator: { by: 'role', role: 'button', name: 'Accept 1 change' } });
-    const facts = await run(verifier, ['--run-dir', directory]);
+    const facts = await run(adapter, ['verify', '--run-dir', directory]);
     assert.equal(facts.queue.find((order) => order.order_id === 'BB-1042').status, 'ready');
     assert.match(facts.queue.find((order) => order.order_id === 'BB-1042').state_json, /41 Willow Lane/);
     assert.equal(facts.receipts.length, 1);
@@ -103,6 +115,20 @@ test('offline browser actions, verifier facts, gate, and cleanup', { timeout: 12
     status = await run(adapter, ['status', '--run-dir', directory]);
     assert.equal(status.usage.requestCount, count);
     assert.equal(status.stopReason, 'unknown_cost');
+    const missing = new DatabaseSync(join(directory, 'parcel-workspace.sqlite'));
+    missing.exec('ALTER TABLE provider_attempts RENAME TO provider_attempts_missing');
+    missing.close();
+    try {
+      await assert.rejects(command({ action: 'snapshot' }), /accounting is unavailable/);
+      const unavailable = await run(adapter, ['status', '--run-dir', directory]);
+      assert.equal(unavailable.stopReason, 'accounting_unavailable');
+      assert.equal(unavailable.usage.knownCostUsd, null);
+      assert.equal(unavailable.paidTurnsAllowed, false);
+    } finally {
+      const restored = new DatabaseSync(join(directory, 'parcel-workspace.sqlite'));
+      restored.exec('ALTER TABLE provider_attempts_missing RENAME TO provider_attempts');
+      restored.close();
+    }
     const stopped = await run(adapter, ['stop', '--run-dir', directory]);
     started = false;
     assert.equal(stopped.stopReason, 'manual_stop');
