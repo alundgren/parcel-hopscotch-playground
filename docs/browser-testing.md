@@ -6,6 +6,9 @@ starting the application server or compiling a production bundle. Playwright
 still tests workflows that depend on WebSockets, SQLite, reloads, or multiple
 browser sessions. Both use the pinned Playwright browser installation.
 
+For a reusable guide to choosing test environments and reducing suite time,
+see [fast browser and database tests](test-suite-performance.md).
+
 ## Commands
 
 ```bash
