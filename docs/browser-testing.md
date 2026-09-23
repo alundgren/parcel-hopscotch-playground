@@ -113,9 +113,6 @@ successful speedups. The first run may warm compiler caches, so retain all sampl
 and compare medians. State any removed, added, or moved coverage alongside the
 timings. An old E2E suite and a new Browser Mode suite are different workloads.
 
-See the [2026-09-22 evaluation](benchmarks/2026-09-22-browser/README.md) for
-recorded before/after samples, coverage differences, and validation limits.
-
 Vite+ 1.0.0-rc.0 bundles Vitest 5.0.1. Dependency and config migration follows the
 [official migration guide](https://viteplus.dev/guide/vitest-v5), with exact pins
 for the optional browser provider and HTML reporter.

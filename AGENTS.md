@@ -1,6 +1,6 @@
 # Parcel Hopscotch
 
-Read `docs/build-agreement.md` before changing behavior. For UI work, also read `ux.md` and inspect the rendered application using the headless browser workflow below. Read `docs/architecture.md` when changing module responsibilities, inference, persistence, or transport.
+For UI work, read `ux.md` and inspect the rendered application using the headless browser workflow below. Read `docs/architecture.md` when changing module responsibilities, inference, persistence, or transport.
 
 ## Delivery
 

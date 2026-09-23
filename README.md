@@ -77,12 +77,6 @@ Trace View, and timing commands. If capture or inspection fails, record the exac
 error and leave visual approval pending. Report security rejections and stop the
 rejected operation.
 
-The [Vite+ upgrade evaluation](docs/benchmarks/2026-09-22-browser/README.md)
-records before/after suite timings, changed coverage, screenshot findings, and
-container cache checks.
-
-The retained [acceptance report](docs/acceptance-report.md) documents 36 browser cases and separate server-turn, Send-to-completed-work and Accept-to-visible samples. The [live benchmark report](docs/benchmarks/2026-09-22-live/README.md) retains the single authorized 28-request run. Jev sent no token cap; its question, choice, request and response byte, and timeout bounds are recorded in the report correction. The 64-token cap applies only to Ministral constrained requests. Those historical benchmark scenarios requested at most 256 tokens. Current agent turns allow 4,096 output tokens per request, up to eight model requests per turn and six tool calls per request. Chat responses are limited to 2 MiB and 120 seconds per provider attempt; Jev keeps its separate limits. One of two live tool scenarios remained incomplete and is reported that way.
-
 Run `vp run test:live` with your own `PARCEL_LIVE_TEST_API_KEY` for the [paid live acceptance suite](docs/live-acceptance.md). It builds the app, runs headless Playwright across all four Explore scenarios and every registered tool, and retains debugging evidence under gitignored `artifacts/live/`. People invoke paid runs explicitly; agents and CI use only credential-free validation.
 
 ## Local container review
