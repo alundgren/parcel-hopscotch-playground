@@ -12,6 +12,18 @@
       "reviewedBy": "root coordinator, checked against persisted fixture and rendered UI",
       "reviewedAt": "2026-09-23T19:11:13.066Z",
       "synthetic": true
+    },
+    {
+      "id": "accepted-resolution-is-not-packing",
+      "personaId": "new-operator",
+      "scenarioId": "accepted-resolution-packing",
+      "sourceRevision": "bf25a04be27950d25eddbf0df137e0976b86bc9c",
+      "summary": "Verify the accepted receipt and current order separately from its Ready label. In the synthetic mug case, acceptance changes blue to sage at the same price and reserves one mug, while packing remains a separate reviewed batch. Check the claimed scope of packing and Undo against the actual controls.",
+      "sourceObservationId": "c8db0c36-56f0-4ff4-9726-4855dae5de49",
+      "sourceFindingId": null,
+      "reviewedBy": "Root UI/state verifier and independent Sol High functional verifier",
+      "reviewedAt": "2026-09-23T19:46:26.365Z",
+      "synthetic": true
     }
   ],
   "regressions": [
