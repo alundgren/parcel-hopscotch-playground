@@ -2,7 +2,7 @@ import { render } from "vitest-browser-react";
 import { afterEach, beforeEach, describe, expect, test, vi, type TestContext } from "vite-plus/test";
 import { commands, page, userEvent } from "vite-plus/test/browser";
 import "../../src/client/styles.css";
-import { auditPage, createWorkspace, proposal, receipt, snapshot } from "./fixtures";
+import { addressProposal, auditPage, createWorkspace, proposal, receipt, snapshot } from "./fixtures";
 
 const workspaceState = vi.hoisted(() => ({ current: null as ReturnType<typeof createWorkspace> | null }));
 vi.mock("../../src/client/use-workspace", () => ({ useWorkspace: () => workspaceState.current }));
@@ -122,6 +122,21 @@ afterEach(() => {
 });
 
 describe("rendered work UI", () => {
+  test("restores an address proposal without marking its heading and returns home from the brand icon", async () => {
+    workspaceState.current = createWorkspace({ snapshot: { ...snapshot, currentProposal: addressProposal } });
+    await render(<App />);
+
+    const title = document.querySelector("#proposal-title")!;
+    await expect.element(page.getByRole("heading", { name: "Check address" })).toBeVisible();
+    await settleVisuals();
+    expect(document.activeElement).not.toBe(title);
+    await checkpoint("work-restored-address-proposal");
+
+    await page.getByRole("button", { name: "Go to start page" }).click();
+    await expect.element(page.getByRole("heading", { name: "Decisions" })).toBeVisible();
+    await expect.element(page.getByRole("heading", { name: "Check address" })).not.toBeInTheDocument();
+  });
+
   test("keeps the queue, long order detail, review, and receipt readable", async () => {
     await render(<App />);
     const work = page.getByRole("heading", { name: "Decisions" });
@@ -159,6 +174,7 @@ describe("rendered work UI", () => {
 
     await page.getByRole("button", { name: "Review change" }).click();
     await expect.element(page.getByRole("heading", { name: "Review ready orders" })).toBeVisible();
+    expect(document.activeElement).toBe(document.querySelector("#proposal-title"));
     expectReadable(document.querySelector(".proposal-state.ready")!);
     expectInside(document.querySelector(".proposal-actions")!, document.querySelector(".proposal-screen")!);
     const accept = document.querySelector(".proposal-actions button:first-child")!;

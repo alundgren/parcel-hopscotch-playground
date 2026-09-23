@@ -7,7 +7,7 @@ import { useWorkspace, type ConnectionStatus } from "./use-workspace";
 
 type View = "work" | "explore" | "audit";
 type Filter = "all" | "ready";
-function BrandIcon() { return <span className="brand-icon" aria-hidden="true"><img src="/favicon.png" alt="" /></span>; }
+function BrandIcon({ onClick }: { readonly onClick: () => void }) { return <button type="button" className="brand-icon" aria-label="Go to start page" onClick={onClick}><img src="/favicon.png" alt="" /></button>; }
 const connectionText: Record<ConnectionStatus, string> = { connecting: "Connecting", connected: "Connected", reconnecting: "Reconnecting", offline: "Offline", retired: "Session replaced" };
 export const resolveSelectedOrder = (orders: ReadonlyArray<OrderSummary>, selectedOrderId: string | null) => selectedOrderId === null ? null : orders.find((order) => order.id === selectedOrderId) ?? null;
 
@@ -360,6 +360,8 @@ export default function App() {
   const { snapshot, status, toolCatalogue, runCommand, runExploreScenario, sendAgentMessage, cancelAgentTurn, agentOperation, acknowledgeAgentOperation, acknowledgeAgentComplete, acknowledgeCommandVisible, agentError, auditPage, auditDetails, auditLoading, auditError, auditRevision, requestAudit, requestAuditDetail } = useWorkspace();
   const acceptStarted = useRef<number | null>(null);
   const priorGeneration = useRef<number | null>(null);
+  const initialWorkspaceHandled = useRef(false);
+  const suppressContentFocus = useRef(false);
   useEffect(() => {
     if (snapshot === null) return;
     if (priorGeneration.current !== null && priorGeneration.current !== snapshot.generation) {
@@ -370,15 +372,22 @@ export default function App() {
     priorGeneration.current = snapshot.generation;
   }, [snapshot?.generation, proposal?.generation, receipt?.generation]);
   useEffect(() => {
+    if (suppressContentFocus.current) {
+      suppressContentFocus.current = false;
+      return;
+    }
     if (proposal !== null) document.getElementById("proposal-title")?.focus();
     else if (receipt !== null) document.getElementById("receipt-title")?.focus();
   }, [proposal?.id, receipt?.id]);
   useEffect(() => {
+    const restoringInitialWorkspace = snapshot !== null && !initialWorkspaceHandled.current;
+    if (restoringInitialWorkspace) initialWorkspaceHandled.current = true;
     if (snapshot?.currentProposal !== null && snapshot?.currentProposal !== undefined && proposal?.id !== snapshot.currentProposal.id) {
+      if (restoringInitialWorkspace) suppressContentFocus.current = true;
       setReceipt(null);
       setProposal(snapshot.currentProposal);
     }
-  }, [snapshot?.currentProposal?.id]);
+  }, [snapshot?.generation, snapshot?.currentProposal?.id]);
   useEffect(() => {
     if (agentOperation === null || snapshot === null) return;
     if (agentOperation.kind === "navigate") {
@@ -515,8 +524,15 @@ export default function App() {
       ? snapshot.tutorialProposal.id === snapshot.currentProposal?.id ? "The proposal for this step is saved. Return to Work and use Review saved proposal." : "The proposal for this step is saved. Return to Work and use Continue tutorial proposal."
       : "The next step is not visible. Return to Work and open the requested order from the list.";
   const coach = snapshot?.tutorial === null || snapshot?.tutorial === undefined ? null : <TutorialCoach tutorial={snapshot.tutorial} recoveryText={recoveryText} onDismiss={dismissTutorial} disabled={busy || status !== "connected"} />;
+  const goToStart = () => {
+    setView("work");
+    setSelectedOrderId(null);
+    setProposal(null);
+    setReceipt(null);
+    setAuditFocus(null);
+  };
 
-  return <div className="app-shell"><header className="topbar"><div className="brand"><BrandIcon /> <span>Bracken &amp; Beam</span></div><span className={`connection connection-${status}`} data-testid="connection-status"><span aria-hidden="true" />{connectionText[status]}</span><nav aria-label="Main navigation">{(["work", "explore", "audit"] as const).map((item) => <Button key={item} variant="quiet" aria-current={view === item ? "page" : undefined} onClick={() => { setView(item); setAuditFocus(null); }}>{item[0]!.toUpperCase() + item.slice(1)}</Button>)}</nav></header>
+  return <div className="app-shell"><header className="topbar"><div className="brand"><BrandIcon onClick={goToStart} /> <span>Bracken &amp; Beam</span></div><span className={`connection connection-${status}`} data-testid="connection-status"><span aria-hidden="true" />{connectionText[status]}</span><nav aria-label="Main navigation">{(["work", "explore", "audit"] as const).map((item) => <Button key={item} variant="quiet" aria-current={view === item ? "page" : undefined} onClick={() => { setView(item); setAuditFocus(null); }}>{item[0]!.toUpperCase() + item.slice(1)}</Button>)}</nav></header>
     {view === "work" ? <main className="work-layout" data-view="work">{snapshot === null ? <section className="work-panel loading-panel" aria-live="polite"><h1>Decisions</h1><p>{status === "offline" ? "Reconnect to load your workspace." : "Loading your workspace…"}</p></section> : proposal !== null ? <ProposalView proposal={proposal} orders={snapshot.orders} busy={busy} connected={status === "connected"} onAccept={accept} onCancel={() => { setProposal(null); setSelectedOrderId(null); }} coach={coach} /> : receipt !== null ? <ReceiptView receipt={receipt} busy={busy} connected={status === "connected"} onBack={() => void confirmReceiptAndBack()} onUndo={undo} coach={coach} /> : <WorkQueue orders={snapshot.orders} latestReceipt={snapshot.latestReceipt} tutorialReceipt={snapshot.tutorialReceipt} savedProposal={snapshot.currentProposal} tutorialProposal={snapshot.tutorialProposal} connected={status === "connected" && !busy} selectedOrderId={selectedOrderId} selectOrder={(orderId) => { setSelectedOrderId(orderId); if (orderId !== null) void reportTutorialAction({ action: "order_selected", orderId }); }} prepare={(orderId) => void showProposal(() => runCommand({ type: "prepare_resolution", orderId }))} prepareBatch={() => void showProposal(() => runCommand({ type: "prepare_batch" }))} prepareReset={() => void showProposal(() => runCommand({ type: "prepare_reset" }))} advance={() => void advance()} openReceipt={() => setReceipt(snapshot.latestReceipt)} openTutorialReceipt={() => setReceipt(snapshot.tutorialReceipt)} openSavedProposal={() => setProposal(snapshot.currentProposal)} openTutorialProposal={() => setProposal(snapshot.tutorialProposal)} selectReady={() => { void reportTutorialAction({ action: "ready_filter_selected" }); }} coach={coach} />}{snapshot !== null && <ChatPanel snapshot={snapshot} connected={status === "connected"} onSend={(message) => { try { const context: AgentViewContext = proposal !== null ? { view: "work", focus: { kind: "proposal", proposalId: proposal.id } } : receipt !== null ? { view: "work", focus: { kind: "receipt", receiptId: receipt.id } } : selectedOrderId !== null ? { view: "work", focus: { kind: "order", orderId: selectedOrderId } } : { view, focus: null }; sendAgentMessage(message, context); } catch (cause) { setError(cause instanceof Error ? cause.message : "The message could not be sent."); } }} onCancel={cancelAgentTurn} error={agentError} />}{error !== null && <div className="command-message" role="status">{error}</div>}</main> : view === "explore" ? <div data-view="explore"><ExploreView entries={toolCatalogue} connected={status === "connected" && snapshot !== null && snapshot.activeTurn === null} busy={busy} scenarioActive={snapshot?.activeTurn !== null && snapshot?.activeTurn !== undefined} notice={scenarioNotice} runScenario={(scenario) => void launchExploreScenario(scenario)} cancelScenario={cancelAgentTurn} prepareReset={() => void prepareExploreReset()} advanceScenario={() => void advanceFromExplore()} />{coach}</div> : <div data-view="audit"><AuditView page={auditPage} details={auditDetails} loading={auditLoading} error={auditError} revision={auditRevision} connected={status === "connected"} focusedAttemptId={auditFocus?.attemptId ?? null} onFocusedAttemptRendered={(attemptId) => { if (auditFocus?.attemptId === attemptId && auditFocus.acknowledge) acknowledgeAgentComplete(auditFocus.turnId, auditFocus.generation); }} requestPage={requestAudit} requestDetail={requestAuditDetail} />{coach}</div>}
   </div>;
 }
