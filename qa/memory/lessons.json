@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "lessons": [
+    {
+      "id": "triage-compare-all-statuses",
+      "personaId": "new-operator",
+      "scenarioId": "queue-triage",
+      "sourceRevision": "37c4cfa231412aa543c3ef1570c1a4d662b63931",
+      "summary": "For the synthetic initial queue, verify broad shift-triage advice against all 24 orders: six ready, fourteen review, four waiting. BB-1112 is ready despite a duplicate-related issue. Check counts and per-order classification separately; one can be correct while the other is wrong.",
+      "sourceObservationId": "895264a7-860c-41a5-9ece-a3ffdcd6790c",
+      "sourceFindingId": null,
+      "reviewedBy": "root coordinator, checked against persisted fixture and rendered UI",
+      "reviewedAt": "2026-09-23T19:11:13.066Z",
+      "synthetic": true
+    },
+    {
+      "id": "accepted-resolution-is-not-packing",
+      "personaId": "new-operator",
+      "scenarioId": "accepted-resolution-packing",
+      "sourceRevision": "bf25a04be27950d25eddbf0df137e0976b86bc9c",
+      "summary": "Verify the accepted receipt and current order separately from its Ready label. In the synthetic mug case, acceptance changes blue to sage at the same price and reserves one mug, while packing remains a separate reviewed batch. Check the claimed scope of packing and Undo against the actual controls.",
+      "sourceObservationId": "c8db0c36-56f0-4ff4-9726-4855dae5de49",
+      "sourceFindingId": null,
+      "reviewedBy": "Root UI/state verifier and independent Sol High functional verifier",
+      "reviewedAt": "2026-09-23T19:46:26.365Z",
+      "synthetic": true
+    }
+  ],
+  "regressions": [
+    {
+      "id": "triage-filtered-counts",
+      "personaId": "new-operator",
+      "scenarioId": "queue-triage",
+      "sourceRevision": "37c4cfa231412aa543c3ef1570c1a4d662b63931",
+      "findingId": "triage-status-counts",
+      "setup": "Use the synthetic initial queue of 24 orders with six ready, fourteen review, and four waiting.",
+      "action": "Ask which orders can be worked now and which need review or waiting. Also check a ready-only or review-only list query.",
+      "expected": "Whole-queue totals remain accurate despite filtering; BB-1112 remains classified as ready. Evaluate factual wording separately from counts.",
+      "reviewedBy": "Independent Sol High verifier for tool cases; root verifier for fresh live UI result",
+      "reviewedAt": "2026-09-23T19:30:21.083Z",
+      "synthetic": true
+    }
+  ]
+}

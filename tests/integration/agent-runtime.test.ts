@@ -41,6 +41,7 @@ type ToolPayload = {
   readonly truncated?: boolean;
   readonly result?: {
     readonly count?: number;
+    readonly queueTotals?: { readonly ready: number; readonly review: number; readonly waiting: number };
     readonly orders?: ReadonlyArray<{ readonly id?: string; readonly status?: string }>;
     readonly id?: string;
     readonly changes?: ReadonlyArray<unknown>;
@@ -396,18 +397,20 @@ describe("agent runtime", () => {
       for (const results of [storedResults]) {
         expect(results).toHaveLength(5);
         const all = results.find((entry) => entry.id === "call_all")?.payload;
-        expect(all).toMatchObject({ ok: true, result: { count: 24 } });
+        expect(all).toMatchObject({ ok: true, result: { count: 24, queueTotals: { ready: 6, review: 14, waiting: 4 } } });
         expect(all?.truncated).toBeUndefined();
         expect(all?.result?.orders).toHaveLength(24);
         expect(all?.result?.orders?.map((order) => order.id)).toContain("BB-1072");
         expect(results.find((entry) => entry.id === "call_null")?.payload).toEqual(all);
         const review = results.find((entry) => entry.id === "call_review")?.payload;
-        expect(review).toMatchObject({ ok: true, result: { count: 14 } });
+        expect(review).toMatchObject({ ok: true, result: { count: 14, queueTotals: { ready: 6, review: 14, waiting: 4 } } });
         expect(review?.result?.orders?.every((order) => order.status === "review")).toBe(true);
         const ready = results.find((entry) => entry.id === "call_ready")?.payload;
-        expect(ready).toMatchObject({ ok: true, result: { count: 6 } });
+        expect(ready).toMatchObject({ ok: true, result: { count: 6, queueTotals: { ready: 6, review: 14, waiting: 4 } } });
         expect(ready?.result?.orders).toHaveLength(6);
         expect(ready?.result?.orders?.every((order) => order.status === "ready")).toBe(true);
+        expect(ready?.result?.orders?.find((order) => order.id === "BB-1112")?.status).toBe("ready");
+        expect(ready?.result?.queueTotals?.review).toBeGreaterThan(0);
         const batch = results.find((entry) => entry.id === "call_batch")?.payload;
         expect(batch?.truncated).toBeUndefined();
         expect(batch?.result?.id).toMatch(/^proposal_/);
@@ -416,6 +419,84 @@ describe("agent runtime", () => {
       }
       expect(coordinator.acknowledgeComplete(identity, 1, turnId, "connection-useful")).toBe(true);
       yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it("gives the model whole-queue totals after it requests only ready orders", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let round = 0;
+    let replyRequest: MinistralRequest | null = null;
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      if (round++ === 0) return result([{ id: "ready_only", name: "listOrders", arguments: { status: "ready" } }]);
+      replyRequest = request;
+      return result([], "Ready: 6\nReview: 14\nWaiting: 4");
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = "turn_12345678-ready-overview";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "ready-overview", message: "Which orders can I work on now, and which need review or waiting?", viewContext: workView, connectionId: "ready-overview", send: async () => undefined }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(round).toBe(2);
+      const request = replyRequest as MinistralRequest | null;
+      expect(request).not.toBeNull();
+      const system = request?.messages.find((message) => message.role === "system");
+      expect(system?.content).toContain("listOrders.queueTotals");
+      expect(system?.content).toContain("never place a ready order under review or waiting");
+      const ready = toolPayloads(request?.messages ?? []).find((entry) => entry.id === "ready_only")?.payload;
+      expect(ready).toMatchObject({ ok: true, result: { count: 6, queueTotals: { ready: 6, review: 14, waiting: 4 } } });
+      expect(ready?.result?.orders?.find((order) => order.id === "BB-1112")?.status).toBe("ready");
+      expect(turn.history.at(-1)).toMatchObject({ role: "assistant", content: "Ready: 6\nReview: 14\nWaiting: 4" });
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "ready-overview")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it("passes current accepted order value and its receipt to the model without preparing another change", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let round = 0;
+    let packed = false;
+    let replyRequest: MinistralRequest | null = null;
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      if (round++ === 0) return result([{ id: "read_accepted", name: "getOrder", arguments: { orderId: "BB-1051" } }]);
+      replyRequest = request;
+      return result([], packed ? "The accepted batch released this order to packing." : "The blue mug was replaced with a sage mug at the same price. The order is Ready for a separate reviewed packing batch.");
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const proposal = yield* repository.prepareResolution(identity, 1, "BB-1051");
+      yield* repository.accept(identity, 1, proposal.id, "accepted-order-context-key");
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = "turn_12345678-accepted-order";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "accepted-order", message: "I reviewed 1051 but it says the resolution was already accepted. Did anything change?", viewContext: workView, connectionId: "accepted-order", send: async () => undefined }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(round).toBe(2);
+      const request = replyRequest as MinistralRequest | null;
+      const system = request?.messages.find((message) => message.role === "system");
+      expect(system?.content).toContain("Explain before and after, including recorded price or stock effects");
+      expect(system?.content).toContain("Resolved Ready means changed but packing is pending; never say no action remains");
+      expect(system?.content).toContain("a person reviews and accepts the full eligible Ready batch");
+      expect(system?.content).toContain("Undo reverses a whole receipt, never selected batch orders");
+      const read = toolPayloads(request?.messages ?? []).find((entry) => entry.id === "read_accepted")?.payload;
+      expect(read).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 2, businessValue: "Sage stoneware mug, quantity 1, £24.00", status: "ready", completed: false, resolved: true }, latestReceipt: { kind: "accept", committedVersion: 2, totalChanges: 1, change: { before: "Blue stoneware mug, quantity 1, £24.00", after: "Sage stoneware mug, quantity 1, £24.00" } } } });
+      expect(JSON.stringify(read)).not.toContain('"expectedVersion"');
+      expect(turn.history.filter((message) => message.role === "assistant" && message.toolCalls !== undefined)).toHaveLength(1);
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "accepted-order")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+      const batch = yield* repository.prepareBatch(identity, 1);
+      yield* repository.accept(identity, 1, batch.id, "accepted-order-batch-key");
+      packed = true;
+      round = 0;
+      replyRequest = null;
+      const packedTurnId = "turn_12345678-packed-order";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: packedTurnId, requestId: "packed-order", message: "Did BB-1051 move to packing?", viewContext: workView, connectionId: "packed-order", send: async () => undefined }));
+      yield* Effect.promise(() => waitForTurn(repository, packedTurnId, ["waiting_for_ui"]));
+      const packedRequest = replyRequest as MinistralRequest | null;
+      const packedRead = toolPayloads(packedRequest?.messages ?? []).findLast((entry) => entry.id === "read_accepted")?.payload;
+      expect(packedRead).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 3, businessValue: "Sage stoneware mug, quantity 1, £24.00", completed: true, resolved: true }, latestReceipt: { committedVersion: 3, totalChanges: 6, change: { orderId: "BB-1051", after: "Sage stoneware mug, quantity 1, £24.00 · Packing" } } } });
+      expect(JSON.stringify(packedRead)).not.toContain('"expectedVersion"');
+      expect(coordinator.acknowledgeComplete(identity, 1, packedTurnId, "packed-order")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, packedTurnId, 60);
     }));
   });
 
@@ -702,9 +783,22 @@ describe("agent runtime", () => {
       const proposal = yield* repository.prepareBatch(identity, 1);
       const proposalContext = yield* repository.resolveAgentViewContext(identity, 1, { view: "work", focus: { kind: "proposal", proposalId: proposal.id } });
       expect(proposalContext.focus?.kind).toBe("proposal");
+      expect(proposal.changes.length).toBeGreaterThan(1);
+      expect(proposal.changes[0]).toHaveProperty("expectedVersion", 1);
       const committed = yield* repository.accept(identity, 1, proposal.id, "context-receipt-key");
       const receiptContext = yield* repository.resolveAgentViewContext(identity, 1, { view: "work", focus: { kind: "receipt", receiptId: committed.receipt.id } });
-      expect(receiptContext.focus?.kind).toBe("receipt");
+      if (receiptContext.focus?.kind !== "receipt") throw new Error("Expected selected receipt context.");
+      expect(receiptContext.focus.receipt.changes).toHaveLength(proposal.changes.length);
+      expect(receiptContext.focus.receipt.changes).toEqual(proposal.changes.map((change) => ({
+        orderId: change.orderId, family: change.family, before: change.before, after: change.after,
+        effect: change.effect, committedVersion: change.expectedVersion + 1,
+      })));
+      expect(committed.receipt.changes[0]).toHaveProperty("expectedVersion", 1);
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: "turn_12345678-receipt-context", requestId: "request-receipt-context", message: "Explain this accepted receipt.", viewContext: { view: "work", focus: { kind: "receipt", receiptId: committed.receipt.id } }, connectionId: "connection-receipt-context", send: async () => undefined }));
+      yield* Effect.promise(() => waitForTurn(repository, "turn_12345678-receipt-context", ["complete"]));
+      const acceptedContext = captured.find((message) => message.role === "system" && message.content.startsWith("Authenticated application context:"));
+      expect(acceptedContext?.content).toContain('"committedVersion":2');
+      expect(acceptedContext?.content).not.toContain("expectedVersion");
       yield* Effect.promise(() => expect(Effect.runPromise(repository.resolveAgentViewContext(identity, 1, { view: "work", focus: { kind: "order", orderId: "BB-1051" } }))).rejects.toMatchObject({ code: "invalid_view_context" }));
 
       yield* Effect.promise(() => expect(coordinator.start({ repository, hub, identity, generation: 1, turnId: "turn_12345678-invalid-context", requestId: "request-invalid-context", message: "Explain this.", viewContext: { view: "work", focus: { kind: "order", orderId: "BB-9999" } }, connectionId: "connection-invalid-context", send: async () => undefined })).rejects.toMatchObject({ code: "invalid_view_context" }));

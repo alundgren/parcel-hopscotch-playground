@@ -46,6 +46,17 @@ C4Container
 
 Keep these responsibilities as plain modules in one application. Separate packages only when a concrete reuse need justifies them.
 
+## Exploratory QA tooling
+
+`tools/qa-loop` contains the reusable manual QA workflow, role instructions,
+validated run records, and selected memory promotion. `qa/definitions` supplies
+this application's synthetic persona, open-ended missions, and independent
+expected outcomes. `qa/parcel` starts a disposable local instance and provides
+recorded browser actions and verifier-only state checks. `scripts/qa.mjs` joins
+them into one session with an app spending threshold and wall-clock deadline.
+Production application modules do not depend on these tools. See
+[exploratory QA](exploratory-qa.md) for invocation, trust boundaries, and evidence.
+
 ## Guided help
 
 The helper reads a bounded semantic description of the current view. The

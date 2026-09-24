@@ -85,6 +85,11 @@ export const toolHandlers: ToolHandlers = {
   listOrders: async (context, input) => {
     const args = input as { status?: OrderSummary["status"] | null; family?: OrderSummary["family"] | null; query?: string | null };
     const state = await snapshot(context);
+    const queueTotals = {
+      ready: state.orders.filter((order) => order.status === "ready").length,
+      review: state.orders.filter((order) => order.status === "review").length,
+      waiting: state.orders.filter((order) => order.status === "waiting").length,
+    };
     const query = args.query?.trim().toLowerCase();
     const orders = state.orders
       .filter((order) => args.status == null || order.status === args.status)
@@ -94,10 +99,16 @@ export const toolHandlers: ToolHandlers = {
       .map(({ id, item, issue, status, family }) => ({ id, item, issue, status, family }));
     return {
       count: orders.length,
+      queueTotals,
       orders,
     };
   },
-  getOrder: async (context, input) => ({ order: orderOutput(await findOrder(context, (input as { orderId: string }).orderId)) }),
+  getOrder: async (context, input) => {
+    const orderId = (input as { orderId: string }).orderId;
+    const progress = await Effect.runPromise(context.repository.orderProgress(context.identity, context.generation, orderId));
+    if (progress === null) throw new ToolExecutionError("tool_failed", "That order is not in this workspace.");
+    return { order: { ...orderOutput(progress.order), completed: progress.completed, resolved: progress.resolved }, latestReceipt: progress.latestReceipt };
+  },
   groupOrders: async (context, input) => {
     const state = await snapshot(context);
     const groupBy = (input as { groupBy: "status" | "family" }).groupBy;

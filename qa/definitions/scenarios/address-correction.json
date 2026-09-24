@@ -1,0 +1,9 @@
+{
+  "id": "address-correction",
+  "version": "1",
+  "title": "Resolve an address exception",
+  "goal": "Resolve the address issue for order BB-1042 using the customer's message.",
+  "context": "You have been asked to deal with this order and are learning how to make a change in the application.",
+  "completion": "You know whether the change was made, what changed, and whether further action is needed.",
+  "variations": ["Ask for help if a control or result is unclear.", "Try another address order after learning the first task."]
+}

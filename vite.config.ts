@@ -47,7 +47,7 @@ export default defineConfig({
           environment: "node",
           fileParallelism: true,
           maxWorkers: Math.min(4, availableParallelism()),
-          include: ["tests/unit/**/*.test.ts", "tests/integration/**/*.test.ts"],
+          include: ["tests/unit/**/*.test.ts", "tests/unit/**/*.test.mjs", "tests/integration/**/*.test.ts", "tests/integration/**/*.test.mjs"],
         },
       },
       {

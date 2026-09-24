@@ -1,0 +1,9 @@
+{
+  "id": "recovery",
+  "version": "1",
+  "title": "Resume interrupted work",
+  "goal": "Resume work after an interruption, establish what has changed, and reverse a change if you no longer want it.",
+  "context": "You were working on an order and had to step away. You may reload the application as part of returning to work.",
+  "completion": "You can distinguish work already saved from work still waiting, and understand the result of any reversal.",
+  "variations": ["Leave while reviewing a proposed change.", "Return after accepting a change."]
+}

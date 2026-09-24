@@ -68,7 +68,15 @@ const orderResult = Schema.Struct({
   family: ResolutionFamily,
   version: Schema.Int,
   businessValue: Schema.String,
+  completed: Schema.Boolean,
+  resolved: Schema.Boolean,
   evidence: Schema.Array(Schema.Struct({ label: Schema.String, value: Schema.String, occurredAt: Schema.String, age: Schema.String })),
+});
+const orderReceiptResult = Schema.Struct({
+  id: Schema.String, kind: Schema.Literals(["accept", "undo", "reset"]), title: Schema.String,
+  committedAt: Schema.String,
+  change: Schema.Struct({ orderId: Schema.String, family: ResolutionFamily, before: Schema.String, after: Schema.String, effect: Schema.String }),
+  committedVersion: Schema.Int, totalChanges: Schema.Int,
 });
 const orderListResult = Schema.Struct({
   id: Schema.String,
@@ -142,21 +150,21 @@ const specs = {
     output: Schema.Struct({ kind: Schema.Literals(["shown", "stale_context", "missing_target", "invalid"]), message: Schema.String, currentContext: Schema.optionalKey(PublicGuidanceContext) }),
   },
   listOrders: {
-    description: "Read each order's ID, status, exception family, and recorded issue together. Omit filters to list the whole queue; use status review for individual examples needing a decision.",
+    description: "Read each returned order's ID, status, exception family, and recorded issue together. count is the filtered result count; queueTotals always counts the whole queue by status, even when filters are set. Omit filters to list the whole queue; use status review for individual examples needing a decision.",
     category: "Read", purpose: "Find orders", allowedEffects: ["read_workspace"],
-    example: { arguments: { status: "ready" }, result: { count: 1, orders: [{ id: "BB-1051", item: "Stoneware mug", issue: "Blue unavailable", status: "ready", family: "substitution" }] } },
+    example: { arguments: { status: "ready" }, result: { count: 1, queueTotals: { ready: 1, review: 0, waiting: 0 }, orders: [{ id: "BB-1051", item: "Stoneware mug", issue: "Blue unavailable", status: "ready", family: "substitution" }] } },
     input: Schema.Struct({ status: Schema.optionalKey(Schema.NullOr(OrderStatus)), family: Schema.optionalKey(Schema.NullOr(ResolutionFamily)), query: Schema.optionalKey(Schema.NullOr(Schema.String.check(Schema.isMaxLength(80)))) }),
-    output: Schema.Struct({ count: Schema.Int, orders: Schema.Array(orderListResult) }),
+    output: Schema.Struct({ count: Schema.Int, queueTotals: Schema.Struct({ ready: Schema.Int, review: Schema.Int, waiting: Schema.Int }), orders: Schema.Array(orderListResult) }),
   },
   getOrder: {
-    description: "Look up an order ID such as BB-1042 and read its current details and evidence. Use this for order IDs, not classifyNote.",
+    description: "Look up an order ID and read its current details, completion state, and latest receipt affecting it, including an Undo. committedVersion is the order version after that receipt was accepted. A resolved order may still be Ready for a separate reviewed packing batch; completed orders leave the Work queue. Compare the current value with the receipt change before claiming acceptance did or did not apply. Use this for order IDs, not classifyNote.",
     category: "Read", purpose: "Inspect an order", allowedEffects: ["read_workspace"],
     example: { arguments: { orderId: "BB-1042" }, result: { order: {
       id: "BB-1042", item: "Woven basket", issue: "Street number needs checking.", status: "review", family: "address", version: 1,
-      businessValue: "14 Willow Lane, Bath BA1 2AB",
+      businessValue: "14 Willow Lane, Bath BA1 2AB", completed: false, resolved: false,
       evidence: [{ label: "Customer", value: "The number is 41, not 14. Everything else is right.", occurredAt: "2026-09-21T08:40:00.000Z", age: "34 min ago" }],
-    } } },
-    input: OrderIdInput, output: Schema.Struct({ order: orderResult }),
+    }, latestReceipt: null } },
+    input: OrderIdInput, output: Schema.Struct({ order: orderResult, latestReceipt: Schema.NullOr(orderReceiptResult) }),
   },
   groupOrders: {
     description: "Return whole-queue counts and order IDs for one dimension: status or exception family. Separate groupings are not intersections. Use listOrders or getOrder for each order's status, family, and recorded issue.",
@@ -209,18 +217,18 @@ const specs = {
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareResolution: {
-    description: "Prepare the existing authoritative resolution for any conventional exception family. The user must accept the preview.",
+    description: "Prepare the existing authoritative resolution for an unresolved exception. This does not release the order to packing. The user must accept the preview.",
     category: "Prepare", purpose: "Prepare a reviewed resolution", allowedEffects: ["create_reviewed_proposal"],
     example: { arguments: { orderId: "BB-1090" }, result: proposalExample("resolution", "Review resolution", bundleExample) },
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareBatch: {
-    description: "Prepare all currently eligible ready orders with exact inclusions and omissions. The user must accept the preview.",
+    description: "Prepare one batch containing all currently eligible Ready orders with exact inclusions and omissions. This tool has no order selector and cannot release only one Ready order. The user must inspect and accept or cancel the entire preview.",
     category: "Prepare", purpose: "Prepare a batch", allowedEffects: ["create_reviewed_proposal"],
     example: { arguments: {}, result: proposalExample("batch", "Review 1 change", substitutionExample) }, input: EmptyInput, output: ProposalOutput,
   },
   prepareUndo: {
-    description: "Prepare a checked reversal of a current user's receipt. The user must accept the preview.",
+    description: "Prepare a checked reversal of every change in one of the current user's receipts. This tool cannot undo selected orders from a batch receipt. The user must accept the entire preview.",
     category: "Prepare", purpose: "Prepare an undo", allowedEffects: ["create_reviewed_proposal"],
     example: { arguments: { receiptId: "receipt_example" }, result: proposalExample("undo", "Undo 1 accepted change", undoExample) },
     input: Schema.Struct({ receiptId: Identifier }), output: ProposalOutput,

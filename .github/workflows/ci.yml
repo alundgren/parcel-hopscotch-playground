@@ -24,6 +24,7 @@ jobs:
       - run: vp run check:guidance
       - run: vp run typecheck
       - run: vp test run --project=server
+      - run: vp run test:qa:core
       - run: vp run build
 
   browser:
@@ -39,6 +40,8 @@ jobs:
           run-install: false
       - run: vp install --frozen-lockfile
       - run: vp exec playwright install --with-deps chromium
+      - name: Check exploratory QA tooling with scripted providers
+        run: vp run test:qa:e2e
       - run: vp run proof:visual
         env:
           CI: true
@@ -53,6 +56,7 @@ jobs:
           name: browser-${{ github.run_attempt }}
           path: |
             artifacts/visual
+            artifacts/qa-adapter-failures
             tests/browser/__traces__
             playwright-report
             test-results

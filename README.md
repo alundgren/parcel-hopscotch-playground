@@ -81,6 +81,18 @@ rejected operation.
 
 Run `vp run test:live` with your own `PARCEL_LIVE_TEST_API_KEY` for the [paid live acceptance suite](docs/live-acceptance.md). It builds the app, runs headless Playwright across all four Explore scenarios and every registered tool, and retains debugging evidence under gitignored `artifacts/live/`. People invoke paid runs explicitly; agents and CI use only credential-free validation.
 
+For freeform investigation, explicitly invoke `$exploratory-qa` in Codex. The
+[QA workflow](docs/exploratory-qa.md) runs a disposable local app with one synthetic
+operator persona, separate explorer/investigator/verifier roles, and retained
+lessons. Its default time limit is two hours and its app spending stop threshold
+is $0.10. Codex usage is outside that allowance. Live QA uses only the explicitly
+supplied `PARCEL_QA_API_KEY`. `vp run test:qa` checks the helpers in Node without
+a build or browser. `vp run test:qa:e2e` exercises the actual browser adapter
+against a disposable app with scripted providers. Neither test command makes
+paid inference requests.
+The [initial validation report](docs/qa-validation.md) records the live findings,
+verified corrections, spending, and remaining work.
+
 ## Local container review
 
 Build and open a local-only container with a development identity:

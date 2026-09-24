@@ -22,7 +22,11 @@
     "smoke:agent": "vp exec tsx src/server/provider-smoke.ts",
     "verify:container": "node scripts/verify-container.mjs",
     "check:guidance": "vp exec tsx scripts/check-guidance-boundaries.ts",
-    "check": "vp run check:guidance && vp run typecheck && vp test run && vp run build",
+    "check": "vp run check:guidance && vp run typecheck && vp test run && vp run test:qa:core && vp run test:qa:e2e",
+    "qa": "node scripts/qa.mjs",
+    "test:qa": "vp test run --project=server qa- && vp run test:qa:core",
+    "test:qa:core": "node --test tools/qa-loop/core.test.mjs",
+    "test:qa:e2e": "node --test qa/parcel/adapter.browser.test.mjs",
     "test:live": "node scripts/live-acceptance.mjs",
     "test:browser": "vp test run --project=browser-*",
     "benchmark:tests": "node scripts/benchmark-tests.mjs"

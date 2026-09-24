@@ -340,6 +340,42 @@ describe("reviewed fulfilment commands", () => {
     expect(Number(stock.quantity)).toBe(4);
   });
 
+  it("reads the latest order receipt through resolution, packing, and Undo without crossing users", async () => {
+    const filename = await workspace();
+    const owner = identity("progress-owner@example.test");
+    const other = identity("progress-other@example.test");
+    await useRepository(filename, (repository) => Effect.gen(function* () {
+      const initial = yield* repository.orderProgress(owner, 1, "BB-1051");
+      expect(initial).toMatchObject({ order: { version: 1, businessValue: "Blue stoneware mug, quantity 1, £24.00" }, completed: false, resolved: false, latestReceipt: null });
+      yield* repository.advanceScenario(owner, 1);
+      yield* repository.advanceScenario(owner, 1);
+      yield* repository.advanceScenario(owner, 1);
+      const proposal = yield* repository.prepareResolution(owner, 1, "BB-1051");
+      const accepted = yield* repository.accept(owner, 1, proposal.id, "progress-resolution-key");
+      const resolved = yield* repository.orderProgress(owner, 1, "BB-1051");
+      expect(resolved).toMatchObject({ order: { status: "ready", version: 2, businessValue: "Sage stoneware mug, quantity 1, £24.00" }, completed: false, resolved: true, latestReceipt: { id: accepted.receipt.id, kind: "accept", committedVersion: 2, totalChanges: 1, change: { before: "Blue stoneware mug, quantity 1, £24.00", after: "Sage stoneware mug, quantity 1, £24.00" } } });
+      expect(resolved?.latestReceipt?.change).not.toHaveProperty("expectedVersion");
+      expect((yield* repository.orderProgress(other, 1, "BB-1051"))?.latestReceipt).toBeNull();
+      const batch = yield* repository.prepareBatch(owner, 1);
+      expect(batch.changes.some((change) => change.orderId === "BB-1051")).toBe(true);
+      const packed = yield* repository.accept(owner, 1, batch.id, "progress-packing-key");
+      const completed = yield* repository.orderProgress(owner, 1, "BB-1051");
+      expect(completed).toMatchObject({ order: { version: 3, businessValue: "Sage stoneware mug, quantity 1, £24.00" }, completed: true, resolved: true, latestReceipt: { id: packed.receipt.id, kind: "accept", committedVersion: 3, totalChanges: 6, change: { orderId: "BB-1051", after: "Sage stoneware mug, quantity 1, £24.00 · Packing" } } });
+      const undoBatch = yield* repository.prepareUndo(owner, 1, packed.receipt.id);
+      expect(undoBatch.changes.map((change) => change.orderId).sort()).toEqual(batch.changes.map((change) => change.orderId).sort());
+      expect((yield* repository.snapshot(owner)).orders.some((order) => order.id === "BB-1051")).toBe(false);
+      const otherProposal = yield* repository.prepareResolution(other, 1, "BB-1051");
+      const otherReceipt = (yield* repository.accept(other, 1, otherProposal.id, "progress-other-key")).receipt;
+      const undo = yield* repository.prepareUndo(other, 1, otherReceipt.id);
+      const undone = (yield* repository.accept(other, 1, undo.id, "progress-undo-key")).receipt;
+      expect(yield* repository.orderProgress(other, 1, "BB-1051")).toMatchObject({ order: { version: 3, businessValue: "Blue stoneware mug, quantity 1, £24.00" }, completed: false, resolved: false, latestReceipt: { id: undone.id, kind: "undo", committedVersion: 3, change: { after: "Blue stoneware mug, quantity 1, £24.00" } } });
+    }));
+    const database = new DatabaseSync(filename);
+    const stock = database.prepare("SELECT quantity FROM inventory WHERE user_id = ? AND sku = 'MUG-SAGE'").get(owner.id) as { quantity: number };
+    database.close();
+    expect(Number(stock.quantity)).toBe(0);
+  });
+
   it("keeps an already reserved replacement ready when later stock is exhausted", async () => {
     const filename = await workspace();
     const user = identity("reserved-readiness@example.test");

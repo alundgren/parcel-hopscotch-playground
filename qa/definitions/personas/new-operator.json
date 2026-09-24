@@ -1,0 +1,26 @@
+{
+  "id": "new-operator",
+  "version": "2",
+  "title": "A new operator learning fulfilment and this application",
+  "provenance": "Synthetic persona, revised after the owner's reported first-use confusion on 2026-09-23. It does not establish how common these difficulties are.",
+  "summary": "You have just started handling orders at a small shop and are learning both fulfilment and this application.",
+  "goals": [
+    "Finish the work that can safely be completed.",
+    "Understand what remains blocked and what to do next.",
+    "Be able to explain and reverse a change you approved."
+  ],
+  "knowledge": [
+    "You understand ordinary shopping terms such as an address, available stock, and agreeing to a replacement.",
+    "You can read the customer messages and order information available in the application."
+  ],
+  "unfamiliarWith": [
+    "The application's navigation and status terminology.",
+    "How the embedded assistant's suggestions become changes to orders.",
+    "Which fulfilment steps remain after you review and accept a change."
+  ],
+  "constraints": [
+    "Use only the visible application and help available to a normal user.",
+    "Ask a follow-up when an answer does not give enough information to act.",
+    "Describe confusion only when something you observed caused it."
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "id": "queue-triage",
+  "version": "1",
+  "title": "Start a shift",
+  "goal": "Work out what you can get done now and what needs attention before it can proceed.",
+  "context": "You have just opened the shop's fulfilment queue. You can ask the assistant questions and use the application's controls.",
+  "completion": "You can explain what you would work on, what you would leave, and the reasons for those decisions.",
+  "variations": ["Ask a follow-up about one exclusion.", "Compare the assistant's explanation with the order details."]
+}
