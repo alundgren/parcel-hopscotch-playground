@@ -1,5 +1,7 @@
 import { vi } from "vite-plus/test";
 import type {
+  AgentUiOperation,
+  AgentViewContext,
   AuditAttemptDetail,
   AuditAttemptSummary,
   AuditPage,
@@ -21,6 +23,7 @@ export const orders: WorkspaceSnapshot["orders"] = [
     statusLabel: "Review",
     family: "address",
     version: 3,
+    resolved: false,
     businessValue: "14 Market Road, London, W1 4AB",
     targetId: "order-BB-1042",
     evidence: [
@@ -36,6 +39,7 @@ export const orders: WorkspaceSnapshot["orders"] = [
     statusLabel: "Ready",
     family: "substitution",
     version: 2,
+    resolved: false,
     businessValue: "Natural linen / walnut",
     targetId: "order-BB-1076",
     evidence: [{ label: "Customer reply", value: "The natural shade is fine if the ivory one is delayed.", occurredAt: now, age: "24 minutes ago" }],
@@ -48,6 +52,7 @@ export const orders: WorkspaceSnapshot["orders"] = [
     statusLabel: "Waiting",
     family: "carrier",
     version: 1,
+    resolved: false,
     businessValue: "Tracking scan pending",
     targetId: "order-BB-1091",
     evidence: [{ label: "Carrier", value: "Manifest received", occurredAt: now, age: "1 hour ago" }],
@@ -193,6 +198,7 @@ export const auditDetail: AuditAttemptDetail = {
 };
 
 type WorkspaceOverrides = Partial<{
+  agentOperation: AgentUiOperation | null;
   snapshot: WorkspaceSnapshot | null;
   status: "connecting" | "connected" | "reconnecting" | "offline" | "retired";
   auditPage: AuditPage | null;
@@ -214,7 +220,7 @@ export const createWorkspace = (overrides: WorkspaceOverrides = {}) => ({
     return { kind: "scenario", message: "Scenario advanced." };
   }),
   runExploreScenario: vi.fn(async () => ({ kind: "explore" as const, scenario: "consent" as const, attemptId: completedAttempt.id, turnId: completedAttempt.turnId, outcome: "completed" as const, message: "Consent classified." })),
-  sendAgentMessage: vi.fn(() => "turn-new"),
+  sendAgentMessage: vi.fn((_message: string, _context: AgentViewContext) => "turn-new"),
   cancelAgentTurn: vi.fn(),
   agentOperation: null,
   acknowledgeAgentOperation: vi.fn(),

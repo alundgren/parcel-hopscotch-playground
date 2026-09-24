@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
-import type { AgentViewContext, AuditApplicationRecord, AuditAttemptDetail, AuditAttemptMode, AuditAttemptSummary, AuditRequestSummary, AuditPage, CommandReceipt, OrderStatus, ReviewedProposal, TutorialId, TutorialState, WorkspaceSnapshot } from "../shared/contracts.js";
+import type { AgentViewContext, AuditApplicationRecord, AuditAttemptDetail, AuditAttemptMode, AuditAttemptSummary, AuditRequestSummary, AuditPage, CommandReceipt, OrderStatus, ReviewedProposal, StaleProposalDetail, TutorialId, TutorialState, WorkspaceSnapshot } from "../shared/contracts.js";
+import { StaleProposalDetail as StaleProposalDetailSchema } from "../shared/contracts.js";
 import type { ChatMessage } from "./providers/contracts.js";
 import { targets } from "../shared/targets.js";
 import { tutorialBatchOrderIds, tutorialPublicState, tutorialRequiredOrderIds, tutorialStepMatches, type TutorialProgressEvent } from "../shared/tutorials.js";
@@ -12,7 +13,7 @@ import type { ProviderAttemptFinish, ProviderAttemptRecord, ProviderAttemptRepos
 import { redactProviderAudit, redactProviderString } from "./providers/redaction.js";
 
 export class WorkspaceStoreError extends Schema.TaggedError<WorkspaceStoreError>()("WorkspaceStoreError", { message: Schema.String }) {}
-export class WorkspaceCommandError extends Schema.TaggedError<WorkspaceCommandError>()("WorkspaceCommandError", { code: Schema.String, message: Schema.String }) {}
+export class WorkspaceCommandError extends Schema.TaggedError<WorkspaceCommandError>()("WorkspaceCommandError", { code: Schema.String, message: Schema.String, detail: Schema.optionalKey(StaleProposalDetailSchema) }) {}
 
 interface PreparedPolicy extends ResolutionPolicy { readonly priorStatus: OrderStatus; readonly priorIssue: string; readonly priorCompleted: number; readonly priorResolved: number; readonly priorState: OrderBusinessState; readonly nextCompleted: number; readonly nextResolved: number }
 interface StoredProposal { readonly public: ReviewedProposal; readonly policies: ReadonlyArray<PreparedPolicy>; readonly undoReceiptId?: string }
@@ -90,6 +91,7 @@ export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly agentTurn: (identity: RequestIdentity, generation: number, turnId: string) => Effect.Effect<AgentTurnRecord | null, WorkspaceCommandError>;
   readonly agentHistories: (identity: RequestIdentity, generation: number, excludeTurnId: string, limit?: number) => Effect.Effect<ReadonlyArray<ReadonlyArray<ChatMessage>>, WorkspaceCommandError>;
   readonly resolveAgentViewContext: (identity: RequestIdentity, generation: number, context: AgentViewContext) => Effect.Effect<ResolvedAgentViewContext, WorkspaceCommandError>;
+  readonly resolveGuidanceProblem: (identity: RequestIdentity, generation: number, proposalId: string) => Effect.Effect<StaleProposalDetail, WorkspaceCommandError>;
   readonly completeAgentMeasurement: (identity: RequestIdentity, generation: number, turnId: string, durationMs: number) => Effect.Effect<void, WorkspaceCommandError>;
   readonly recordCommandMeasurement: (identity: RequestIdentity, generation: number, receiptId: string, durationMs: number) => Effect.Effect<void, WorkspaceCommandError>;
   readonly recordApplicationAudit: (identity: RequestIdentity, generation: number, input: ApplicationAuditInput) => Effect.Effect<void, WorkspaceCommandError>;
@@ -120,7 +122,7 @@ const ageLabel = (occurredAt: string, now: number): string => {
   const days = Math.floor(hours / 24);
   return `${days} ${days === 1 ? "day" : "days"} ago`;
 };
-const fail = (code: string, message: string) => new WorkspaceCommandError({ code, message });
+const fail = (code: string, message: string, detail?: StaleProposalDetail) => new WorkspaceCommandError({ code, message, ...(detail === undefined ? {} : { detail }) });
 const transact = <A>(database: DatabaseSync, run: () => A): A => {
   database.exec("BEGIN IMMEDIATE");
   try { const value = run(); database.exec("COMMIT"); return value; }
@@ -525,7 +527,7 @@ const readSnapshot = (database: DatabaseSync, identity: RequestIdentity, agentMo
       const material = facts === undefined ? null : materializeResolution(facts);
       const stock = material?.inventory === undefined ? null : inventoryFor(database, user.id, material.inventory.sku);
       const status = Number(item.resolved) === 0 && item.status === "ready" && facts !== undefined && resolutionBlockReason(facts, stock) !== null ? "review" : item.status;
-      return { id: item.order_id, item: item.item, issue: item.issue, status, statusLabel: statusLabels[status], family: item.family, version: Number(item.version), businessValue: currentState.summary, targetId: targets.orderRow(item.order_id), evidence: evidence.filter((entry) => entry.order_id === item.order_id).map((entry) => ({ label: entry.label, value: entry.value, occurredAt: entry.occurred_at, age: ageLabel(entry.occurred_at, now) })) };
+      return { id: item.order_id, item: item.item, issue: item.issue, status, statusLabel: statusLabels[status], family: item.family, version: Number(item.version), resolved: Number(item.resolved) !== 0, businessValue: currentState.summary, targetId: targets.orderRow(item.order_id), evidence: evidence.filter((entry) => entry.order_id === item.order_id).map((entry) => ({ label: entry.label, value: entry.value, occurredAt: entry.occurred_at, age: ageLabel(entry.occurred_at, now) })) };
     }),
     latestReceipt: receipt === undefined ? null : (JSON.parse(receipt.payload_json) as StoredReceipt).public,
     tutorialReceipt: tutorialReceipt === undefined ? null : (JSON.parse(tutorialReceipt.payload_json) as StoredReceipt).public,
@@ -553,6 +555,31 @@ function inventoryFor(database: DatabaseSync, userId: string, sku: string) {
   const row = database.prepare("SELECT quantity, version FROM inventory WHERE user_id = ? AND sku = ?").get(userId, sku) as { quantity: number; version: number } | undefined;
   return row === undefined ? null : { sku, quantity: Number(row.quantity), version: Number(row.version) };
 }
+const proposalConflict = (database: DatabaseSync, userId: string, stored: StoredProposal): { readonly detail: StaleProposalDetail; readonly message: string } | null => {
+  const inventoryNeeds = new Map<string, { quantity: number; expectedVersion: number; orderId: string }>();
+  for (const policy of stored.policies) {
+    const current = rowFor(database, userId, policy.change.orderId);
+    if (current === undefined || Number(current.version) !== policy.change.expectedVersion) return {
+      detail: { kind: "stale_review", proposalId: stored.public.id, orderId: policy.change.orderId, reason: "order_changed", expectedVersion: policy.change.expectedVersion, currentVersion: current?.version ?? null, resolved: current !== undefined && (current.resolved !== 0 || current.completed !== 0) },
+      message: `${policy.change.orderId} changed after review. Nothing was applied.`,
+    };
+    if (policy.inventory !== null) {
+      const need = inventoryNeeds.get(policy.inventory.sku);
+      inventoryNeeds.set(policy.inventory.sku, { quantity: (need?.quantity ?? 0) + policy.inventory.quantity, expectedVersion: policy.inventory.expectedVersion, orderId: need?.orderId ?? policy.change.orderId });
+    }
+  }
+  for (const [sku, need] of inventoryNeeds) {
+    const stock = inventoryFor(database, userId, sku);
+    if (stock === null || stock.version !== need.expectedVersion || stock.quantity < need.quantity) {
+      const order = rowFor(database, userId, need.orderId);
+      return {
+        detail: { kind: "stale_review", proposalId: stored.public.id, orderId: need.orderId, reason: "stock_changed", expectedVersion: need.expectedVersion, currentVersion: stock?.version ?? null, resolved: order !== undefined && (order.resolved !== 0 || order.completed !== 0) },
+        message: `Stock for ${sku} changed after review. Nothing was applied.`,
+      };
+    }
+  }
+  return null;
+};
 const storeProposal = (database: DatabaseSync, userId: string, stored: StoredProposal) => {
   database.prepare("INSERT INTO proposals (id, user_id, generation, status, payload_json, created_at) VALUES (?, ?, ?, 'pending', ?, ?)").run(stored.public.id, userId, stored.public.generation, JSON.stringify(stored), stored.public.createdAt);
   return stored.public;
@@ -764,19 +791,8 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
       }, publicReceipt.committedAt);
       return { receipt: publicReceipt, snapshot: readSnapshot(database, identity, agentMode), generationChanged: true };
     }
-    const inventoryNeeds = new Map<string, { quantity: number; expectedVersion: number }>();
-    for (const policy of stored.policies) {
-      const current = rowFor(database, user.id, policy.change.orderId);
-      if (current === undefined || Number(current.version) !== policy.change.expectedVersion) throw fail("stale_proposal", `${policy.change.orderId} changed after review. Nothing was applied.`);
-      if (policy.inventory !== null) {
-        const need = inventoryNeeds.get(policy.inventory.sku);
-        inventoryNeeds.set(policy.inventory.sku, { quantity: (need?.quantity ?? 0) + policy.inventory.quantity, expectedVersion: policy.inventory.expectedVersion });
-      }
-    }
-    for (const [sku, need] of inventoryNeeds) {
-      const stock = inventoryFor(database, user.id, sku);
-      if (stock === null || stock.version !== need.expectedVersion || stock.quantity < need.quantity) throw fail("stale_proposal", `Stock for ${sku} changed after review. Nothing was applied.`);
-    }
+    const conflict = proposalConflict(database, user.id, stored);
+    if (conflict !== null) throw fail("stale_proposal", conflict.message, conflict.detail);
     const applied: Array<AppliedChange> = [];
     for (const policy of stored.policies) {
       database.prepare("UPDATE orders SET status = ?, issue = ?, completed = ?, resolved = ?, state_json = ?, version = version + 1 WHERE user_id = ? AND order_id = ?").run(policy.nextStatus, policy.nextIssue, policy.nextCompleted, policy.nextResolved, JSON.stringify(policy.nextState), user.id, policy.change.orderId);
@@ -1050,6 +1066,16 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     if (row === undefined) throw fail("invalid_view_context", "The selected receipt is not available in this workspace.");
     const receipt = (JSON.parse(row.payload_json) as StoredReceipt).public;
     return { view: "work", focus: { kind: "receipt", receipt: { id: receipt.id, kind: receipt.kind, title: receipt.title, changes: receipt.changes, undoable: receipt.undoable } } };
+  });
+  const resolveGuidanceProblem: WorkspaceRepositoryService["resolveGuidanceProblem"] = (identity, generation, proposalId) => command(() => {
+    const user = ensureUser(database, identity);
+    expectGeneration(user.generation, generation);
+    const row = database.prepare("SELECT payload_json FROM proposals WHERE id = ? AND user_id = ? AND generation = ? AND status = 'pending'").get(proposalId, user.id, generation) as { payload_json: string } | undefined;
+    if (row === undefined) throw fail("invalid_guidance_context", "That review is unavailable in this workspace.");
+    const stored = JSON.parse(row.payload_json) as StoredProposal;
+    const conflict = proposalConflict(database, user.id, stored);
+    if (conflict === null) throw fail("invalid_guidance_context", "That review currently has no stale conflict.");
+    return conflict.detail;
   });
   const completeAgentMeasurement: WorkspaceRepositoryService["completeAgentMeasurement"] = (identity, generation, turnId, durationMs) => command(() => transact(database, () => {
     if (!Number.isFinite(durationMs) || durationMs < 0 || durationMs > 10 * 60_000) throw fail("invalid_duration", "The completed-turn duration is invalid.");
@@ -1390,7 +1416,7 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     }
     return rows.length;
   });
-  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, startTutorial, stopTutorial, recordTutorialAction, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, resolveAgentViewContext, completeAgentMeasurement, recordCommandMeasurement, recordApplicationAudit, auditPage, auditDetail, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
+  return WorkspaceRepository.of({ snapshot, orderIds, prepareResolution, prepareBatch, prepareUndo, prepareReset, startTutorial, stopTutorial, recordTutorialAction, accept, advanceScenario, createAgentTurn, updateAgentTurn, agentTurn, agentHistories, resolveAgentViewContext, resolveGuidanceProblem, completeAgentMeasurement, recordCommandMeasurement, recordApplicationAudit, auditPage, auditDetail, markAgentConnectionIncomplete, recoverAgentTurns, startProviderAttempt, finishProviderAttempt, providerAttempts, providerAttempt, recoverProviderAttempts });
 })));
 
 export const workspacePersistenceLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMode"] = "unavailable") => repositoryLayer(filename, agentMode);

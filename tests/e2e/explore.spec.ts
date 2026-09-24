@@ -19,29 +19,29 @@ const resetWorkspace = async (page: Page) => {
 const openExplore = async (page: Page) => {
   await page.getByRole("button", { name: "Explore", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Explore" })).toBeVisible();
-  await expect(page.locator(".tool-row")).toHaveCount(16);
+  await expect(page.locator(".tool-row")).toHaveCount(20);
 };
 
 test("filters and inspects the validated registry catalogue", async ({ page, context }, testInfo: TestInfo) => {
   await resetWorkspace(page);
   await openExplore(page);
   await expect(page.locator(".scenario-card")).toHaveCount(4);
-  await expect(page.getByText("16 tools", { exact: true })).toBeVisible();
+  await expect(page.getByText("20 tools", { exact: true })).toBeVisible();
   await pause(page);
   await page.screenshot({ path: testInfo.outputPath(`actual-explore-default-${testInfo.project.name}.png`), fullPage: true });
 
   await page.getByRole("button", { name: "Show tools for Get your bearings" }).click();
-  await expect(page.getByText("3 of 16 tools", { exact: true })).toBeVisible();
+  await expect(page.getByText("3 of 20 tools", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Read", exact: true }).click();
-  await expect(page.getByText("2 of 16 tools", { exact: true })).toBeVisible();
+  await expect(page.getByText("2 of 20 tools", { exact: true })).toBeVisible();
   await page.getByRole("searchbox", { name: "Filter tools" }).fill("omit filters");
-  await expect(page.getByText("1 of 16 tools", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 of 20 tools", { exact: true })).toBeVisible();
   await expect(page.locator(".tool-row")).toHaveCount(1);
 
   await page.getByRole("searchbox", { name: "Filter tools" }).fill("does-not-exist");
   await expect(page.getByText("No tools match these filters.")).toBeVisible();
   await page.getByRole("button", { name: "Clear filters" }).click();
-  await expect(page.locator(".tool-row")).toHaveCount(16);
+  await expect(page.locator(".tool-row")).toHaveCount(20);
 
   const resetRow = page.locator('[data-tool-id="prepareReset"]');
   await resetRow.locator("summary").focus();

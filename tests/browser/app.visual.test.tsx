@@ -5,7 +5,7 @@ import "../../src/client/styles.css";
 import { addressProposal, groupedAuditPage, auditPage, createWorkspace, proposal, receipt, snapshot } from "./fixtures";
 
 const workspaceState = vi.hoisted(() => ({ current: null as ReturnType<typeof createWorkspace> | null }));
-vi.mock("../../src/client/use-workspace", () => ({ useWorkspace: () => workspaceState.current }));
+vi.mock("../../src/client/use-workspace", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../src/client/use-workspace")>()), useWorkspace: () => workspaceState.current }));
 
 import App from "../../src/client/App";
 
