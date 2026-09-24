@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { dirname, resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite-plus";
@@ -18,6 +19,7 @@ const captureViewport: BrowserCommand<[relativePath: string]> = async (context, 
 
 export default defineConfig({
   plugins: [react()],
+  optimizeDeps: { include: ["react-markdown"] },
   build: {
     outDir: "dist/client",
     emptyOutDir: true,
@@ -35,7 +37,6 @@ export default defineConfig({
   },
   test: {
     fileParallelism: false,
-    maxWorkers: 1,
     testTimeout: 15_000,
     hookTimeout: 15_000,
     reporters: visualProof ? ["default", ["html", { outputDir: "artifacts/visual/report" }]] : ["default"],
@@ -44,12 +45,16 @@ export default defineConfig({
         test: {
           name: "server",
           environment: "node",
-          include: ["tests/unit/**/*.test.ts", "tests/integration/**/*.test.ts"],
+          fileParallelism: true,
+          maxWorkers: Math.min(4, availableParallelism()),
+          include: ["tests/unit/**/*.test.ts", "tests/unit/**/*.test.mjs", "tests/integration/**/*.test.ts", "tests/integration/**/*.test.mjs"],
         },
       },
       {
         test: {
           name: "browser",
+          fileParallelism: false,
+          maxWorkers: 1,
           include: ["tests/browser/**/*.test.tsx"],
           env: { VISUAL_PROOF: visualProof ? "true" : "false" },
           browser: {

@@ -77,7 +77,7 @@ afterEach(async () => {
 });
 
 describe("agent runtime", () => {
-  it("finishes a five-request workflow with automatic access to every tool and bounded persisted history", async () => {
+  it("finishes a five-request workflow with standard tools and bounded persisted history", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const requests: Array<MinistralRequest> = [];
     const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
@@ -96,7 +96,7 @@ describe("agent runtime", () => {
       for (const request of requests) {
         expect(request.toolChoice).toBe("auto");
         expect(request.maxOutputTokens).toBe(4096);
-        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).sort());
+        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).filter((name) => !["readGuidanceContext", "findGuides", "offerGuide", "showNote"].includes(name)).sort());
         expect(request.tools).toHaveLength(16);
         expect(jsonBytes(buildMinistralWireRequest(request))).toBeLessThanOrEqual(32 * 1024);
         expect(request.messages.length).toBeLessThanOrEqual(32);
@@ -178,7 +178,7 @@ describe("agent runtime", () => {
       const repository = yield* WorkspaceRepository;
       const coordinator = makeAgentCoordinator(config, { ministral: { complete: (request) => Effect.sync(() => {
         expect(request.toolChoice).toBe("auto");
-        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).sort());
+        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).filter((name) => !["readGuidanceContext", "findGuides", "offerGuide", "showNote"].includes(name)).sort());
         expect(request.tools).toHaveLength(16);
         return request.messages.at(-1)?.role === "tool" ? result([], "The consent result is recorded.") : result([{ id: "consent", name: "checkConsent", arguments: { orderId: "BB-1076" } }]);
       }) }, jev });
@@ -211,7 +211,7 @@ describe("agent runtime", () => {
       const repository = yield* WorkspaceRepository;
       const coordinator = makeAgentCoordinator(config, { ministral: { complete: (request) => Effect.sync(() => {
         expect(request.toolChoice).toBe("auto");
-        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).sort());
+        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).filter((name) => !["readGuidanceContext", "findGuides", "offerGuide", "showNote"].includes(name)).sort());
         expect(request.tools).toHaveLength(16);
         return request.messages.at(-1)?.role === "tool" ? result([], "The consent result is recorded.") : result([{ id: "consent", name: "checkConsent", arguments: { orderId: "BB-1076" } }]);
       }) }, jev });
@@ -248,7 +248,7 @@ describe("agent runtime", () => {
       const repository = yield* WorkspaceRepository;
       const coordinator = makeAgentCoordinator(config, { ministral: { complete: (request) => Effect.sync(() => {
         expect(request.toolChoice).toBe("auto");
-        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).sort());
+        expect(request.tools?.map((tool) => tool.name).sort()).toEqual(Object.keys(coordinator.registry).filter((name) => !["readGuidanceContext", "findGuides", "offerGuide", "showNote"].includes(name)).sort());
         expect(request.tools).toHaveLength(16);
         return request.messages.at(-1)?.role === "tool" ? result([], "The consent result is recorded.") : result([{ id: "consent", name: "checkConsent", arguments: { orderId: "BB-1076" } }]);
       }) }, jev });

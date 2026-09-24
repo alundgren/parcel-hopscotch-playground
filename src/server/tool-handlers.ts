@@ -2,6 +2,8 @@ import { Effect } from "effect";
 import { targets } from "../shared/targets.js";
 import type { OrderSummary, ReviewedProposal } from "../shared/contracts.js";
 import { ToolExecutionError, type ToolContext, type ToolHandlers } from "./tool-registry.js";
+import { discoverGuides, validateGuidanceNote, validateGuidanceOffer } from "../guidance/catalog.js";
+import type { GuidanceNoteRequest, GuidanceOfferRequest } from "../guidance/contracts.js";
 
 const orderOutput = (order: OrderSummary) => ({
   id: order.id,
@@ -16,6 +18,20 @@ const orderOutput = (order: OrderSummary) => ({
 
 const snapshot = (context: ToolContext) =>
   Effect.runPromise(context.repository.snapshot(context.identity));
+
+const guidanceContext = (context: ToolContext) => {
+  if (context.getGuidanceContext === undefined) throw new ToolExecutionError("tool_failed", "Guidance is unavailable for this turn.");
+  return context.getGuidanceContext();
+};
+
+const guidanceUiResult = async (context: ToolContext, result: Awaited<ReturnType<ToolContext["requestUi"]>>, appliedKind: "offered" | "shown") => {
+  if (result.applied) return { kind: appliedKind, message: result.message };
+  return {
+    kind: result.outcome === "stale_context" ? "stale_context" : "missing_target",
+    message: result.message,
+    currentContext: result.currentContext ?? (await guidanceContext(context)).publicContext,
+  };
+};
 
 const findOrder = async (context: ToolContext, orderId: string) => {
   const state = await snapshot(context);
@@ -46,6 +62,26 @@ const probabilityEntries = (probabilities: Readonly<Record<string, number>>) =>
     .sort((left, right) => right.probability - left.probability);
 
 export const toolHandlers: ToolHandlers = {
+  readGuidanceContext: async (context) => (await guidanceContext(context)).publicContext,
+  findGuides: async (context, input) => {
+    const args = input as { query?: string; limit?: number };
+    return discoverGuides(await guidanceContext(context), args.query, args.limit);
+  },
+  offerGuide: async (context, input) => {
+    const request = input as GuidanceOfferRequest;
+    const validation = validateGuidanceOffer(await guidanceContext(context), request);
+    if (validation.kind === "stale") return { kind: "stale_context", message: "The application context changed. Read the current context and choose again.", currentContext: validation.currentContext };
+    if (validation.kind === "invalid") return { kind: "invalid", message: validation.reason };
+    return guidanceUiResult(context, await context.requestUi({ kind: "offer_guide", contextRef: request.contextRef, offer: validation.value }), "offered");
+  },
+  showNote: async (context, input) => {
+    const request = input as GuidanceNoteRequest;
+    if (/[<>]/.test(request.text)) throw new ToolExecutionError("invalid_arguments", "Notes must be plain text.");
+    const validation = validateGuidanceNote(await guidanceContext(context), request);
+    if (validation.kind === "stale") return { kind: "stale_context", message: "The application context changed. Read the current context and choose again.", currentContext: validation.currentContext };
+    if (validation.kind === "invalid") return { kind: "invalid", message: validation.reason };
+    return guidanceUiResult(context, await context.requestUi({ kind: "show_note", contextRef: request.contextRef, note: validation.value }), "shown");
+  },
   listOrders: async (context, input) => {
     const args = input as { status?: OrderSummary["status"] | null; family?: OrderSummary["family"] | null; query?: string | null };
     const state = await snapshot(context);

@@ -5,8 +5,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
+import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { ServerMessage } from "../../src/shared/contracts";
+import { resolveIdentity } from "../../src/server/identity";
 
 let child: ChildProcess;
 let directory: string;
@@ -168,32 +170,55 @@ afterAll(async () => {
 });
 
 describe("realtime server", () => {
+  it("returns the affected order in the stale acceptance error", async () => {
+    const { socket } = await connect("stale-guidance@example.test");
+    try {
+      const prepared = nextMessage(socket, (message) => message.type === "command_result" && message.requestId === "guidance-prepare");
+      socket.send(JSON.stringify({ type: "prepare_resolution", requestId: "guidance-prepare", generation: 1, orderId: "BB-1051" }));
+      const preview = await prepared;
+      if (preview.type !== "command_result" || preview.result.kind !== "proposal") throw new Error("The review was not prepared.");
+      const advanced = nextMessage(socket, (message) => message.type === "command_result" && message.requestId === "guidance-stock-change");
+      socket.send(JSON.stringify({ type: "advance_scenario", requestId: "guidance-stock-change", generation: 1, scenario: "stock_change" }));
+      await advanced;
+      const rejected = nextMessage(socket, (message) => message.type === "error" && message.requestId === "guidance-accept");
+      socket.send(JSON.stringify({ type: "accept_proposal", requestId: "guidance-accept", generation: 1, proposalId: preview.result.proposal.id, idempotencyKey: "guidance-stale-stock-key" }));
+      await expect(rejected).resolves.toMatchObject({ type: "error", code: "stale_proposal", detail: { kind: "stale_review", proposalId: preview.result.proposal.id, orderId: "BB-1051", reason: "stock_changed", resolved: false } });
+    } finally {
+      await closeSocket(socket);
+    }
+  });
+
   it("returns authoritative personal snapshots and isolates subsequent reads", async () => {
     const first = await connect("first@example.test");
     const second = await connect("second@example.test");
-    expect(first.snapshot.type).toBe("snapshot");
-    expect(second.snapshot.type).toBe("snapshot");
-    if (first.snapshot.type !== "snapshot" || second.snapshot.type !== "snapshot") return;
-    expect(first.snapshot.state.orders).toHaveLength(24);
-    expect(second.snapshot.state.orders).toHaveLength(24);
+    try {
+      expect(first.snapshot.type).toBe("snapshot");
+      expect(second.snapshot.type).toBe("snapshot");
+      if (first.snapshot.type !== "snapshot" || second.snapshot.type !== "snapshot") return;
+      expect(first.snapshot.state.orders).toHaveLength(24);
+      expect(second.snapshot.state.orders).toHaveLength(24);
 
-    const database = new DatabaseSync(databasePath);
-    const users = database.prepare("SELECT id FROM users ORDER BY created_at").all() as Array<{ id: string }>;
-    database
-      .prepare("UPDATE orders SET issue = ? WHERE user_id = ? AND order_id = ?")
-      .run("Private first-user evidence.", users[0]!.id, "BB-1042");
-    database.close();
+      const database = new DatabaseSync(databasePath);
+      const firstIdentity = Effect.runSync(resolveIdentity(["Cf-Access-Authenticated-User-Email", "first@example.test"], {
+        environment: "test", host: "127.0.0.1", port, publicOrigin: origin, databasePath,
+        allowDevelopmentIdentity: false, developmentEmail: null, agentMode: "scripted", openRouterApiKey: null,
+      }));
+      database
+        .prepare("UPDATE orders SET issue = ? WHERE user_id = ? AND order_id = ?")
+        .run("Private first-user evidence.", firstIdentity.id, "BB-1042");
+      database.close();
 
-    const firstReply = nextMessage(first.socket, (message) => message.type === "snapshot" && message.requestId === "first-refresh");
-    first.socket.send(JSON.stringify({ type: "request_snapshot", requestId: "first-refresh" }));
-    const secondReply = nextMessage(second.socket, (message) => message.type === "snapshot" && message.requestId === "second-refresh");
-    second.socket.send(JSON.stringify({ type: "request_snapshot", requestId: "second-refresh" }));
-    const [firstSnapshot, secondSnapshot] = await Promise.all([firstReply, secondReply]);
-    if (firstSnapshot.type !== "snapshot" || secondSnapshot.type !== "snapshot") return;
-    expect(firstSnapshot.state.orders.find((order) => order.id === "BB-1042")?.issue).toBe("Private first-user evidence.");
-    expect(secondSnapshot.state.orders.find((order) => order.id === "BB-1042")?.issue).toBe("Street number needs checking.");
-    first.socket.close();
-    second.socket.close();
+      const firstReply = nextMessage(first.socket, (message) => message.type === "snapshot" && message.requestId === "first-refresh");
+      first.socket.send(JSON.stringify({ type: "request_snapshot", requestId: "first-refresh" }));
+      const secondReply = nextMessage(second.socket, (message) => message.type === "snapshot" && message.requestId === "second-refresh");
+      second.socket.send(JSON.stringify({ type: "request_snapshot", requestId: "second-refresh" }));
+      const [firstSnapshot, secondSnapshot] = await Promise.all([firstReply, secondReply]);
+      if (firstSnapshot.type !== "snapshot" || secondSnapshot.type !== "snapshot") return;
+      expect(firstSnapshot.state.orders.find((order) => order.id === "BB-1042")?.issue).toBe("Private first-user evidence.");
+      expect(secondSnapshot.state.orders.find((order) => order.id === "BB-1042")?.issue).toBe("Street number needs checking.");
+    } finally {
+      await Promise.all([closeSocket(first.socket), closeSocket(second.socket)]);
+    }
   });
 
   it("rejects missing and duplicate identities and an untrusted Origin", async () => {

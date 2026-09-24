@@ -4,7 +4,8 @@ FROM --platform=$BUILDPLATFORM ghcr.io/voidzero-dev/vite-plus:1.0.0-rc.0@sha256:
 WORKDIR /app
 COPY --chown=1000:1000 package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN --mount=type=cache,id=parcel-hopscotch-pnpm-v1,target=/pnpm/store,uid=1000,gid=1000,sharing=locked \
-  vp install --frozen-lockfile -- \
+    --mount=type=cache,id=parcel-hopscotch-pnpm-cache-v1,target=/pnpm/cache,uid=1000,gid=1000,sharing=locked \
+  PNPM_CONFIG_CACHE_DIR=/pnpm/cache vp install --frozen-lockfile -- \
     --store-dir=/pnpm/store --network-concurrency=4 --fetch-timeout=300000
 COPY --chown=1000:1000 . .
 RUN vp run build
@@ -16,7 +17,8 @@ FROM --platform=$BUILDPLATFORM ghcr.io/voidzero-dev/vite-plus:1.0.0-rc.0@sha256:
 WORKDIR /app
 COPY --chown=1000:1000 package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 RUN --mount=type=cache,id=parcel-hopscotch-pnpm-v1,target=/pnpm/store,uid=1000,gid=1000,sharing=locked \
-  vp install --prod --frozen-lockfile -- \
+    --mount=type=cache,id=parcel-hopscotch-pnpm-cache-v1,target=/pnpm/cache,uid=1000,gid=1000,sharing=locked \
+  PNPM_CONFIG_CACHE_DIR=/pnpm/cache vp install --prod --frozen-lockfile -- \
     --store-dir=/pnpm/store --network-concurrency=4 --fetch-timeout=300000
 
 FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime

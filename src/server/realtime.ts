@@ -401,7 +401,7 @@ export const runWorkspaceSocket = (
           return;
         }
         if (message.value.type === "agent_ui_ack") {
-          const accepted = agentCoordinator.acknowledgeUi(identity, message.value.generation, message.value.turnId, message.value.operationId, connectionId, message.value.outcome);
+          const accepted = agentCoordinator.acknowledgeUi(identity, message.value.generation, message.value.turnId, message.value.operationId, connectionId, message.value.outcome, message.value.context);
           if (!accepted) yield* send({ type: "error", requestId: message.value.requestId, code: "acknowledgement_expired", message: "That UI operation is no longer waiting for acknowledgement." });
           return;
         }
@@ -499,7 +499,7 @@ export const runWorkspaceSocket = (
           const result = yield* Effect.result(repository.accept(identity, acceptMessage.generation, acceptMessage.proposalId, acceptMessage.idempotencyKey, acceptMessage.requestId));
           if (result._tag === "Failure") {
             const failure = result.failure;
-            yield* send({ type: "error", requestId: acceptMessage.requestId, code: failure._tag === "WorkspaceCommandError" ? failure.code : "store_error", message: failure.message });
+            yield* send({ type: "error", requestId: acceptMessage.requestId, code: failure._tag === "WorkspaceCommandError" ? failure.code : "store_error", message: failure.message, ...(failure._tag === "WorkspaceCommandError" && failure.detail !== undefined ? { detail: failure.detail } : {}) });
             return;
           }
           const commandResult = { kind: "receipt" as const, receipt: result.success.receipt };

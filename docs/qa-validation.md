@@ -236,6 +236,45 @@ controls were readable; existing chat Markdown and scrolling concerns remain
 recorded. Screenshots demonstrate the visible state, not the accuracy of every
 assistant sentence displayed beside it.
 
+## Integration with current main
+
+On 2026-09-24, the QA branch integrated `origin/main` at `b66dbb7`, including
+the guidance framework and testing strategy. The merge preserves the restricted
+guidance turn and the ordinary assistant's QA corrections. Completed-order reads
+now supply the `resolved` field required by the shared order contract.
+
+App-specific QA rules and SQLite/wrapper tests now run in Vitest's Node project.
+The portable core keeps its dependency-free Node test command. The actual
+adapter/browser lifecycle runs separately and builds the app once. Tests close
+SQLite handles and remove their disposable directories even after an assertion
+failure. An explicit offline trace option records the adapter's own browser;
+only failed tests retain traces and app logs for CI upload. Live tracing remains
+disabled. This changes test placement, not the paid QA workflow.
+
+Validation of the merged branch:
+
+- Type checks and guidance import-boundary checks passed.
+- The server suite passed 208 tests. After adding the offline-only trace guard,
+  the focused QA command passed all 15 app-specific Node tests and nine portable
+  core tests without a build or browser.
+- Browser Mode passed 46 tests. Desktop and narrow guidance note/task-trail PNGs
+  were inspected for readable text, clipping, overlap, and reachable controls.
+- The full application E2E suite passed all 30 tests. The first invocation ended
+  with exit 143 before its final result; an isolated-process rerun exited 0. The
+  interruption's cause remains unknown, and the first run is not counted as a
+  pass.
+- The separate offline QA adapter lifecycle passed, including private trace
+  creation, accounting stops, and shutdown with an unreadable ledger.
+- A temporary test copy deliberately failed after its first browser snapshot.
+  Its expected failure retained a readable trace and app log, removed the
+  disposable run, and left the app's health endpoint unreachable. The checked-in
+  test remained unchanged by this rehearsal.
+
+No additional paid inference ran during this update. Earlier live results and
+screenshots describe their recorded revisions. Main now includes assistant
+Markdown rendering, but this update does not establish that the live model's
+accepted-work explanation has improved.
+
 ## Interpretation
 
 These are exploratory case studies, not an accuracy estimate. A synthetic persona

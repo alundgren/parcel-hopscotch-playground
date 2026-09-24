@@ -4,8 +4,13 @@ import { OrderStatus, ResolutionFamily, ReviewedProposal as ReviewedProposalSche
 import type { RequestIdentity } from "./identity.js";
 import type { WorkspaceRepositoryService } from "./persistence.js";
 import { ProviderError, type JevRequest, type JevResult } from "./providers/contracts.js";
+import { PublicGuidanceContext } from "../guidance/contracts.js";
+import type { GuidanceContext } from "../guidance/catalog.js";
 
 const Identifier = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128));
+const ContextRef = Schema.String.check(Schema.isMinLength(5), Schema.isMaxLength(128), Schema.isPattern(/^ctx_[a-z0-9_]+$/i));
+const GuideRef = Schema.String.check(Schema.isMinLength(3), Schema.isMaxLength(128), Schema.isPattern(/^g_[a-z0-9_]+$/i));
+const TargetRef = Schema.String.check(Schema.isMinLength(3), Schema.isMaxLength(128), Schema.isPattern(/^t_[a-z0-9_]+$/i));
 const ShortText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2_000));
 const EmptyInput = Schema.Record(Schema.String, Schema.Never);
 const OrderIdInput = Schema.Struct({ orderId: Identifier });
@@ -90,15 +95,18 @@ export interface ToolContext {
   readonly turnId: string;
   readonly requestId: string;
   readonly runJev: (request: JevRequest) => Promise<JevResult>;
-  readonly requestUi: (operation: AgentUiRequest) => Promise<{ readonly applied: boolean; readonly message: string }>;
+  readonly getGuidanceContext?: () => Promise<GuidanceContext>;
+  readonly requestUi: (operation: AgentUiRequest) => Promise<{ readonly applied: boolean; readonly message: string; readonly outcome?: "applied" | "missing" | "missing_target" | "stale_context"; readonly currentContext?: typeof PublicGuidanceContext.Type }>;
 }
 export type AgentUiRequest =
   | { readonly kind: "navigate"; readonly view: "work" | "explore" | "audit" | "order"; readonly orderId?: string }
   | { readonly kind: "highlight"; readonly targetId: string }
-  | { readonly kind: "present_proposal"; readonly proposalId: string };
+  | { readonly kind: "present_proposal"; readonly proposalId: string }
+  | { readonly kind: "offer_guide"; readonly contextRef: string; readonly offer: import("../guidance/contracts.js").GuidanceOffer }
+  | { readonly kind: "show_note"; readonly contextRef: string; readonly note: import("../guidance/contracts.js").GuidanceNote };
 
 export class ToolExecutionError extends Error {
-  constructor(readonly code: "unknown_tool" | "invalid_arguments" | "invalid_output" | "tool_failed", message: string) {
+  constructor(readonly code: "unknown_tool" | "forbidden_tool" | "invalid_arguments" | "invalid_output" | "tool_failed", message: string) {
     super(message);
   }
 }
@@ -114,6 +122,33 @@ interface ToolSpec {
 }
 
 const specs = {
+  readGuidanceContext: {
+    description: "Read the current bounded application context, semantic targets and guide references. References are tied to this context revision.",
+    category: "Read", purpose: "Read guidance context", allowedEffects: ["read_guidance_context"],
+    example: { arguments: {}, result: { version: 1, contextRef: "ctx_example", generation: 1, view: "work", entityId: null, facts: [], targets: [], guides: [] } },
+    input: EmptyInput, output: PublicGuidanceContext,
+  },
+  findGuides: {
+    description: "Find up to eight guides in the current application context. Use returned guide references with offerGuide.",
+    category: "Read", purpose: "Find guides", allowedEffects: ["read_guidance_context"],
+    example: { arguments: { query: "review", limit: 4 }, result: { guides: [{ guideRef: "g_example", title: "Review changed work", summary: "Inspect the current order and request a fresh review.", entityId: "BB-1042" }], hasMore: false } },
+    input: Schema.Struct({ query: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(80))), limit: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(8))) }),
+    output: Schema.Struct({ guides: Schema.Array(Schema.Struct({ guideRef: Identifier, title: Schema.String, summary: Schema.String, entityId: Schema.NullOr(Identifier) })).check(Schema.isMaxLength(8)), hasMore: Schema.Boolean }),
+  },
+  offerGuide: {
+    description: "Offer a guide for the person to accept. This only displays Show me; navigation starts after their consent.",
+    category: "Guide", purpose: "Offer a guide", allowedEffects: ["offer_guidance"],
+    example: { arguments: { contextRef: "ctx_example", guideRef: "g_example" }, result: { kind: "offered", message: "The guide is offered." } },
+    input: Schema.Struct({ contextRef: ContextRef, guideRef: GuideRef, targetRef: Schema.optionalKey(TargetRef) }),
+    output: Schema.Struct({ kind: Schema.Literals(["offered", "stale_context", "missing_target", "invalid"]), message: Schema.String, currentContext: Schema.optionalKey(PublicGuidanceContext) }),
+  },
+  showNote: {
+    description: "Place a short explanation beside a registered target in the current context. Use only an opaque target reference.",
+    category: "Guide", purpose: "Explain beside work", allowedEffects: ["show_registered_note"],
+    example: { arguments: { contextRef: "ctx_example", targetRef: "t_example", text: "This order changed since review." }, result: { kind: "shown", message: "The note is visible." } },
+    input: Schema.Struct({ contextRef: ContextRef, targetRef: TargetRef, text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(240), Schema.isPattern(/^[^<>]*$/)) }),
+    output: Schema.Struct({ kind: Schema.Literals(["shown", "stale_context", "missing_target", "invalid"]), message: Schema.String, currentContext: Schema.optionalKey(PublicGuidanceContext) }),
+  },
   listOrders: {
     description: "Read each returned order's ID, status, exception family, and recorded issue together. count is the filtered result count; queueTotals always counts the whole queue by status, even when filters are set. Omit filters to list the whole queue; use status review for individual examples needing a decision.",
     category: "Read", purpose: "Find orders", allowedEffects: ["read_workspace"],

@@ -152,7 +152,16 @@ expectation, and memory files. The portable core imports only Node modules.
 `scripts/qa.mjs` is this repo's integration example. No application production
 module imports the QA package.
 
-Run `vp run test:qa` for credential-free helper, information-separation, memory,
-accounting, cleanup, and actual-browser checks. `vp run check` includes them.
+Run `vp run test:qa` for the fast credential-free record, packet, memory,
+accounting, and wrapper checks. App-specific pure and SQLite tests run in the
+Vitest Node unit and integration projects. The reusable `tools/qa-loop/core.test.mjs`
+uses Node's built-in runner so the portable module can be copied without Vitest.
+Run `vp run test:qa:e2e` for the single offline adapter lifecycle check. It
+builds the app, starts a disposable server and browser, checks the paid-turn
+gate with scripted inference, and stops the adapter. It records a trace from
+that adapter browser. Passing runs remove the trace with the disposable state;
+failures retain the trace and app log in ignored `artifacts/qa-adapter-failures/`.
+`vp run check` includes both checks. CI runs all app-specific Node tests and
+the portable core in its fast job, and the lifecycle check in its browser job.
 The fixed paid suite in `docs/live-acceptance.md` remains a separate, human-invoked
 tool. Automatic or scheduled live QA is outside this implementation.

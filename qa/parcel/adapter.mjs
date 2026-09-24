@@ -149,8 +149,9 @@ async function appendEvent(directory, event, secret) {
   try { await file.writeFile(cleanText(JSON.stringify(event), secret) + '\n'); } finally { await file.close(); }
 }
 
-async function daemon(directory, mode, budgetUsd, durationMinutes) {
+async function daemon(directory, mode, budgetUsd, durationMinutes, recordTrace = false) {
   process.umask(0o077);
+  if (recordTrace && mode !== 'offline') throw new Error('Adapter trace recording is available only in offline mode.');
   const secret = mode === 'live' ? process.env.PARCEL_QA_API_KEY?.trim() : undefined;
   if (mode === 'live' && !secret) throw new Error('PARCEL_QA_API_KEY is required for live mode.');
   const socket = socketPath(directory);
@@ -158,6 +159,8 @@ async function daemon(directory, mode, budgetUsd, durationMinutes) {
   const session = { mode, budgetUsd, startedAt: startedAt.toISOString(), deadlineAt: new Date(startedAt.getTime() + durationMinutes * 60_000).toISOString(), url: null, socket, state: 'starting', stopReason: null };
   let app;
   let browser;
+  let browserContext;
+  let traceRecording = false;
   let listener;
   let page;
   let pendingTurn = null;
@@ -167,6 +170,16 @@ async function daemon(directory, mode, budgetUsd, durationMinutes) {
   const finish = async (reason, connection = null) => {
     if (stopping) return;
     stopping = true;
+    if (traceRecording) {
+      try {
+        const tracePath = join(directory, 'adapter-trace.zip');
+        await browserContext.tracing.stop({ path: tracePath });
+        await chmod(tracePath, 0o600);
+      } catch (error) {
+        await writeFile(join(directory, 'adapter-trace-error.txt'), String(error), { mode: 0o600 }).catch(() => {});
+      }
+      traceRecording = false;
+    }
     await browser?.close().catch(() => {});
     if (app && app.exitCode === null) {
       app.kill('SIGTERM');
@@ -221,6 +234,11 @@ async function daemon(directory, mode, budgetUsd, durationMinutes) {
     await waitForHealth(session.url, app);
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce', locale: 'en-GB', timezoneId: 'UTC' });
+    browserContext = context;
+    if (recordTrace) {
+      await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+      traceRecording = true;
+    }
     await context.route('**/*', (route) => {
       const url = new URL(route.request().url());
       if (url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port === String(port)) return route.continue();
@@ -324,14 +342,16 @@ async function main() {
   const { directory } = options();
   if (operation === 'verify') { await import('./verify.mjs'); return; }
   if (operation === 'daemon') {
-    await daemon(directory, flag('--mode'), Number(flag('--budget-usd')), Number(flag('--duration-minutes')));
+    await daemon(directory, flag('--mode'), Number(flag('--budget-usd')), Number(flag('--duration-minutes')), flag('--record-trace', 'false') === 'true');
     return;
   }
   if (operation === 'serve') {
     const mode = flag('--mode', 'offline');
+    const recordTrace = flag('--record-trace', 'false');
     const budgetUsd = Number(flag('--budget-usd', '0.10'));
     const durationMinutes = Number(flag('--duration-minutes', '120'));
     if (!['offline', 'live'].includes(mode) || !Number.isFinite(budgetUsd) || budgetUsd <= 0 || !Number.isFinite(durationMinutes) || durationMinutes <= 0 || durationMinutes > 1440) throw new Error('Invalid mode, budget, or duration.');
+    if (!['true', 'false'].includes(recordTrace) || (recordTrace === 'true' && mode !== 'offline')) throw new Error('Adapter trace recording is available only in offline mode.');
     if (mode === 'live' && !process.env.PARCEL_QA_API_KEY?.trim()) throw new Error('PARCEL_QA_API_KEY is required for live mode.');
     await mkdir(directory, { recursive: true, mode: 0o700 });
     try { await (await open(sessionPath(directory), 'wx', 0o600)).close(); }
@@ -339,7 +359,7 @@ async function main() {
       if (error?.code === 'EEXIST') throw new Error('This run directory already has a Parcel session. Use a new run directory so its deadline and accounting cannot reset.');
       throw error;
     }
-    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'daemon', '--run-dir', directory, '--mode', mode, '--budget-usd', String(budgetUsd), '--duration-minutes', String(durationMinutes)], {
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'daemon', '--run-dir', directory, '--mode', mode, '--budget-usd', String(budgetUsd), '--duration-minutes', String(durationMinutes), '--record-trace', recordTrace], {
       cwd: repo, detached: true, stdio: 'ignore',
       env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', TMPDIR: process.env.TMPDIR ?? tmpdir(), ...(mode === 'live' ? { PARCEL_QA_API_KEY: process.env.PARCEL_QA_API_KEY } : {}) },
     });

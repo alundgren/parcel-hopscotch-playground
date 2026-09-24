@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -14,8 +14,9 @@ const base = {
   scenarios: [{ id: 'queue', version: '1', digest: 'queue-digest' }, { id: 'address', version: '2', digest: 'address-digest' }],
   now: start,
 };
-async function fixture() {
+async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'qa-loop-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
   const created = await createRun({ ...base, rootDir: path.join(root, 'runs') });
   return { root, ...created };
 }
@@ -30,8 +31,8 @@ const finding = () => ({
   verification: { original: notRun(), adjacent: notRun() }, observationIds: ['obs-1'],
 });
 
-test('one run persists multiple scenarios and resumes an unfinished paid turn', async () => {
-  const { runDir } = await fixture();
+test('one run persists multiple scenarios and resumes an unfinished paid turn', async (t) => {
+  const { runDir } = await fixture(t);
   await updateRun({ runDir, event: { type: 'scenario.start', scenarioId: 'queue' }, now: start });
   await updateRun({ runDir, event: { type: 'turn.start', scenarioId: 'queue', id: 'turn-1' }, now: start });
   const resumed = await loadRun({ runDir });
@@ -48,8 +49,8 @@ test('one run persists multiple scenarios and resumes an unfinished paid turn', 
   await assert.rejects(updateRun({ runDir, event: { type: 'scenario.start', scenarioId: 'queue' } }), /closed/);
 });
 
-test('time, threshold, unknown cost, and busy state block new paid turns', async () => {
-  const { runDir, run } = await fixture();
+test('time, threshold, unknown cost, and busy state block new paid turns', async (t) => {
+  const { runDir, run } = await fixture(t);
   assert.deepEqual(runDecision(run, { now: '2026-09-23T14:00:00.000Z' }), { allowNewTurn: false, reason: 'time-limit' });
   assert.equal(runDecision(run, { usage: usage(0.1), now: start }).reason, 'spending-threshold');
   assert.equal(runDecision(run, { usage: usage(0.02, 1, 1), now: start }).reason, 'unknown-cost');
@@ -60,8 +61,8 @@ test('time, threshold, unknown cost, and busy state block new paid turns', async
   assert.equal((await loadRun({ runDir })).usage.unknownCostRequests, 1);
 });
 
-test('unavailable accounting preserves numeric readings and blocks paid turns until a newer ledger reading', async () => {
-  const { runDir } = await fixture();
+test('unavailable accounting preserves numeric readings and blocks paid turns until a newer ledger reading', async (t) => {
+  const { runDir } = await fixture(t);
   await updateRun({ runDir, event: { type: 'usage.record', usage: usage(0.03, 2) }, now: start });
   await updateRun({ runDir, event: { type: 'scenario.start', scenarioId: 'queue' }, now: start });
   await updateRun({ runDir, event: { type: 'turn.start', scenarioId: 'queue', id: 'unreadable-turn' }, now: start });
@@ -80,8 +81,8 @@ test('unavailable accounting preserves numeric readings and blocks paid turns un
   assert.equal(runDecision(await loadRun({ runDir }), { now: start }).allowNewTurn, true);
 });
 
-test('closing with unavailable final accounting records the missing total and clears only the closed reservation', async () => {
-  const { runDir } = await fixture();
+test('closing with unavailable final accounting records the missing total and clears only the closed reservation', async (t) => {
+  const { runDir } = await fixture(t);
   await updateRun({ runDir, event: { type: 'scenario.start', scenarioId: 'queue' }, now: start });
   await updateRun({ runDir, event: { type: 'turn.start', scenarioId: 'queue', id: 'unfinished' }, now: start });
   await updateRun({ runDir, event: { type: 'accounting.unavailable' }, now: start });
@@ -96,8 +97,8 @@ test('closing with unavailable final accounting records the missing total and cl
   assert.equal(validateRun(legacy).status, 'closed');
 });
 
-test('invalid records and transitions never replace the last valid file', async () => {
-  const { runDir, run } = await fixture();
+test('invalid records and transitions never replace the last valid file', async (t) => {
+  const { runDir, run } = await fixture(t);
   await assert.rejects(updateRun({ runDir, event: { type: 'finding.add', finding: finding() }, now: start }), /unknown observation/);
   await updateRun({ runDir, event: { type: 'observation.add', observation: observation() }, now: start });
   await updateRun({ runDir, event: { type: 'finding.add', finding: finding() }, now: start });
@@ -111,8 +112,8 @@ test('invalid records and transitions never replace the last valid file', async 
   assert.throws(() => validateRun({ ...run, fakeField: true }), /not allowed/);
 });
 
-test('explorer receives only persona, mission, and browser procedure', async () => {
-  const { run } = await fixture();
+test('explorer receives only persona, mission, and browser procedure', async (t) => {
+  const { run } = await fixture(t);
   run.consumedLessons = [{ id: 'lesson-1', sourceRevision: 'old', summary: 'A prior finding' }];
   const explorer = packetFor(run, 'explorer', { persona: 'New operator', mission: 'Triage queue', browserProcedure: 'Use the browser controls' });
   assert.deepEqual(Object.keys(explorer), ['version', 'role', 'persona', 'mission', 'browserProcedure']);
@@ -121,8 +122,8 @@ test('explorer receives only persona, mission, and browser procedure', async () 
   assert.equal(packetFor(run, 'verifier', { expected: 'Queue count updates' }).run.consumedLessons[0].id, 'lesson-1');
 });
 
-test('selected synthetic learning needs a real observation, review, and resolved defect for regression', async () => {
-  const { root, runDir } = await fixture();
+test('selected synthetic learning needs a real observation, review, and resolved defect for regression', async (t) => {
+  const { root, runDir } = await fixture(t);
   const memoryFile = path.join(root, 'memory.json');
   await updateRun({ runDir, event: { type: 'observation.add', observation: observation() }, now: start });
   await updateRun({ runDir, event: { type: 'finding.add', finding: finding() }, now: start });
@@ -144,8 +145,8 @@ test('selected synthetic learning needs a real observation, review, and resolved
   assert.equal((await loadMemory(memoryFile)).regressions[0].id, regression.id);
 });
 
-test('promotion rejects secrets, transcript content, extra fields, and unsafe paths', async () => {
-  const { root, runDir } = await fixture();
+test('promotion rejects secrets, transcript content, extra fields, and unsafe paths', async (t) => {
+  const { root, runDir } = await fixture(t);
   await updateRun({ runDir, event: { type: 'observation.add', observation: observation() }, now: start });
   const lesson = { id: 'safe-id', personaId: 'new-operator', scenarioId: 'queue', sourceRevision: 'abc123', summary: 'Check the count after acceptance.', sourceObservationId: 'obs-1', sourceFindingId: null, reviewedBy: 'reviewer', reviewedAt: start, synthetic: true };
   for (const summary of ['Bearer abc123secret', 'api_key: secretvalue', 'User: my order is late', '../private/file', 'Write to /etc/passwd']) {
@@ -158,8 +159,8 @@ test('promotion rejects secrets, transcript content, extra fields, and unsafe pa
   await assert.rejects(loadMemory(path.join(root, 'missing', 'memory.json')));
 });
 
-test('run files remain private and malformed disk records fail closed', async () => {
-  const { runDir } = await fixture();
+test('run files remain private and malformed disk records fail closed', async (t) => {
+  const { runDir } = await fixture(t);
   const file = path.join(runDir, 'run.json');
   const stat = await import('node:fs/promises').then(({ lstat }) => lstat(file));
   assert.equal(stat.mode & 0o777, 0o600);

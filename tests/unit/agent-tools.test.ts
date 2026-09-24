@@ -5,6 +5,10 @@ import { exploreScenarios } from "../../src/shared/explore";
 import { isRegisteredTarget, targets } from "../../src/shared/targets";
 import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, toolCatalogueMetadata, validateToolCatalogueExamples } from "../../src/server/tool-registry";
 import { toolHandlers } from "../../src/server/tool-handlers";
+import { safeToolResult } from "../../src/server/agent-runtime";
+import { GuidanceContextByteLimit, PublicGuidanceContext, guidanceUtf8Bytes } from "../../src/guidance/contracts";
+import type { GuidanceContext } from "../../src/guidance/catalog";
+import type { ToolContext } from "../../src/server/tool-registry";
 
 describe("agent tool registry", () => {
   const registry = makeToolRegistry(toolHandlers);
@@ -12,7 +16,8 @@ describe("agent tool registry", () => {
   it("derives model tools and catalogue metadata from one strict registry", () => {
     const tools = modelToolsFromRegistry(registry);
     expect(tools.map((tool) => tool.name)).toEqual(toolCatalogueMetadata.map((tool) => tool.id));
-    expect(tools).toHaveLength(16);
+    expect(tools).toHaveLength(20);
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["readGuidanceContext", "findGuides", "offerGuide", "showNote"]));
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["startTutorial", "stopTutorial"]));
     expect(tools.map((tool) => tool.name)).toContain("prepareReset");
     expect(tools.map((tool) => String(tool.name))).not.toContain("acceptProposal");
@@ -50,8 +55,37 @@ describe("agent tool registry", () => {
     expect(tools.prepareUndo?.description).toContain("every change in one");
     expect(tools.startTutorial?.validateArguments({ tutorialId: "address-correction" })).toBe(true);
     expect(tools.startTutorial?.validateArguments({ tutorialId: "invented-lesson", orderId: "BB-1042" })).toBe(false);
+    expect(tools.offerGuide?.validateArguments({ contextRef: "ctx_1", guideRef: "g_1" })).toBe(true);
+    expect(tools.offerGuide?.validateArguments({ contextRef: "ctx_1", guideRef: "g_1", route: "/orders/BB-1042" })).toBe(false);
+    expect(tools.findGuides?.validateArguments({ query: "review", limit: 9 })).toBe(false);
+    expect(tools.showNote?.validateArguments({ contextRef: "ctx_1", targetRef: "t_1", text: "Check this order." })).toBe(true);
+    expect(tools.showNote?.validateArguments({ contextRef: "ctx_1", targetRef: "#order", text: "<b>Act</b>", selector: "#order" })).toBe(false);
+    expect(tools.showNote?.validateArguments({ contextRef: "ctx_1", targetRef: "#order", text: "Check this order." })).toBe(false);
+    expect(tools.showNote?.validateArguments({ contextRef: "ctx_1", targetRef: "t_1", text: "<b>Act</b>" })).toBe(false);
     expect(findRegisteredTool(registry, "constructor")).toBeNull();
     expect(findRegisteredTool(registry, "accept_proposal")).toBeNull();
+  });
+
+  it("keeps near-limit guidance context and stale results parseable in the existing tool budget", async () => {
+    const targets: Array<{ targetRef: string; label: string; destination: "work"; entityId: null; mounted: boolean; availability: { available: boolean; reason: null } }> = [];
+    const base = { version: 1 as const, contextRef: "ctx_current", generation: 1, view: "work" as const, entityId: null, facts: [] as string[], targets, guides: [] as Array<{ guideRef: string; title: string; summary: string; entityId: null }> };
+    for (let index = 0; index < 24; index += 1) {
+      const candidate = { targetRef: `t_ref_${index}`, label: "Current registered control ".padEnd(210, "x"), destination: "work" as const, entityId: null, mounted: true, availability: { available: true, reason: null } };
+      targets.push(candidate);
+      if (guidanceUtf8Bytes(base) > GuidanceContextByteLimit) { targets.pop(); break; }
+    }
+    expect(guidanceUtf8Bytes(base)).toBeGreaterThan(GuidanceContextByteLimit - 300);
+    const publicContext = Schema.decodeUnknownSync(PublicGuidanceContext)(base);
+    const guidance = { publicContext, guideEntries: [], targetEntries: [] } satisfies GuidanceContext;
+    const toolContext = { getGuidanceContext: async () => guidance } as unknown as ToolContext;
+    const read = await registry.readGuidanceContext.execute(toolContext, {});
+    const wrappedRead = JSON.parse(safeToolResult("readGuidanceContext", read)) as { truncated?: boolean; result?: { contextRef?: string } };
+    expect(wrappedRead).toMatchObject({ result: { contextRef: "ctx_current" } });
+    expect(wrappedRead.truncated).toBeUndefined();
+    const stale = await registry.offerGuide.execute(toolContext, { contextRef: "ctx_old", guideRef: "g_old" });
+    const wrappedStale = JSON.parse(safeToolResult("offerGuide", stale)) as { truncated?: boolean; result?: { kind?: string; currentContext?: { contextRef?: string } } };
+    expect(wrappedStale).toMatchObject({ result: { kind: "stale_context", currentContext: { contextRef: "ctx_current" } } });
+    expect(wrappedStale.truncated).toBeUndefined();
   });
 
   it("rejects excess realtime fields before dispatch", () => {
@@ -63,6 +97,14 @@ describe("agent tool registry", () => {
       message: "Show my work",
       context: { view: "work", focus: null },
       userId: "another-user",
+    })).toThrow();
+    expect(() => Schema.decodeUnknownSync(ClientMessage, { onExcessProperty: "error" })({
+      type: "send_agent_turn", requestId: "req-guidance", generation: 1, turnId: "turn_12345678-guidance", message: "Help",
+      context: { view: "work", focus: null, guidance: { problem: { kind: "stale_review", proposalId: "proposal_1", reason: "stock_changed" } } },
+    })).toThrow();
+    expect(() => Schema.decodeUnknownSync(ClientMessage, { onExcessProperty: "error" })({
+      type: "send_agent_turn", requestId: "req-guidance", generation: 1, turnId: "turn_12345678-guidance", message: "Help",
+      context: { view: "work", focus: null, guidance: { visibleTargetIds: Array.from({ length: 25 }, (_, index) => `target_${index}`) } },
     })).toThrow();
     expect(() => Schema.decodeUnknownSync(ClientMessage, { onExcessProperty: "error" })({
       type: "send_agent_turn",

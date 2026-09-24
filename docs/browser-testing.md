@@ -6,6 +6,9 @@ starting the application server or compiling a production bundle. Playwright
 still tests workflows that depend on WebSockets, SQLite, reloads, or multiple
 browser sessions. Both use the pinned Playwright browser installation.
 
+Read [the testing strategy](testing-strategy.md) before adding coverage. For
+reusable setup advice, see [fast browser and database tests](test-suite-performance.md).
+
 ## Commands
 
 ```bash
@@ -15,11 +18,12 @@ vp run test:integration
 vp run test:browser
 vp run test:e2e
 vp run proof:visual
+vp run proof:e2e
 ```
 
 The unit and integration suites use Node. Browser Mode mounts the application
 with typed, controlled workspace data. The E2E suite starts the built application
-with disposable SQLite data, a local test identity, and scripted providers.
+with disposable SQLite data, a separate test identity, and scripted providers.
 Ordinary checks do not make paid inference requests.
 
 ## Inspect rendered pixels
@@ -78,8 +82,32 @@ default trace directory so browser instances have separate temporary trace files
 `vp exec playwright show-trace <trace.zip>` to inspect one. Successful E2E runs
 avoid continuous recording. For a focused video rerun, use `RECORD_VIDEO=true vp run test:e2e`.
 `vp run proof:video` records the existing paced batch and stale-review flows.
+Successful E2E screenshots are captured only by `vp run proof:e2e`. That
+command waits for fonts, images, and rendering before each checkpoint and
+retains the images in Playwright's test output. Normal E2E runs keep only
+failure screenshots and traces.
 
 ## Coverage boundaries
+
+Guidance uses independent checks at three levels. `vp run check:guidance`
+rejects resolved imports across module boundaries. Guidance unit tests include
+deliberately invalid imports, references, continuation versions, and completion
+events. `tests/browser/guidance.visual.test.tsx` mounts the actual application
+and verifies target bindings, notes, and the task trail at desktop and narrow
+widths. Its named checkpoints are included in `proof:visual`.
+
+`tests/e2e/guidance.spec.ts` creates stale reviews through a second browser tab,
+checks the Show me consent step, then follows the human recovery and return
+path through WebSockets and SQLite. It also checks local session continuation
+and the independent Audit guide. Run the focused flow with:
+
+```bash
+node scripts/run-e2e.mjs tests/e2e/guidance.spec.ts --project=desktop
+```
+
+When a target declaration changes, update the actual component and its
+independent expected target assertion together. A test that only renders the
+declaration's own fixture cannot establish that the real app registers it.
 
 Browser Mode tests use the actual app components and styles, with controlled
 workspace state. They test UI behavior, not server authorization or persistence.

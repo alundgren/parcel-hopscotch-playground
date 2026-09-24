@@ -57,6 +57,37 @@ them into one session with an app spending threshold and wall-clock deadline.
 Production application modules do not depend on these tools. See
 [exploratory QA](exploratory-qa.md) for invocation, trust boundaries, and evidence.
 
+## Guided help
+
+The helper reads a bounded semantic description of the current view. The
+application supplies registered targets, evaluated action availability, and
+relevant failure facts. Neither model prompts nor guide placement need an HTML
+dump or screenshot. React refs provide target geometry inside the browser.
+
+`src/guidance` owns versioned contracts and pure session transitions. Work and
+Audit own their public guide definitions in `src/modules`. The composition file
+passes those definitions to the application. The client renderer receives
+targets and navigation callbacks; it has no business command dispatcher.
+
+An offer becomes a guide after the person chooses Show me. Notes point to the
+current task, and the Task trail retains the origin while the person moves.
+Progress requires an application result or mounted target with the expected
+session, entity, operation, context, and generation. Browser-local continuation
+data resumes paused after a reload. Reset invalidates it. Guidance never grants
+permission to prepare or accept changes.
+
+The model tool registry validates guidance requests and restricts guidance
+turns to read and guidance capabilities. The server derives stale-review facts
+from the rejected transaction. Existing order and stock version checks remain
+the authority for acceptance. Returning from a stale review brings the person
+to a place where they can request a fresh review.
+
+CI checks resolved TypeScript imports to keep the runtime independent of
+business modules and to keep module internals private. Component contract tests
+check the targets that actually mount. Transition and transport tests cover
+correlation, stale references, and unsupported continuation versions. See
+[guidance](guidance.md) for the experiment and extension rules.
+
 ## Review and reset ordering
 
 ```mermaid

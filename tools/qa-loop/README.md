@@ -56,4 +56,15 @@ node tools/qa-loop/cli.mjs close --run-dir /absolute/run/dir --reason 'session c
 
 The host adapter is a separate process. It exposes `serve --run-dir PATH --mode offline|live --budget-usd NUMBER --duration-minutes NUMBER`, `command --run-dir PATH --request JSON`, `status --run-dir PATH`, `verify --run-dir PATH`, and `stop --run-dir PATH`. Browser commands use an `action` such as `snapshot`, `click`, `fill`, `press`, `chat`, `screenshot`, or `reload`. `status` reports `usage`, `busy`, deadline, and stop reason. With an unreadable ledger, the adapter reports `accountingAvailable: false` and null usage fields. The coordinator records `accounting.unavailable` instead of passing those nulls to `usage.record` or `turn.finish`. `status` and `resume` can still inspect the run and its last known numeric reading. A later valid ledger reading can finish the reserved turn; `stop` closes with missing final accounting after adapter shutdown. The adapter must serialize its own live requests too; the core reservation does not enforce remote concurrency across unrelated processes.
 
-Run the core tests with `node --test tools/qa-loop/core.test.mjs`.
+Run the portable core tests with `node --test tools/qa-loop/core.test.mjs`.
+This is the narrow exception to the host repository's Vitest Node convention:
+`core.mjs` and its tests use only Node built-ins so another repository can copy
+the directory without taking a test-runner dependency. Parcel-specific pure,
+SQLite, and wrapper checks run under the Vitest Node unit and integration
+projects through `vp run test:qa`. The real server/browser adapter lifecycle
+runs separately with `vp run test:qa:e2e`; it uses scripted inference and no
+paid key. The check enables `--record-trace true` for the offline adapter's
+`serve` command. The adapter saves its own Playwright context trace in the
+private run directory before shutdown. The test copies that trace and app log
+to ignored `artifacts/qa-adapter-failures/` only on failure. Live sessions
+cannot enable this trace option.

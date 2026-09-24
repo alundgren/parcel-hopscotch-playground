@@ -1,22 +1,27 @@
-import test from 'node:test';
+import { afterEach, test } from 'vite-plus/test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { cumulativeUsage, generatePacket, initialize, main, repositoryRoot } from '../../scripts/qa.mjs';
+import { generatePacket, initialize, main, repositoryRoot } from '../../scripts/qa.mjs';
 import { loadRun, promoteMemory, updateRun } from '../../tools/qa-loop/core.mjs';
 
-async function fixture(t) {
+const temporaryPaths = [];
+const databases = [];
+afterEach(async () => {
+  try { for (const database of databases.splice(0)) database.close(); }
+  finally { await Promise.all(temporaryPaths.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); }
+});
+
+async function fixture() {
   const tempParent = path.join(repositoryRoot, '.tmp');
   await mkdir(tempParent, { recursive: true });
   const directory = await mkdtemp(path.join(tempParent, 'qa-wrapper-'));
+  temporaryPaths.push(directory);
   const runRoot = await mkdtemp(path.join(os.tmpdir(), 'qa-wrapper-runs-'));
-  t.after(async () => {
-    await rm(directory, { recursive: true, force: true });
-    await rm(runRoot, { recursive: true, force: true });
-  });
+  temporaryPaths.push(runRoot);
   const config = JSON.parse(await readFile(path.join(repositoryRoot, 'qa/config.json'), 'utf8'));
   config.memoryFile = path.relative(repositoryRoot, path.join(directory, 'memory.json'));
   config.expectations = path.relative(repositoryRoot, path.join(directory, 'expected.json'));
@@ -29,8 +34,8 @@ async function fixture(t) {
   };
 }
 
-test('wrapper keeps fresh explorer knowledge separate while a second run cites inspected learning', async (t) => {
-  const data = await fixture(t);
+test('wrapper gives a fresh explorer the selected mission without verifier expectations', async () => {
+  const data = await fixture();
   const first = await initialize(data.options);
   assert.deepEqual(first.run.scenarios.map((scenario) => scenario.id), [
     'queue-triage', 'address-correction', 'replacement-consent', 'recovery', 'accepted-resolution-packing',
@@ -42,6 +47,11 @@ test('wrapper keeps fresh explorer knowledge separate while a second run cites i
   assert.equal(explorer.run, undefined);
   assert.equal(explorer.expected, undefined);
   assert.equal(JSON.stringify(explorer).includes('verifier-only-value-8763'), false);
+});
+
+test('second run cites inspected learning only in coordinator and verifier packets', async () => {
+  const data = await fixture();
+  const first = await initialize(data.options);
   await updateRun({ runDir: first.runDir, event: {
     type: 'observation.add', observation: {
       id: 'observed-example', scenarioId: 'queue-triage', at: new Date().toISOString(),
@@ -66,10 +76,15 @@ test('wrapper keeps fresh explorer knowledge separate while a second run cites i
   assert.equal((await loadRun({ runDir: second.runDir })).currentScenarioId, 'queue-triage');
 });
 
-test('wrapper rejects altered mission definitions and unknown mission requests', async (t) => {
-  const data = await fixture(t);
+test('wrapper rejects an unknown mission request', async () => {
+  const data = await fixture();
   const created = await initialize(data.options);
   await assert.rejects(generatePacket(created.runDir, 'explorer', 'invented-mission'), /configured mission/);
+});
+
+test('wrapper rejects a changed recorded persona definition', async () => {
+  const data = await fixture();
+  const created = await initialize(data.options);
   const file = path.join(created.runDir, 'context.json');
   const context = JSON.parse(await readFile(file, 'utf8'));
   context.persona.summary = 'Changed after initialization';
@@ -77,29 +92,26 @@ test('wrapper rejects altered mission definitions and unknown mission requests',
   await assert.rejects(generatePacket(created.runDir, 'explorer', 'queue-triage'), /recorded versions/);
 });
 
-test('wrapper requires an explicit provider mode and keeps raw runs outside the repo', async (t) => {
-  const data = await fixture(t);
+test('wrapper requires an explicit provider mode', async () => {
+  const data = await fixture();
   await assert.rejects(initialize({ ...data.options, mode: undefined }), /explicitly/);
+});
+
+test('wrapper keeps raw runs outside the repository', async () => {
+  const data = await fixture();
   await assert.rejects(initialize({ ...data.options, root: path.join(repositoryRoot, '.tmp', 'raw-qa') }), /outside the repository/);
 });
 
-test('promotion JSON cannot replace the selected run or memory destination', async (t) => {
-  const data = await fixture(t);
+test('promotion JSON cannot replace the selected run or memory destination', async () => {
+  const data = await fixture();
   const created = await initialize(data.options);
   const input = path.join(data.directory, 'selection.json');
   await writeFile(input, JSON.stringify({ runDir: '/tmp/another-run', memoryFile: '/tmp/other-memory', lessons: [] }));
   await assert.rejects(main(['promote', '--run', created.runDir, '--input', input]), /only selected lessons and regressions/);
 });
 
-test('accounting integration keeps cumulative cost and tokens separate from adapter activity fields', () => {
-  const usage = { knownCostUsd: 0.01, unknownCostRequests: 1, inputTokens: 90, outputTokens: 12, requestCount: 2 };
-  assert.deepEqual(cumulativeUsage({ usage: { ...usage, runningRequests: 0, activeTurns: 0, accountingMode: 'live provider audit' } }), usage);
-  assert.throws(() => cumulativeUsage({}), /cumulative app usage/);
-  assert.throws(() => cumulativeUsage({ usage: { ...usage, requestCount: null } }), /numeric cumulative app usage/);
-});
-
-test('wrapper preserves last known usage through an unreadable ledger, restoration, and stopped final accounting', async (t) => {
-  const data = await fixture(t);
+test('wrapper preserves last known usage through an unreadable ledger, restoration, and stopped final accounting', async () => {
+  const data = await fixture();
   const adapterFile = path.join(data.directory, 'accounting-adapter.mjs');
   const accountingUrl = pathToFileURL(path.join(repositoryRoot, 'qa/parcel/accounting.mjs')).href;
   await writeFile(adapterFile, `import { readFileSync, writeFileSync } from 'node:fs';
@@ -122,7 +134,7 @@ console.log(JSON.stringify({ usage, busy: false, paidTurnsAllowed: !final && usa
   await writeFile(path.join(data.directory, 'config.json'), JSON.stringify(data.config));
   const created = await initialize(data.options);
   const database = new DatabaseSync(path.join(created.runDir, 'parcel-workspace.sqlite'));
-  t.after(() => database.close());
+  databases.push(database);
   database.exec("CREATE TABLE provider_attempts (mode TEXT, outcome TEXT, cost_usd REAL, input_tokens INTEGER, output_tokens INTEGER); CREATE TABLE agent_turns (status TEXT)");
   database.exec("INSERT INTO provider_attempts VALUES ('live', 'complete', 0.01, 20, 10)");
   const initial = await main(['status', '--run', created.runDir]);

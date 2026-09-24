@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { capture, test } from "./support";
+import { expect } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 
 const sendMessage = async (page: import("@playwright/test").Page, message: string, captureTurn = false) => {
@@ -34,8 +35,7 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   await expect(page.locator(".audit-view")).toHaveAttribute("data-audit-query", "");
   await expect(page.locator(".audit-count")).toHaveText(`${initialTotal + 2} requests`);
   await expect(page.locator("[data-audit-request-id]")).toHaveCount(Math.min(initialTotal + 2, 12));
-  await page.screenshot({ path: testInfo.outputPath(`actual-audit-collapsed-${testInfo.project.name}.png`), fullPage: true });
-  await page.waitForTimeout(1_200);
+  await capture(page, testInfo, `actual-audit-collapsed-${testInfo.project.name}.png`);
 
   await search.fill(`${turnId!} typesafe/jev-1.13 success`);
   await expect(page.getByText(/matching request/)).toBeVisible();
@@ -73,8 +73,7 @@ test("searches retained attempts, opens every detail tab, live-updates, and keep
   await expect(page.getByRole("tabpanel")).toContainText('"result"');
   await expect(page.getByRole("tabpanel")).toContainText(`Turn ${turnId!}`);
   await page.locator(".audit-scroll").evaluate((element) => { element.scrollLeft = 0; });
-  await page.screenshot({ path: testInfo.outputPath(`actual-audit-expanded-${testInfo.project.name}.png`), fullPage: true });
-  await page.waitForTimeout(1_200);
+  await capture(page, testInfo, `actual-audit-expanded-${testInfo.project.name}.png`);
   await page.getByRole("button", { name: `Show all attempts for turn ${turnId!}` }).click();
   await expect(search).toHaveValue(turnId!);
   await expect(page.locator(".audit-view")).toHaveAttribute("data-audit-query", turnId!);
