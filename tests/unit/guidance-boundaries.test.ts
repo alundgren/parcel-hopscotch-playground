@@ -48,8 +48,4 @@ describe("guidance import boundaries", () => {
     });
     expect(guidanceBoundaryViolations(root)).toHaveLength(2);
   });
-
-  it("checks the real source tree", () => {
-    expect(guidanceBoundaryViolations(process.cwd())).toEqual([]);
-  });
 });

@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { capture, test } from "./support";
+import { expect } from "@playwright/test";
 
 test("opens, filters, inspects evidence, and reconnects over WebSocket", async ({
   page,
@@ -38,10 +39,7 @@ test("opens, filters, inspects evidence, and reconnects over WebSocket", async (
   await expect(page.getByRole("button", { name: "All 24" })).toBeVisible();
   expect(apiRequests).toEqual([]);
 
-  await page.screenshot({
-    path: testInfo.outputPath(`actual-work-${testInfo.project.name}.png`),
-    fullPage: true,
-  });
+  await capture(page, testInfo, `actual-work-${testInfo.project.name}.png`);
 });
 
 test("retires a replaced browser session without a reconnect loop", async ({
@@ -78,7 +76,7 @@ test("reviews an address and batch, undoes the batch, and resets the demo", asyn
   await expect(page.getByRole("heading", { name: "Check address" })).toBeVisible();
   await expect(page.getByText("14 Willow Lane, Bath BA1 2AB")).toBeVisible();
   await expect(page.getByText("41 Willow Lane, Bath BA1 2AB")).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("address.png"), fullPage: true });
+  await capture(page, testInfo, "address.png");
   await page.getByRole("button", { name: "Accept 1 change" }).click();
   await expect(page.getByText("Accepted by you")).toBeVisible();
   await page.getByRole("button", { name: "Back to work" }).click();
@@ -89,10 +87,10 @@ test("reviews an address and batch, undoes the batch, and resets the demo", asyn
   await page.getByRole("button", { name: "Review ready orders" }).click();
   await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
   await expect(page.getByLabel("Orders left out")).toContainText("BB-1088");
-  await page.screenshot({ path: testInfo.outputPath("batch.png"), fullPage: true });
+  await capture(page, testInfo, "batch.png");
   await page.getByRole("button", { name: /Accept \d+ changes/ }).click();
   await expect(page.getByText("Accepted by you")).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("receipt.png"), fullPage: true });
+  await capture(page, testInfo, "receipt.png");
 
   await page.getByRole("button", { name: "Back to work" }).click();
   await expect(page.getByRole("button", { name: "View last receipt" })).toBeVisible();
@@ -101,7 +99,7 @@ test("reviews an address and batch, undoes the batch, and resets the demo", asyn
   await page.getByRole("button", { name: "View last receipt" }).click();
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.getByRole("heading", { name: /Undo \d+ orders ready to pack/ })).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("undo.png"), fullPage: true });
+  await capture(page, testInfo, "undo.png");
   await page.getByRole("button", { name: /Accept \d+ changes/ }).click();
   await expect(page.getByText("Undone by you")).toBeVisible();
   await page.getByRole("button", { name: "Back to work" }).click();
@@ -116,7 +114,7 @@ test("reviews an address and batch, undoes the batch, and resets the demo", asyn
   await expect(page.getByText("Fresh workspace ready")).toBeVisible();
   await expect(otherTab.getByTestId("connection-status")).toContainText("Connected", { timeout: 10_000 });
   await expect(otherTab.getByRole("button", { name: "All 24" })).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("reset.png"), fullPage: true });
+  await capture(page, testInfo, "reset.png");
   await otherTab.close();
   await page.getByRole("button", { name: "Back to work" }).click();
   await expect(page.getByRole("button", { name: "All 24" })).toBeVisible();
@@ -133,7 +131,7 @@ test("holds conditional consent and exhausted stock without an acceptance action
   await page.getByRole("button", { name: "Review change" }).click();
   await expect(page.getByText("The customer asked for a picture first, so the replacement is not agreed.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Held" })).toBeDisabled();
-  await page.screenshot({ path: testInfo.outputPath("conditional-held.png"), fullPage: true });
+  await capture(page, testInfo, "conditional-held.png");
   await page.getByRole("button", { name: "Cancel" }).click();
 
   const advance = page.getByRole("button", { name: "Advance stock scenario" });
@@ -147,12 +145,9 @@ test("holds conditional consent and exhausted stock without an acceptance action
   await page.getByRole("button", { name: "Review change" }).click();
   await expect(page.getByText("MUG-SAGE does not have enough stock.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Held" })).toBeDisabled();
-  await page.screenshot({ path: testInfo.outputPath("zero-stock-held.png"), fullPage: true });
+  await capture(page, testInfo, "zero-stock-held.png");
 
   await page.getByRole("button", { name: "Cancel" }).click();
-  await page.getByRole("button", { name: "Reset my demo" }).click();
-  await page.getByRole("button", { name: "Reset my demo" }).click();
-  await expect(page.getByText("Fresh workspace ready")).toBeVisible();
 });
 
 test("uses the agent to inspect evidence, prepare a batch for human acceptance, and prepare reset", async ({ page }, testInfo) => {
@@ -173,7 +168,7 @@ test("uses the agent to inspect evidence, prepare a batch for human acceptance, 
   await expect(page.getByText(/explicit 1%, unclear 1%/)).toBeVisible();
   await expect(composer).toBeEnabled();
   await page.getByText(/Evidence: "Sage might work/).scrollIntoViewIfNeeded();
-  await page.screenshot({ path: testInfo.outputPath("agent-consent.png"), fullPage: true });
+  await capture(page, testInfo, "agent-consent.png");
 
   await composer.fill("Prepare all the green orders as a batch.");
   await page.getByRole("button", { name: "Send message" }).click();
@@ -181,7 +176,7 @@ test("uses the agent to inspect evidence, prepare a batch for human acceptance, 
   await expect(page.getByText("The proposal is ready for your review. Nothing changes until you accept it.")).toBeVisible();
   await expect(page.getByText("Accepted by you")).toHaveCount(0);
   await expect(page.getByLabel("Orders left out")).toContainText("BB-1088");
-  await page.screenshot({ path: testInfo.outputPath("agent-batch-review.png"), fullPage: true });
+  await capture(page, testInfo, "agent-batch-review.png");
 
   await page.getByRole("button", { name: /Accept \d+ changes/ }).click();
   await expect(page.getByText("Accepted by you")).toBeVisible();
@@ -191,7 +186,7 @@ test("uses the agent to inspect evidence, prepare a batch for human acceptance, 
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByRole("heading", { name: "Reset my demo" })).toBeVisible();
   await expect(page.getByText("Fresh workspace ready")).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("agent-reset-review.png"), fullPage: true });
+  await capture(page, testInfo, "agent-reset-review.png");
   await page.getByRole("button", { name: "Reset my demo" }).click();
   await expect(page.getByText("Fresh workspace ready")).toBeVisible();
 });
@@ -225,7 +220,7 @@ test("uses selected work context and recovers navigation while final replies ren
   await expect(page.getByRole("button", { name: "Review saved proposal" })).toBeVisible();
   await page.getByRole("button", { name: "Review saved proposal" }).click();
   await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("agent-context-navigation.png"), fullPage: true });
+  await capture(page, testInfo, "agent-context-navigation.png");
   await page.getByRole("button", { name: /Accept \d+ changes/ }).click();
   await expect(page.getByText("Accepted by you")).toBeVisible();
 
@@ -248,8 +243,4 @@ test("uses selected work context and recovers navigation while final replies ren
   await page.getByRole("button", { name: "Work", exact: true }).click();
   await expect(page.getByText("I opened Explore. Return to Work to continue the conversation.")).toBeVisible();
   await expect(composer).toBeEnabled();
-
-  await page.getByRole("button", { name: "Reset my demo" }).click();
-  await page.getByRole("button", { name: "Reset my demo" }).click();
-  await expect(page.getByText("Fresh workspace ready")).toBeVisible();
 });

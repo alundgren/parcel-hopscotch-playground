@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { dirname, resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite-plus";
@@ -36,7 +37,6 @@ export default defineConfig({
   },
   test: {
     fileParallelism: false,
-    maxWorkers: 1,
     testTimeout: 15_000,
     hookTimeout: 15_000,
     reporters: visualProof ? ["default", ["html", { outputDir: "artifacts/visual/report" }]] : ["default"],
@@ -45,12 +45,16 @@ export default defineConfig({
         test: {
           name: "server",
           environment: "node",
+          fileParallelism: true,
+          maxWorkers: Math.min(4, availableParallelism()),
           include: ["tests/unit/**/*.test.ts", "tests/integration/**/*.test.ts"],
         },
       },
       {
         test: {
           name: "browser",
+          fileParallelism: false,
+          maxWorkers: 1,
           include: ["tests/browser/**/*.test.tsx"],
           env: { VISUAL_PROOF: visualProof ? "true" : "false" },
           browser: {

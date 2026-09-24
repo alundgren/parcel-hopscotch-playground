@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { expect, test, type Page } from "@playwright/test";
+import { test } from "./support";
+import { expect, type Page } from "@playwright/test";
 
 const openWorkspace = async (page: Page) => {
   await page.goto("/");
@@ -8,10 +8,6 @@ const openWorkspace = async (page: Page) => {
 };
 const trail = (page: Page) => page.getByRole("complementary", { name: "Task trail" });
 const notes = (page: Page) => page.getByRole("complementary", { name: "Notes on work" });
-
-test.beforeEach(async ({ context }, testInfo) => {
-  await context.setExtraHTTPHeaders({ "Cf-Access-Authenticated-User-Email": `guidance-${testInfo.project.name}-${randomUUID()}@example.test` });
-});
 
 test("explains a changed item, asks before moving, and returns for a fresh human review", async ({ page, context }) => {
   await openWorkspace(page);

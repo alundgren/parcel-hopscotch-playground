@@ -1,6 +1,7 @@
 # Parcel Hopscotch
 
 For UI work, read `ux.md` and inspect the rendered application using the headless browser workflow below. Read `docs/architecture.md` when changing module responsibilities, inference, persistence, or transport.
+For test work, follow [the testing strategy](docs/testing-strategy.md); use [the reusable performance guide](docs/test-suite-performance.md) when choosing runner setup or tuning execution.
 
 ## Delivery
 
