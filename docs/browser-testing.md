@@ -89,6 +89,26 @@ failure screenshots and traces.
 
 ## Coverage boundaries
 
+Guidance uses independent checks at three levels. `vp run check:guidance`
+rejects resolved imports across module boundaries. Guidance unit tests include
+deliberately invalid imports, references, continuation versions, and completion
+events. `tests/browser/guidance.visual.test.tsx` mounts the actual application
+and verifies target bindings, notes, and the task trail at desktop and narrow
+widths. Its named checkpoints are included in `proof:visual`.
+
+`tests/e2e/guidance.spec.ts` creates stale reviews through a second browser tab,
+checks the Show me consent step, then follows the human recovery and return
+path through WebSockets and SQLite. It also checks local session continuation
+and the independent Audit guide. Run the focused flow with:
+
+```bash
+node scripts/run-e2e.mjs tests/e2e/guidance.spec.ts --project=desktop
+```
+
+When a target declaration changes, update the actual component and its
+independent expected target assertion together. A test that only renders the
+declaration's own fixture cannot establish that the real app registers it.
+
 Browser Mode tests use the actual app components and styles, with controlled
 workspace state. They test UI behavior, not server authorization or persistence.
 Keep the server integration suites and Playwright flows for those guarantees.

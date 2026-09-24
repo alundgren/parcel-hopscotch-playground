@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Schema } from "effect";
-import { ServerMessageSchema, WorkspaceSnapshot as WorkspaceSnapshotSchema, type AgentUiOperation, type AgentViewContext, type AuditAttemptDetail, type AuditPage, type CommandResult, type ServerMessage, type ToolCatalogueEntry, type TutorialId, type WorkspaceCommand, type WorkspaceSnapshot } from "../shared/contracts";
+import { ServerMessageSchema, WorkspaceSnapshot as WorkspaceSnapshotSchema, type AgentUiOperation, type AgentViewContext, type AuditAttemptDetail, type AuditPage, type CommandResult, type ServerMessage, type StaleProposalDetail, type ToolCatalogueEntry, type TutorialId, type WorkspaceCommand, type WorkspaceSnapshot } from "../shared/contracts";
 
 export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline" | "retired";
+export class WorkspaceRequestError extends Error {
+  constructor(readonly code: string, message: string, readonly detail?: StaleProposalDetail) {
+    super(message);
+    this.name = "WorkspaceRequestError";
+  }
+}
 type WorkspaceEvent = Extract<ServerMessage, { readonly type: "event" }>;
 export type EventDecision = { readonly kind: "ignore" } | { readonly kind: "refresh"; readonly optimistic: WorkspaceSnapshot };
 
@@ -183,7 +189,7 @@ export function useWorkspace() {
         return;
       }
       if (message.type === "error") {
-        if (message.requestId !== null) { pendingRef.current.get(message.requestId)?.reject(new Error(message.message)); pendingRef.current.delete(message.requestId); }
+        if (message.requestId !== null) { pendingRef.current.get(message.requestId)?.reject(new WorkspaceRequestError(message.code, message.message, message.detail)); pendingRef.current.delete(message.requestId); }
         if (message.requestId !== null && pendingAuditPagesRef.current.delete(message.requestId)) { setAuditLoading(false); setAuditError(message.message); }
         if (message.requestId !== null && pendingAuditDetailsRef.current.delete(message.requestId)) setAuditError(message.message);
         if (message.code.startsWith("agent_") || message.code.includes("turn") || message.code.includes("acknowledgement")) setAgentError(message.message);
@@ -250,10 +256,10 @@ export function useWorkspace() {
     socket.send(JSON.stringify({ type: "cancel_agent_turn", requestId: requestId(), generation: state.generation, turnId: state.activeTurn.id }));
   }, []);
 
-  const acknowledgeAgentOperation = useCallback((operation: AgentUiOperation, outcome: "applied" | "missing") => {
+  const acknowledgeAgentOperation = useCallback((operation: AgentUiOperation, outcome: "applied" | "missing" | "missing_target" | "stale_context", context?: AgentViewContext) => {
     const socket = socketRef.current;
     if (socket === null || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({ type: "agent_ui_ack", requestId: requestId(), generation: operation.generation, turnId: operation.turnId, operationId: operation.id, outcome }));
+    socket.send(JSON.stringify({ type: "agent_ui_ack", requestId: requestId(), generation: operation.generation, turnId: operation.turnId, operationId: operation.id, outcome, ...(context === undefined ? {} : { context }) }));
     setAgentOperation((current) => current?.id === operation.id ? null : current);
   }, []);
 

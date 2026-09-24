@@ -1,7 +1,7 @@
 import { Effect, Fiber } from "effect";
 import { randomUUID } from "node:crypto";
 import { exploreScenarios } from "../shared/explore.js";
-import type { AgentUiOperation, AgentViewContext, ServerMessage } from "../shared/contracts.js";
+import type { AgentUiOperation, AgentViewContext, ServerMessage, StaleProposalDetail } from "../shared/contracts.js";
 import type { ServerConfig } from "./config.js";
 import type { RequestIdentity } from "./identity.js";
 import type { AgentTurnRecord, ResolvedAgentViewContext, WorkspaceRepositoryService } from "./persistence.js";
@@ -14,6 +14,7 @@ import { makeJevAdapter } from "./providers/jev.js";
 import { makeMinistralAdapter } from "./providers/ministral.js";
 import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, ToolExecutionError, type AgentUiRequest } from "./tool-registry.js";
 import { toolHandlers } from "./tool-handlers.js";
+import { createGuidanceContext, type GuidanceContext, type GuidanceProblem } from "../modules/guidance.js";
 
 const maximumToolRounds = 8;
 const maximumCallsPerRound = 6;
@@ -21,11 +22,13 @@ const uiTimeoutMs = 5_000;
 const finalAcknowledgementTimeoutMs = 5_000;
 const maximumToolResultBytes = 4 * 1024;
 const encoder = new TextEncoder();
+const guidanceToolNames = new Set(["readGuidanceContext", "findGuides", "offerGuide", "showNote", "listOrders", "getOrder", "groupOrders", "getAuditTrace"]);
+export const isGuidanceToolAllowed = (name: string): boolean => guidanceToolNames.has(name);
 
 type RuntimeFiber = ReturnType<typeof Effect.runFork>;
 interface PendingOperation {
   readonly connectionId: string;
-  readonly resolve: (outcome: "applied" | "missing") => void;
+  readonly resolve: (acknowledgement: { readonly outcome: "applied" | "missing" | "missing_target" | "stale_context"; readonly context?: AgentViewContext }) => void;
 }
 interface ActiveTurn {
   readonly key: string;
@@ -97,6 +100,11 @@ const metadata = (model: string, request: unknown, response: unknown): ProviderM
 });
 
 const contextPrefix = "Authenticated application context: ";
+const guidanceProblem = (detail: StaleProposalDetail): GuidanceProblem => ({
+  kind: "stale_review", proposalId: detail.proposalId, orderId: detail.orderId,
+  reason: detail.reason, resolved: detail.resolved, expectedVersion: detail.expectedVersion,
+  ...(detail.currentVersion === null ? {} : { currentVersion: detail.currentVersion }),
+});
 const selectedOrderFromMessages = (messages: ReadonlyArray<ChatMessage>): string | null => {
   const context = messages.find((message) => message.role === "system" && message.content.startsWith(contextPrefix));
   if (context?.role !== "system") return null;
@@ -113,6 +121,53 @@ const scriptedMinistral = (): MinistralAdapter => ({
     const last = request.messages.at(-1);
     const lastUser = [...request.messages].reverse().find((message) => message.role === "user");
     const text = lastUser?.role === "user" ? lastUser.content.toLowerCase() : "";
+    if (request.tools?.some((tool) => tool.name === "offerGuide")) {
+      if (last?.role !== "tool") {
+        const toolCalls = [
+          { id: `call_${randomUUID()}`, name: "readGuidanceContext", arguments: {} },
+          { id: `call_${randomUUID()}`, name: "findGuides", arguments: {} },
+        ];
+        const response = { content: "", toolCalls };
+        return { kind: "chat" as const, content: "", toolCalls, finishReason: "tool_calls" as const, metadata: metadata(MINISTRAL_MODEL, request, response), safeRequest: request, safeResponse: response };
+      }
+      const lastCalls = request.messages.findLast((message) => message.role === "assistant" && message.toolCalls !== undefined);
+      const called = lastCalls?.role === "assistant" ? lastCalls.toolCalls?.map((call) => call.name) ?? [] : [];
+      if (called.includes("readGuidanceContext")) {
+        const outputs = request.messages.filter((message) => message.role === "tool").slice(-called.length).map((message) => {
+          try { return JSON.parse(message.content) as { result?: unknown }; } catch { return {}; }
+        });
+        const current = outputs.find((value) => typeof value.result === "object" && value.result !== null && "contextRef" in value.result)?.result as { contextRef: string; facts: ReadonlyArray<string>; targets: ReadonlyArray<{ targetRef: string; entityId: string | null; mounted: boolean; availability: { available: boolean } }> } | undefined;
+        const discovery = outputs.find((value) => typeof value.result === "object" && value.result !== null && "guides" in value.result)?.result as { guides: ReadonlyArray<{ guideRef: string; entityId: string | null; summary: string }> } | undefined;
+        const guide = discovery?.guides[0];
+        if (current !== undefined && guide !== undefined) {
+          const target = current.targets.find((candidate) => candidate.entityId === guide.entityId && candidate.mounted && candidate.availability.available);
+          const toolCalls = [
+            { id: `call_${randomUUID()}`, name: "offerGuide", arguments: { contextRef: current.contextRef, guideRef: guide.guideRef } },
+            ...(target === undefined ? [] : [{ id: `call_${randomUUID()}`, name: "showNote", arguments: { contextRef: current.contextRef, targetRef: target.targetRef, text: (current.facts[0] ?? guide.summary).slice(0, 240) } }]),
+          ];
+          const response = { content: "", toolCalls };
+          return { kind: "chat" as const, content: "", toolCalls, finishReason: "tool_calls" as const, metadata: metadata(MINISTRAL_MODEL, request, response), safeRequest: request, safeResponse: response };
+        }
+      }
+      const lastResults = request.messages.filter((message) => message.role === "tool").slice(-called.length).map((message) => {
+        try { return JSON.parse(message.content) as { result?: { kind?: string; currentContext?: { contextRef: string; guides: ReadonlyArray<{ guideRef: string }> } } }; } catch { return {}; }
+      });
+      const offerKind = called.includes("offerGuide") ? lastResults[called.indexOf("offerGuide")]?.result?.kind : undefined;
+      const refreshed = called.includes("offerGuide") ? lastResults[called.indexOf("offerGuide")]?.result?.currentContext : undefined;
+      const earlierOffers = request.messages.filter((message) => message.role === "assistant" && message.toolCalls?.some((call) => call.name === "offerGuide")).length;
+      if ((offerKind === "stale_context" || offerKind === "missing_target") && refreshed?.guides[0] !== undefined && earlierOffers < 2) {
+        const toolCalls = [{ id: `call_${randomUUID()}`, name: "offerGuide", arguments: { contextRef: refreshed.contextRef, guideRef: refreshed.guides[0].guideRef } }];
+        const response = { content: "", toolCalls };
+        return { kind: "chat" as const, content: "", toolCalls, finishReason: "tool_calls" as const, metadata: metadata(MINISTRAL_MODEL, request, response), safeRequest: request, safeResponse: response };
+      }
+      const content = offerKind === "offered"
+        ? "Choose Show me if you want to follow the guide. You make any changes."
+        : offerKind === "stale_context" || offerKind === "missing_target"
+          ? "The view changed before I could place the guide. I can try again from the current view."
+          : "I could not find an available guide for this view.";
+      const response = { content, toolCalls: [] };
+      return { kind: "chat" as const, content, toolCalls: [], finishReason: "stop" as const, metadata: metadata(MINISTRAL_MODEL, request, response), safeRequest: request, safeResponse: response };
+    }
     if (text.includes("simulate the provider failure fixture")) {
       return yield* providerFailure("provider_error", "The deterministic provider failure fixture stopped this request.");
     }
@@ -220,7 +275,7 @@ const adaptersFor = (config: ServerConfig): { readonly ministral: MinistralAdapt
   return { ministral: unavailableMinistral, jev: unavailableJev };
 };
 
-const safeToolResult = (toolName: string, result: unknown) => {
+export const safeToolResult = (toolName: string, result: unknown) => {
   const encoded = JSON.stringify({ ok: true, result });
   if (encoder.encode(encoded).byteLength <= maximumToolResultBytes) return encoded;
   return JSON.stringify({
@@ -319,6 +374,8 @@ export const makeAgentCoordinator = (
   const adapters = suppliedAdapters ?? adaptersFor(config);
   const registry = makeToolRegistry(toolHandlers);
   const modelTools = modelToolsFromRegistry(registry);
+  const standardModelTools = modelTools.filter((tool) => !["readGuidanceContext", "findGuides", "offerGuide", "showNote"].includes(tool.name));
+  const guidanceModelTools = modelTools.filter((tool) => isGuidanceToolAllowed(tool.name));
   const activeByUser = new Map<string, ActiveTurn>();
   const admissionsByUser = new Map<string, Admission>();
   const completionConnections = new Map<string, PendingCompletion>();
@@ -329,8 +386,9 @@ export const makeAgentCoordinator = (
     applicationContext: ChatMessage,
     priorTurns: ReadonlyArray<ReadonlyArray<ChatMessage>>,
     currentHistory: ReadonlyArray<ChatMessage>,
+    tools: MinistralRequest["tools"] = standardModelTools,
   ): MinistralRequest => {
-    const requestFor = (messages: ReadonlyArray<ChatMessage>): MinistralRequest => ({ messages, tools: modelTools, toolChoice: "auto", maxOutputTokens: providerBounds.maximumOutputTokens });
+    const requestFor = (messages: ReadonlyArray<ChatMessage>): MinistralRequest => ({ messages, tools, toolChoice: "auto", maxOutputTokens: providerBounds.maximumOutputTokens });
     const fits = (messages: ReadonlyArray<ChatMessage>): boolean =>
       messages.length <= 32 && jsonBytes(buildMinistralWireRequest(requestFor(messages))) <= providerBounds.maximumContextBytes;
     const currentGroups = historyGroups(currentHistory);
@@ -403,31 +461,32 @@ export const makeAgentCoordinator = (
     }
   };
 
-  const requestUi = async (active: ActiveTurn, repository: WorkspaceRepositoryService, history: ReadonlyArray<ChatMessage>, operation: AgentUiRequest) => {
+  const requestUi = async (active: ActiveTurn, repository: WorkspaceRepositoryService, history: ReadonlyArray<ChatMessage>, operation: AgentUiRequest, getCurrentGuidanceContext?: (location?: AgentViewContext) => Promise<GuidanceContext>) => {
     const id = `operation_${randomUUID()}`;
     const full = { ...operation, id, turnId: active.turnId, generation: active.generation } as AgentUiOperation;
-    await update(active, repository, history, "waiting_for_ui", operation.kind === "highlight" ? "Highlighting" : operation.kind === "navigate" ? "Opening" : "Showing proposal", operation.kind === "present_proposal" ? { proposalId: operation.proposalId } : {});
+    await update(active, repository, history, "waiting_for_ui", operation.kind === "highlight" ? "Highlighting" : operation.kind === "navigate" ? "Opening" : operation.kind === "offer_guide" ? "Offering guide" : operation.kind === "show_note" ? "Showing note" : "Showing proposal", operation.kind === "present_proposal" ? { proposalId: operation.proposalId } : {});
     if (active.cancelled) throw new Error("cancelled");
     await ensureCurrentGeneration(active, repository);
     if (active.cancelled) throw new Error("cancelled");
-    const outcome = active.connected ? await new Promise<"applied" | "missing">((resolve) => {
+    const acknowledgement = active.connected ? await new Promise<{ readonly outcome: "applied" | "missing" | "missing_target" | "stale_context"; readonly context?: AgentViewContext }>((resolve) => {
       active.operations.set(id, { connectionId: active.connectionId, resolve });
       const timer = setTimeout(() => {
-        if (active.operations.delete(id)) resolve("missing");
+        if (active.operations.delete(id)) resolve({ outcome: "missing" });
       }, uiTimeoutMs);
       const stored = active.operations.get(id)!;
       active.operations.set(id, { ...stored, resolve: (value) => { clearTimeout(timer); resolve(value); } });
       void active.send({ type: "agent_ui_operation", operation: full }).catch(() => {
-        if (active.operations.delete(id)) resolve("missing");
+        if (active.operations.delete(id)) resolve({ outcome: "missing" });
       });
-    }) : "missing";
+    }) : { outcome: "missing" as const };
+    const outcome = acknowledgement.outcome;
     active.operations.delete(id);
     if (active.cancelled) throw new Error("cancelled");
     await ensureCurrentGeneration(active, repository);
-    active.uiMissing ||= outcome === "missing";
+    active.uiMissing ||= outcome !== "applied";
     await Effect.runPromise(repository.recordApplicationAudit(active.identity, active.generation, {
       kind: "ui",
-      label: operation.kind === "highlight" ? "Highlight target" : operation.kind === "navigate" ? "Open view" : "Show proposal",
+      label: operation.kind === "highlight" ? "Highlight target" : operation.kind === "navigate" ? "Open view" : operation.kind === "offer_guide" ? "Offer guide" : operation.kind === "show_note" ? "Show note" : "Show proposal",
       outcome,
       requestId: id,
       turnId: active.turnId,
@@ -435,9 +494,13 @@ export const makeAgentCoordinator = (
       body: { operation: full, acknowledgement: outcome },
     }));
     await update(active, repository, history, "running", "Working");
-    return outcome === "applied"
-      ? { applied: true, message: operation.kind === "highlight" ? "The target is highlighted." : operation.kind === "navigate" ? "The view is open." : "The proposal is visible." }
-      : { applied: false, message: "The target was not available in the initiating browser. The result is saved and can be retried." };
+    if (outcome === "applied") return { applied: true, outcome, message: operation.kind === "highlight" ? "The target is highlighted." : operation.kind === "navigate" ? "The view is open." : operation.kind === "offer_guide" ? "The guide is offered." : operation.kind === "show_note" ? "The note is visible." : "The proposal is visible." };
+    let currentContext: GuidanceContext["publicContext"] | undefined;
+    if (getCurrentGuidanceContext !== undefined) {
+      try { currentContext = (await getCurrentGuidanceContext(acknowledgement.context)).publicContext; }
+      catch { currentContext = (await getCurrentGuidanceContext()).publicContext; }
+    }
+    return { applied: false, outcome, message: outcome === "stale_context" ? "The application context changed. Read the current context and choose again." : "The target was not available in the initiating browser.", ...(currentContext === undefined ? {} : { currentContext }) };
   };
 
   const ensureCurrentGeneration = async (active: ActiveTurn, repository: WorkspaceRepositoryService) => {
@@ -471,14 +534,40 @@ export const makeAgentCoordinator = (
     completionConnections.set(active.identity.id, pending);
   };
 
-  const runTurn = async (active: ActiveTurn, repository: WorkspaceRepositoryService, hub: RealtimeHubService, initial: AgentTurnRecord, viewContext: ResolvedAgentViewContext, finalView: "chat" | "audit" = "chat") => {
+  const runTurn = async (active: ActiveTurn, repository: WorkspaceRepositoryService, hub: RealtimeHubService, initial: AgentTurnRecord, viewContext: ResolvedAgentViewContext, guidanceLocation?: AgentViewContext, finalView: "chat" | "audit" = "chat") => {
     let history = [...initial.history];
     const disclosures: Array<string> = [];
     let consentRequestId: string | null = null;
     try {
-      const priorGroups = await Effect.runPromise(repository.agentHistories(active.identity, active.generation, active.turnId, 6));
-      const system: ChatMessage = { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Use only the registered tools. Never accept or commit a proposal. Prepare exact previews for the person to review. Application policy owns stock, arithmetic, permissions, and eligibility. For queue overviews, report each status total on its own line as Ready: N, Review: N, Waiting: N. Then give one to three review orders, if any exist, each on its own line as ID: status, family. Exact recorded issue. Include only these lines, with no inferred urgency or other claims. Read individual order facts before describing issues. Independent status and family groups are not intersections; match order IDs to combine them. Omit unused filters rather than inventing filter values. Look up an order ID with getOrder before reasoning about its evidence; an order ID is not note text. getOrder only reads data; it does not open the order. To show or highlight order evidence, first navigate to the order view with its orderId, then highlight orderEvidence after navigation succeeds. Never claim a UI operation succeeded when its result says ok: false. Use classifyNote only for actual customer or operator note text, never for an ID or a request to find an order. Use checkConsent to assess an order's customer consent. For teaching requests, inspect the task and start the matching available tutorial: address-correction, substitution-review, or batch-approval. Prepare tools show the review automatically; the application acknowledges a displayed proposal, so do not request another narration step. Keep answers concise. A work item named in the latest user message overrides the selected application context. If a tool reports a missing UI target or another recoverable result, say what remains available. The application displays validated consent evidence and every returned alternative directly; do not repeat them unless the person asks." };
-      const applicationContext: ChatMessage = { role: "system", content: `${contextPrefix}${JSON.stringify(viewContext)}` };
+      const guidanceMode = guidanceLocation !== undefined;
+      let latestGuidanceLocation = guidanceLocation;
+      const getCurrentGuidanceContext = async (acknowledgedLocation?: AgentViewContext): Promise<GuidanceContext> => {
+        if (guidanceLocation === undefined) throw new Error("Guidance is unavailable for this turn.");
+        const location: AgentViewContext = acknowledgedLocation === undefined ? latestGuidanceLocation! : {
+          view: acknowledgedLocation.view,
+          focus: acknowledgedLocation.focus,
+          guidance: {
+            ...(acknowledgedLocation.guidance?.activeGuideRef === undefined ? {} : { activeGuideRef: acknowledgedLocation.guidance.activeGuideRef }),
+            ...(acknowledgedLocation.guidance?.visibleTargetIds === undefined ? {} : { visibleTargetIds: acknowledgedLocation.guidance.visibleTargetIds }),
+            ...(acknowledgedLocation.guidance?.disabledTargetIds === undefined ? {} : { disabledTargetIds: acknowledgedLocation.guidance.disabledTargetIds }),
+            ...(guidanceLocation.guidance?.problem === undefined ? {} : { problem: guidanceLocation.guidance.problem }),
+          },
+        };
+        const resolvedLocation = await Effect.runPromise(repository.resolveAgentViewContext(active.identity, active.generation, location));
+        const snapshot = await Effect.runPromise(repository.snapshot(active.identity));
+        if (snapshot.generation !== active.generation) throw new Error("This workspace was reset while the turn was running.");
+        const detail = guidanceLocation.guidance?.problem === undefined ? null : await Effect.runPromise(repository.resolveGuidanceProblem(active.identity, active.generation, guidanceLocation.guidance.problem.proposalId));
+        const presentedProposal = resolvedLocation.focus?.kind === "proposal" ? resolvedLocation.focus.proposal : null;
+        const current = createGuidanceContext({ snapshot, location, presentedProposal, problem: detail === null ? null : guidanceProblem(detail), connected: active.connected, observedTargetIds: location.guidance?.visibleTargetIds, disabledTargetIds: location.guidance?.disabledTargetIds });
+        latestGuidanceLocation = location;
+        return current;
+      };
+      const initialGuidanceContext = guidanceMode ? await getCurrentGuidanceContext() : null;
+      const priorGroups = guidanceMode ? [] : await Effect.runPromise(repository.agentHistories(active.identity, active.generation, active.turnId, 6));
+      const system: ChatMessage = guidanceMode
+        ? { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Explain the current problem briefly using verified application facts. The person performs all business changes. Read the bounded guidance context, find a relevant guide, and offer Show me using its opaque reference. An offer only shows consent; it does not navigate. Use showNote only for a registered target in the current context. If a reference is stale or a target is missing, use the returned current context and explain what is available. Never claim a note or offer appeared when its result says otherwise. Do not prepare, accept, navigate, highlight, or start tutorials in this guidance turn. Keep your final answer concise." }
+        : { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Use only the registered tools. Never accept or commit a proposal. Prepare exact previews for the person to review. Application policy owns stock, arithmetic, permissions, and eligibility. For queue overviews, report each status total on its own line as Ready: N, Review: N, Waiting: N. Then give one to three review orders, if any exist, each on its own line as ID: status, family. Exact recorded issue. Include only these lines, with no inferred urgency or other claims. Read individual order facts before describing issues. Independent status and family groups are not intersections; match order IDs to combine them. Omit unused filters rather than inventing filter values. Look up an order ID with getOrder before reasoning about its evidence; an order ID is not note text. getOrder only reads data; it does not open the order. To show or highlight order evidence, first navigate to the order view with its orderId, then highlight orderEvidence after navigation succeeds. Never claim a UI operation succeeded when its result says ok: false. Use classifyNote only for actual customer or operator note text, never for an ID or a request to find an order. Use checkConsent to assess an order's customer consent. For teaching requests, inspect the task and start the matching available tutorial: address-correction, substitution-review, or batch-approval. Prepare tools show the review automatically; the application acknowledges a displayed proposal, so do not request another narration step. Keep answers concise. A work item named in the latest user message overrides the selected application context. If a tool reports a missing UI target or another recoverable result, say what remains available. The application displays validated consent evidence and every returned alternative directly; do not repeat them unless the person asks." };
+      const applicationContext: ChatMessage = { role: "system", content: `${contextPrefix}${JSON.stringify(initialGuidanceContext?.publicContext ?? viewContext)}` };
       for (let round = 0; round < maximumToolRounds; round += 1) {
         if (active.cancelled) throw new Error("cancelled");
         await ensureCurrentGeneration(active, repository);
@@ -486,7 +575,7 @@ export const makeAgentCoordinator = (
         if (active.cancelled) throw new Error("cancelled");
         await ensureCurrentGeneration(active, repository);
         if (active.cancelled) throw new Error("cancelled");
-        const request = boundedRequest(system, applicationContext, priorGroups, history);
+        const request = boundedRequest(system, applicationContext, priorGroups, history, guidanceMode ? guidanceModelTools : standardModelTools);
         const result = await providerResult(active, runAuditedMinistral({
           repository, identity: active.identity, generation: active.generation,
           requestId: `${active.turnId}:chat:${round + 1}`, turnId: active.turnId,
@@ -527,13 +616,14 @@ export const makeAgentCoordinator = (
           let content: string;
           let output: unknown = null;
           let providerError: ProviderError | null = null;
-          if (tool === null) {
-            content = safeToolFailure(new ToolExecutionError("unknown_tool", `Unknown tool: ${call.name}`));
+          if (tool === null || (guidanceMode && !isGuidanceToolAllowed(call.name)) || (!guidanceMode && !standardModelTools.some((candidate) => candidate.name === call.name))) {
+            content = safeToolFailure(new ToolExecutionError(tool === null ? "unknown_tool" : "forbidden_tool", tool === null ? `Unknown tool: ${call.name}` : `Tool ${call.name} is unavailable in this turn.`));
           } else {
             try {
               output = await tool.execute({
                 repository, identity: active.identity, generation: active.generation,
                 turnId: active.turnId, requestId: call.id,
+                ...(guidanceMode ? { getGuidanceContext: getCurrentGuidanceContext } : {}),
                 runJev: async (jevRequest: JevRequest) => {
                   if (active.cancelled) throw new Error("cancelled");
                   await ensureCurrentGeneration(active, repository);
@@ -550,7 +640,7 @@ export const makeAgentCoordinator = (
                   return jev.value;
                 },
                 requestUi: async (operation) => {
-                  const acknowledgement = await requestUi(active, repository, history, operation);
+                  const acknowledgement = await requestUi(active, repository, history, operation, guidanceMode ? getCurrentGuidanceContext : undefined);
                   if (operation.kind === "navigate" || operation.kind === "present_proposal") {
                     displayedProposal = operation.kind === "present_proposal" && acknowledgement.applied;
                   }
@@ -623,7 +713,7 @@ export const makeAgentCoordinator = (
       }
     } finally {
       if (completionConnections.get(active.identity.id)?.active !== active) releaseActive(active);
-      for (const pending of active.operations.values()) pending.resolve("missing");
+      for (const pending of active.operations.values()) pending.resolve({ outcome: "missing" });
       active.operations.clear();
     }
   };
@@ -678,7 +768,7 @@ export const makeAgentCoordinator = (
         void (async () => {
           try {
             const viewContext = await Effect.runPromise(context.repository.resolveAgentViewContext(context.identity, context.generation, { view: "explore", focus: null }));
-            const consentRequestId = await runTurn(admitted, context.repository, context.hub, created.turn, viewContext, "audit");
+            const consentRequestId = await runTurn(admitted, context.repository, context.hub, created.turn, viewContext, undefined, "audit");
             const turn = await Effect.runPromise(context.repository.agentTurn(context.identity, context.generation, context.turnId));
             if (admitted.cancelled || turn?.status === "cancelled") throw new Error("cancelled");
             const attempts = await Effect.runPromise(context.repository.providerAttempts(context.identity, 1, consentRequestId == null ? { turnId: context.turnId } : { requestId: consentRequestId }));
@@ -758,6 +848,7 @@ export const makeAgentCoordinator = (
           return { started: false, turn: existing };
         }
         const viewContext = await Effect.runPromise(context.repository.resolveAgentViewContext(context.identity, context.generation, context.viewContext));
+        if (context.viewContext.guidance?.problem !== undefined) await Effect.runPromise(context.repository.resolveGuidanceProblem(context.identity, context.generation, context.viewContext.guidance.problem.proposalId));
         const created = await Effect.runPromise(context.repository.createAgentTurn(context.identity, context.generation, context.turnId, context.requestId, context.connectionId, context.message));
         if (!created.created) {
           await context.send({ type: "agent_state", state: await Effect.runPromise(context.repository.snapshot(context.identity)) });
@@ -774,7 +865,7 @@ export const makeAgentCoordinator = (
           releaseActive(active);
           throw error;
         }
-        void runTurn(active, context.repository, context.hub, created.turn, viewContext);
+        void runTurn(active, context.repository, context.hub, created.turn, viewContext, context.viewContext.guidance === undefined ? undefined : context.viewContext);
         return { started: true, turn: created.turn };
       } finally {
         if (admissionsByUser.get(context.identity.id) === admission) admissionsByUser.delete(context.identity.id);
@@ -794,7 +885,7 @@ export const makeAgentCoordinator = (
       }
       active.cancelled = true;
       if (active.providerFiber !== null) Effect.runFork(Fiber.interrupt(active.providerFiber));
-      for (const operation of active.operations.values()) operation.resolve("missing");
+      for (const operation of active.operations.values()) operation.resolve({ outcome: "missing" });
       return true;
     },
     cancelGeneration: async (identity: RequestIdentity, generation: number) => {
@@ -809,7 +900,7 @@ export const makeAgentCoordinator = (
       if (active === undefined || active.generation !== generation) return removedCompletion;
       active.cancelled = true;
       if (active.providerFiber !== null) Effect.runFork(Fiber.interrupt(active.providerFiber));
-      for (const operation of active.operations.values()) operation.resolve("missing");
+      for (const operation of active.operations.values()) operation.resolve({ outcome: "missing" });
       return true;
     },
     acknowledgeComplete: (identity: RequestIdentity, generation: number, turnId: string, connectionId: string) => {
@@ -820,12 +911,12 @@ export const makeAgentCoordinator = (
       releaseActive(completion.active);
       return true;
     },
-    acknowledgeUi: (identity: RequestIdentity, generation: number, turnId: string, operationId: string, connectionId: string, outcome: "applied" | "missing") => {
+    acknowledgeUi: (identity: RequestIdentity, generation: number, turnId: string, operationId: string, connectionId: string, outcome: "applied" | "missing" | "missing_target" | "stale_context", context?: AgentViewContext) => {
       const active = activeByUser.get(identity.id);
       if (active === undefined || active.generation !== generation || active.turnId !== turnId || active.connectionId !== connectionId) return false;
       const operation = active.operations.get(operationId);
       if (operation === undefined || operation.connectionId !== connectionId) return false;
-      operation.resolve(outcome);
+      operation.resolve({ outcome, ...(context === undefined ? {} : { context }) });
       return true;
     },
     disconnect: async (repository: WorkspaceRepositoryService, identity: RequestIdentity, connectionId: string) => {
@@ -840,7 +931,7 @@ export const makeAgentCoordinator = (
       if (active?.connectionId !== connectionId) return;
       active.connected = false;
       active.uiMissing = true;
-      for (const operation of active.operations.values()) operation.resolve("missing");
+      for (const operation of active.operations.values()) operation.resolve({ outcome: "missing" });
     },
   };
 };

@@ -19,6 +19,7 @@ const order = (issue: string): OrderSummary => ({
   statusLabel: "Review",
   family: "address",
   version: 1,
+  resolved: false,
   businessValue: "14 Willow Lane, Bath BA1 2AB",
   targetId: "target-order-BB-1042",
   evidence: [],

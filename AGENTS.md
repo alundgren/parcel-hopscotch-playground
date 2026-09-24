@@ -43,6 +43,34 @@ If capture or inspection fails, record the exact error and keep visual approval
 pending. If a tool rejects an operation for security reasons, report it and stop
 that operation. Do not retry through another browser, proxy, tunnel, or service.
 
+## Guided help
+
+Keep reusable guidance contracts and transitions in `src/guidance/`. They must
+not import application modules. Modules own their targets, guide text,
+availability decisions, and outcome names behind `src/modules/<name>/index.ts`.
+The application composes those exports in `src/modules/guidance.ts` and passes
+them to the client renderer. Do not add a second hand-maintained target or tool
+catalogue to documentation or prompts.
+
+Register a target on the actual rendered control through a React ref, with its
+entity and evaluated availability. The real control and guidance must use the
+same availability result. Do not infer a target from a CSS selector or model
+text. A renamed target must fail type checking or its rendered contract test.
+
+Guidance may explain, offer navigation, and annotate. Only the person starts a
+guide or uses a business command. Do not add preparation or acceptance to the
+guidance dispatcher. Record progress from correlated application results or
+rendered readiness, never from a click, a model claim, or another browser's
+update. A return to stale work requires fresh review.
+
+For changes to these contracts, run `vp run check:guidance`, the guidance unit
+and integration tests, and the affected Browser Mode and E2E tests. Keep the
+negative tests for an internal import, a missing rendered target, and a
+wrong-entity outcome. Update saved-state versions when their meaning changes;
+an incompatible continuation must stop safely. Add an independent expected
+outcome to tests instead of deriving all assertions from the declaration under
+test. See `docs/guidance.md` for the current experiment and its limits.
+
 ## Engineering
 
 Effect 4, TypeScript, React, Vite Plus, pnpm, Node, SQLite, and shadcn are agreed. Pin compatible package versions. Use Effect for server resources, cancellation, failures, and typed validation.

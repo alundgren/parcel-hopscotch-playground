@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { tutorialIds } from "./tutorials.js";
 import { exploreScenarioIds } from "./explore.js";
+import { GuidanceNoteSchema, GuidanceOfferSchema } from "../guidance/contracts.js";
 
 export const OrderStatus = Schema.Literals(["ready", "review", "waiting"]);
 export type OrderStatus = typeof OrderStatus.Type;
@@ -12,6 +13,7 @@ export type Evidence = typeof Evidence.Type;
 export const OrderSummary = Schema.Struct({
   id: Schema.String, item: Schema.String, issue: Schema.String, status: OrderStatus,
   statusLabel: Schema.String, family: ResolutionFamily, version: Schema.Int,
+  resolved: Schema.Boolean,
   businessValue: Schema.String,
   targetId: Schema.String, evidence: Schema.Array(Evidence),
 });
@@ -38,6 +40,17 @@ export const CommandReceipt = Schema.Struct({
   changes: Schema.Array(ProposalChange), committedAt: Schema.String, undoable: Schema.Boolean,
 });
 export type CommandReceipt = typeof CommandReceipt.Type;
+
+export const StaleProposalDetail = Schema.Struct({
+  kind: Schema.Literal("stale_review"),
+  proposalId: Schema.String,
+  orderId: Schema.String,
+  reason: Schema.Literals(["order_changed", "stock_changed"]),
+  expectedVersion: Schema.Int,
+  currentVersion: Schema.NullOr(Schema.Int),
+  resolved: Schema.Boolean,
+});
+export type StaleProposalDetail = typeof StaleProposalDetail.Type;
 
 export const TutorialId = Schema.Literals(tutorialIds);
 export type TutorialId = typeof TutorialId.Type;
@@ -111,6 +124,12 @@ export type AgentViewFocus = typeof AgentViewFocus.Type;
 export const AgentViewContext = Schema.Struct({
   view: Schema.Literals(["work", "explore", "audit"]),
   focus: Schema.NullOr(AgentViewFocus),
+  guidance: Schema.optionalKey(Schema.Struct({
+    problem: Schema.optionalKey(Schema.Struct({ kind: Schema.Literal("stale_review"), proposalId: AgentContextId })),
+    activeGuideRef: Schema.optionalKey(AgentContextId),
+    visibleTargetIds: Schema.optionalKey(Schema.Array(AgentContextId).check(Schema.isMaxLength(24))),
+    disabledTargetIds: Schema.optionalKey(Schema.Array(AgentContextId).check(Schema.isMaxLength(24))),
+  })),
 });
 export type AgentViewContext = typeof AgentViewContext.Type;
 export const SendAgentTurnMessage = Schema.Struct({
@@ -125,7 +144,8 @@ export const CancelAgentTurnMessage = Schema.Struct({
 export const AgentUiAcknowledgementMessage = Schema.Struct({
   type: Schema.Literal("agent_ui_ack"), requestId: Schema.String,
   generation: Schema.Int, turnId: Schema.String, operationId: Schema.String,
-  outcome: Schema.Literals(["applied", "missing"]),
+  outcome: Schema.Literals(["applied", "missing", "missing_target", "stale_context"]),
+  context: Schema.optionalKey(AgentViewContext),
 });
 export const AgentCompleteAcknowledgementMessage = Schema.Struct({
   type: Schema.Literal("agent_complete_ack"), requestId: Schema.String,
@@ -173,6 +193,8 @@ export const AgentUiOperationSchema = Schema.Union([
   Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("navigate"), view: Schema.Literals(["work", "explore", "audit", "order"]), orderId: Schema.optionalKey(Schema.String) }),
   Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("highlight"), targetId: Schema.String }),
   Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("present_proposal"), proposalId: Schema.String }),
+  Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("offer_guide"), contextRef: AgentContextId, offer: GuidanceOfferSchema }),
+  Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("show_note"), contextRef: AgentContextId, note: GuidanceNoteSchema }),
 ]);
 export type AgentUiOperation = typeof AgentUiOperationSchema.Type;
 
@@ -238,7 +260,7 @@ export type ServerMessage =
   | { readonly type: "agent_state"; readonly state: WorkspaceSnapshot }
   | { readonly type: "agent_ui_operation"; readonly operation: AgentUiOperation }
   | { readonly type: "pong"; readonly requestId: string }
-  | { readonly type: "error"; readonly requestId: string | null; readonly code: string; readonly message: string };
+  | { readonly type: "error"; readonly requestId: string | null; readonly code: string; readonly message: string; readonly detail?: StaleProposalDetail };
 export const ServerMessageSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("snapshot"), requestId: Schema.NullOr(Schema.String), generation: Schema.Int, sequence: Schema.Int, state: WorkspaceSnapshot }),
   Schema.Struct({ type: Schema.Literal("command_result"), requestId: Schema.String, result: CommandResultSchema, state: WorkspaceSnapshot }),
@@ -259,7 +281,7 @@ export const ServerMessageSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("agent_state"), state: WorkspaceSnapshot }),
   Schema.Struct({ type: Schema.Literal("agent_ui_operation"), operation: AgentUiOperationSchema }),
   Schema.Struct({ type: Schema.Literal("pong"), requestId: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("error"), requestId: Schema.NullOr(Schema.String), code: Schema.String, message: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("error"), requestId: Schema.NullOr(Schema.String), code: Schema.String, message: Schema.String, detail: Schema.optionalKey(StaleProposalDetail) }),
 ]);
 
 export type ToolCategory = "Read" | "Guide" | "Prepare" | "Classify";
