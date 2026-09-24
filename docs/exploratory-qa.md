@@ -37,7 +37,11 @@ vp run qa -- init --mode live --minutes 120 --budget 0.10
 The result supplies an absolute `runDir` outside the checkout. Substitute it for
 `RUN_DIR` below. `serve` starts a background adapter and returns when it is ready.
 That adapter owns the disposable loopback server and browser. It stops them on
-its deadline or when you run `stop`; closing the launching terminal does not stop it.
+its deadline or when you run `stop-live`. A separate deadline process closes
+the QA record and writes `deadline-summary.json` in the private run directory
+if the coordinator has not already closed it.
+Closing the launching terminal does not stop either process. The coordinator
+must still report the partial result; closing a record cannot force a Codex reply.
 
 ```sh
 vp run qa -- serve --run RUN_DIR
@@ -103,12 +107,20 @@ cancelled calls count. Any completed live attempt with unknown cost blocks new
 inference. Only app-key inference counts; Codex usage is excluded. Offline mode
 is explicitly labeled and cannot demonstrate live answer quality.
 
+After a browser mission, save its observation IDs and coverage, then stop the
+live adapter before inspecting source or waiting for investigation. The run
+record stays open for offline diagnosis and verification until `close` or the
+deadline. Check the delegate and run status every five minutes; a single long
+delegate wait can exceed that interval. At the deadline, report the retained
+partial result and unresolved work.
+
 If the application ledger becomes unreadable, `status` and `resume` report
 `accounting.available: false`. The run keeps its last known numeric reading and
 any in-flight turn; those numbers are not current totals. New app turns stop.
 If the ledger becomes readable again, `resume` records its cumulative totals and
-finishes the reserved turn. `stop` first shuts down the adapter, then closes the
-run even if final accounting remains unavailable. In that case the closed record
+finishes the reserved turn. `stop-live` shuts down the adapter while keeping the
+record open. `close` shuts down the adapter if needed and closes the run even if
+final accounting remains unavailable. In that case the closed record
 has `finalUsageMissing: true`; report final dollars, requests, and tokens as
 unknown rather than repeating the last known reading as a final total.
 
@@ -121,7 +133,8 @@ measurements as missing.
 ```sh
 vp run qa -- status --run RUN_DIR
 vp run qa -- resume --run RUN_DIR
-vp run qa -- stop --run RUN_DIR --reason 'Exploration finished; unresolved findings retained.'
+vp run qa -- stop-live --run RUN_DIR
+vp run qa -- close --run RUN_DIR --reason 'Investigation finished; unresolved findings retained.'
 ```
 
 Resume reconciles an interrupted coordinator's turn reservation when the same

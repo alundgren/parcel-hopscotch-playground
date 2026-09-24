@@ -10,6 +10,12 @@ question so the run can discover something beyond the regression cases. Reserve
 time for reproduction, correction, and verification. A budget or time stop may
 leave findings incomplete; record an actionable next step.
 
+Set a wall-clock stop when the run starts. Check the delegate and QA status at
+five-minute marks. After the browser mission, record observation IDs and coverage,
+then run `stop-live` before source investigation. Do not leave the app running
+while waiting for investigator or verifier work. At the deadline, use the
+retained partial record to report completed and unresolved work immediately.
+
 Generate a fresh explorer packet for each first-use mission. Never attach source
 files, verifier expectations, prior findings, or team memory to that packet.
 The explorer's remembered experience may continue within a returning-user

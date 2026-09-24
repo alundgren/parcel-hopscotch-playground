@@ -97,7 +97,7 @@ export async function initialize(options = {}) {
       budgetUsd: numeric(options.budget, config.defaults.budgetUsd, 'Budget'),
     },
     model: {
-      explorerRequested: `${config.defaults.explorerModel}/${config.defaults.explorerEffort}`,
+      explorerRequested: `${config.defaults.explorerModel}/${options['explorer-effort'] ?? config.defaults.explorerEffort}`,
       actual: 'Record runtime-reported roles in the session evidence; a requested model is not proof of the actual model.',
       providerMode: options.mode,
     },
@@ -128,11 +128,11 @@ async function contextFor(runDir) {
   return context;
 }
 
-async function adapterCall(runDir, command, extra = []) {
+async function adapterCall(runDir, command, extra = [], timeout = 240_000) {
   const context = await contextFor(runDir);
   const adapter = await repositoryFile(context.config.adapter);
   const result = await exec(process.execPath, [adapter, command, '--run-dir', runDir, ...extra], {
-    cwd: repositoryRoot, timeout: 240_000, maxBuffer: 4 * maximumInputBytes,
+    cwd: repositoryRoot, timeout, maxBuffer: 4 * maximumInputBytes,
   });
   return JSON.parse(result.stdout);
 }
@@ -160,7 +160,10 @@ export async function sessionStatus(runDir) {
   if (run.status === 'active' && run.inFlight && !adapter.busy && run.accounting?.available !== false) {
     run = await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: cumulativeUsage(adapter) } });
   }
-  return { run, adapter, decision: runDecision(run, { adapterBusy: adapter.busy }) };
+  const decision = runDecision(run, { adapterBusy: adapter.busy });
+  return { run, adapter, decision: decision.allowNewTurn && adapter.paidTurnsAllowed === false
+    ? { allowNewTurn: false, reason: adapter.stopReason ?? 'adapter-stopped' }
+    : decision };
 }
 
 export async function generatePacket(runDir, role, scenarioId) {
@@ -266,16 +269,71 @@ async function serve(runDir) {
   } finally {
     process.off('SIGINT', onInterrupt); process.off('SIGTERM', onTerminate);
   }
+  const watchdogEnvironment = { ...process.env };
+  delete watchdogEnvironment.PARCEL_QA_API_KEY;
+  const watchdogLog = await open(path.join(runDir, 'deadline-supervisor.log'),
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  let watchdog;
+  try {
+    watchdog = spawn(process.execPath, [fileURLToPath(import.meta.url), 'deadline', '--run', runDir], {
+      cwd: repositoryRoot, stdio: ['ignore', 'ignore', watchdogLog.fd], detached: true, env: watchdogEnvironment,
+    });
+    await new Promise((resolve, reject) => { watchdog.once('spawn', resolve); watchdog.once('error', reject); });
+  } finally { await watchdogLog.close(); }
+  watchdog.unref();
 }
 
-async function stop(runDir, reason) {
-  const stopped = await adapterCall(runDir, 'stop');
+async function stopLive(runDir) {
+  const stopped = await adapterCall(runDir, 'stop', [], 10_000);
   if (stopped.busy || stopped.paidTurnsAllowed || !['manual_stop', 'deadline', 'application_exited', 'browser_disconnected', 'startup_failed'].includes(stopped.stopReason)
     && !/^signal_(SIGINT|SIGTERM)$/.test(stopped.stopReason ?? '')) throw new Error('Adapter did not confirm shutdown; run remains active.');
-  const status = await adapterCall(runDir, 'status').catch(() => stopped);
+  const status = await adapterCall(runDir, 'status', [], 10_000).catch(() => stopped);
   let run = await recordUsage(runDir, status);
   if (run.inFlight && run.accounting?.available !== false) run = await updateRun({ runDir, event: { type: 'turn.finish', id: run.inFlight.id, usage: cumulativeUsage(status) } });
-  return closeRun({ runDir, reason, finalAccountingUnavailable: run.accounting?.available === false });
+  return { run, adapter: status };
+}
+
+async function close(runDir, reason) {
+  const status = await stopLive(runDir);
+  return closeRun({ runDir, reason, finalAccountingUnavailable: status.run.accounting?.available === false });
+}
+
+async function deadline(runDir) {
+  while (true) {
+    const run = await loadRun({ runDir });
+    if (run.status === 'closed') return run;
+    const waitMs = Date.parse(run.createdAt) + run.settings.durationMinutes * 60_000 - Date.now();
+    if (waitMs <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(waitMs, 5000)));
+  }
+  let closed;
+  let failure;
+  const retryUntil = Date.now() + 60_000;
+  do {
+    try {
+      closed = await close(runDir, 'Automatic QA deadline; unfinished work retained.');
+      break;
+    } catch (error) {
+      failure = error;
+      if (Date.now() >= retryUntil) break;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  } while (true);
+  if (!closed) {
+    await privateJson(path.join(runDir, 'deadline-error.json'), {
+      at: new Date().toISOString(), error: failure instanceof Error ? failure.message : String(failure),
+    });
+    throw failure;
+  }
+  try {
+    await privateJson(path.join(runDir, 'deadline-summary.json'), {
+      closedAt: closed.closedAt, closeReason: closed.closeReason, usage: closed.usage,
+      accounting: closed.accounting, observationCount: closed.observations.length,
+      findings: closed.findings.map(({ id, status, title }) => ({ id, status, title })),
+      coverage: closed.coverage,
+    });
+  } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  return closed;
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -284,11 +342,12 @@ export async function main(argv = process.argv.slice(2)) {
   const requireRun = () => { if (!runDir) throw new Error('--run PATH is required.'); return runDir; };
   switch (command) {
     case 'help': return {
-      commands: ['init --mode live|offline [--minutes 120] [--budget 0.1]', 'serve --run PATH',
+      commands: ['init --mode live|offline [--minutes 120] [--budget 0.1] [--explorer-effort high]', 'serve --run PATH',
         'packet --run PATH --role explorer --scenario ID', 'packet --run PATH --role coordinator|investigator|verifier',
         'browser --run PATH --input FILE|-', 'status --run PATH', 'verify --run PATH',
         'event --run PATH --input FILE|-', 'promote --run PATH --input FILE|-',
-        'resume --run PATH', 'stop --run PATH [--reason TEXT]', 'show --run PATH'],
+        'resume --run PATH', 'stop-live --run PATH', 'close --run PATH [--reason TEXT]',
+        'stop --run PATH [--reason TEXT]', 'show --run PATH'],
       scope: 'Only app inference counts toward the spending threshold. Raw evidence remains local. No scheduled or automatic paid runs.',
     };
     case 'init': return initialize(options);
@@ -314,7 +373,10 @@ export async function main(argv = process.argv.slice(2)) {
       if (adapter.busy) throw new Error('An app turn is still running.');
       return status;
     }
-    case 'stop': return stop(requireRun(), options.reason ?? 'Session completed; unfinished findings retained.');
+    case 'stop-live': return stopLive(requireRun());
+    case 'close':
+    case 'stop': return close(requireRun(), options.reason ?? 'Session completed; unfinished findings retained.');
+    case 'deadline': return deadline(requireRun());
     default: throw new Error(`Unknown QA command: ${command}`);
   }
 }
