@@ -157,7 +157,7 @@ describe("rendered work UI", () => {
     workspaceState.current = createWorkspace({ snapshot: { ...snapshot, latestReceipt: null, chat: [{ ...snapshot.chat[0]!, content: workOperatorGuide }] } });
     await render(<App />);
     const assistant = document.querySelector(".chat-assistant")!;
-    for (const phrase of ["Start in Work", "evidence", "Review change", "Accept or Cancel", "Review ready orders", "whole receipt"]) expect(assistant.textContent).toContain(phrase);
+    for (const phrase of ["Start in Work", "customer messages or order updates", "Review change", "Accept or Cancel", "Review ready orders", "whole receipt"]) expect(assistant.textContent).toContain(phrase);
     expect(assistant.textContent).not.toMatch(/listOrders|getOrder|prepareBatch|startTutorial/);
     expectReadable(assistant);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
