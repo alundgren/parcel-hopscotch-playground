@@ -35,6 +35,13 @@ open Work with Ready selected and point to Review ready orders. This procedural
 help does not open a proposal or accept one. A guide offered without that direct
 request still waits for Show me before moving the view.
 
+When a preview is already open and the person asks where its acceptance control
+is, the assistant may scroll to and highlight that preview's actual button.
+The request is tied to the owner-validated proposal ID and the button's enabled
+state. It does not leave the preview, prepare another proposal, or accept it.
+If the preview changed, closed, or is held, the assistant reports that it could
+not point to an available control.
+
 Proposal availability follows the review displayed in the initiating tab. The
 server resolves that focused proposal under the current user's identity.
 Registered disabled controls can reduce the advertised availability. Preparing

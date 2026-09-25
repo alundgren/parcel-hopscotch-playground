@@ -101,7 +101,7 @@ export interface ToolContext {
 }
 export type AgentUiRequest =
   | { readonly kind: "navigate"; readonly view: "work" | "explore" | "audit" | "order"; readonly orderId?: string; readonly filter?: "ready" }
-  | { readonly kind: "highlight"; readonly targetId: string }
+  | { readonly kind: "highlight"; readonly targetId: string; readonly proposalId?: string }
   | { readonly kind: "present_proposal"; readonly proposalId: string }
   | { readonly kind: "offer_guide"; readonly contextRef: string; readonly offer: import("../guidance/contracts.js").GuidanceOffer }
   | { readonly kind: "show_note"; readonly contextRef: string; readonly note: import("../guidance/contracts.js").GuidanceNote };

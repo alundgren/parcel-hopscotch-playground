@@ -22,11 +22,16 @@ export const describeOrderProgress = (order: { readonly status: OrderStatus; rea
 export const workPolicyReplies = {
   job_guide: workOperatorGuide,
   ready_help: "Use Review ready orders to open a preview of all currently eligible Ready orders. Check which orders are included or left out, then accept the preview in the app if it is correct. Nothing changes until you accept it. During a tutorial, the review is limited to its practice group.",
+  current_preview_help: "Check the proposed changes and any orders left out before using that control. Only your click applies the preview; this help does not accept it for you.",
   packing_subset: "Packing individual or selected orders is not supported. Outside tutorials, Review ready orders previews all currently eligible Ready orders. Tutorials use assigned practice groups. Would you like to review the full eligible batch? Nothing changes until you accept the preview in the app.",
   undo_subset: "Undo reverses the whole accepted receipt, including every order in a batch. A partial reversal of a batch is not supported. Would you like a preview of reversing the whole receipt? Nothing changes until you review and accept it in the app; later changes can make Undo unavailable.",
   undo_earlier_correction: "The latest accepted receipt for this order is a packing batch. This record does not identify the earlier correction receipt. Undo cannot overwrite later accepted changes. No Undo preview was prepared.",
   acceptance_only: "Only you can accept a reviewed change in the app. Inspect the preview, then use its acceptance control if it is correct. Chat approval does not save changes. I can help inspect customer messages and order updates or prepare a preview when you request one.",
 } as const;
+
+export const proposalAcceptanceLabel = (proposal: Pick<ReviewedProposal, "kind" | "changes">): string => proposal.kind === "reset"
+  ? "Reset my demo"
+  : `Accept ${proposal.changes.length} ${proposal.changes.length === 1 ? "change" : "changes"}`;
 
 export const tutorialPackingReply = "This tutorial can prepare only its assigned practice group. It cannot select arbitrary orders or prepare the full Work queue. Finish or dismiss the tutorial before requesting a review of the full eligible batch. No new preview was prepared.";
 
@@ -69,8 +74,9 @@ export const workGuidanceTargets = {
   orderEvidence: (id: string) => `work.order.evidence:${id}` as const,
   reviewChange: (id: string) => `work.order.review:${id}` as const,
   proposalReview: (id: string) => `work.proposal.review:${id}` as const,
+  proposalAccept: (id: string) => `work.proposal.accept:${id}` as const,
 } as const;
-export type WorkGuidanceTargetId = typeof workGuidanceTargets.queue | typeof workGuidanceTargets.batchReview | ReturnType<typeof workGuidanceTargets.orderRow> | ReturnType<typeof workGuidanceTargets.orderEvidence> | ReturnType<typeof workGuidanceTargets.reviewChange> | ReturnType<typeof workGuidanceTargets.proposalReview>;
+export type WorkGuidanceTargetId = typeof workGuidanceTargets.queue | typeof workGuidanceTargets.batchReview | ReturnType<typeof workGuidanceTargets.orderRow> | ReturnType<typeof workGuidanceTargets.orderEvidence> | ReturnType<typeof workGuidanceTargets.reviewChange> | ReturnType<typeof workGuidanceTargets.proposalReview> | ReturnType<typeof workGuidanceTargets.proposalAccept>;
 
 export const workGuides = {
   staleReview: "work.stale-review",

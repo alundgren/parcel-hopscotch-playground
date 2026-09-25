@@ -31,6 +31,9 @@ outline and a pointer. Keep the real control reachable. A compact Task trail
 holds the task and return action while moving between views. Show me is the
 consent step before navigation for an offered guide. A direct chat request to
 locate the Ready review control may open Ready and point to that control. The
+same direct request about an already open preview should scroll its actual
+acceptance control into view and highlight it without replacing the preview.
+If that control is unavailable, say so without claiming it was shown. The
 person performs every business action.
 Keep explanations short and specific to current evidence. If another tab has
 already resolved an item, say so and help the person request a fresh review.

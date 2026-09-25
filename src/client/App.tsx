@@ -6,7 +6,7 @@ import { targets } from "../shared/targets";
 import type { GuidanceSession, GuidanceProgressEvent, GuidanceReturnContext } from "../guidance/contracts";
 import { advanceGuidance, beginGuidance, consentToGuidance, decodeSavedGuidance, dismissGuidance, encodeSavedGuidance, pauseGuidance, resumeGuidance } from "../guidance/runtime";
 import { createGuidanceContext, guidanceGuideVersion, workGuideNote, workGuidanceTargets, workGuides, auditGuidanceTargets, auditGuides, type GuidanceProblem } from "../modules/guidance";
-import { readyReviewAvailability, reviewChangeAvailability, type ReviewChangeAvailability } from "../modules/work";
+import { proposalAcceptanceLabel, readyReviewAvailability, reviewChangeAvailability, type ReviewChangeAvailability } from "../modules/work";
 import { Button } from "./components/ui/button";
 import { GuideDisplay } from "./guidance/GuideDisplay";
 import { GuideTargetRegistry, useGuideTarget } from "./guidance/targets";
@@ -70,10 +70,13 @@ function ProposalView({ proposal, orders, busy, connected, onAccept, onCancel, c
   const reset = proposal.kind === "reset";
   const addressChange = proposal.kind === "resolution" && proposal.changes.length === 1 && proposal.changes[0]?.family === "address" ? proposal.changes[0] : null;
   const addressOrder = addressChange === null ? null : orders.find((order) => order.id === addressChange.orderId) ?? null;
-  const acceptLabel = !proposal.ready ? "Held" : !connected ? "Reconnect to accept" : busy ? "Working…" : reset ? "Reset my demo" : `Accept ${proposal.changes.length} ${proposal.changes.length === 1 ? "change" : "changes"}`;
+  const acceptLabel = !proposal.ready ? "Held" : !connected ? "Reconnect to accept" : busy ? "Working…" : proposalAcceptanceLabel(proposal);
   const guideOrderId = proposal.kind === "resolution" && proposal.changes.length === 1 ? proposal.changes[0]!.orderId : null;
   const canAccept = proposal.ready && connected && !busy;
-  const guideReviewRef = useCallback((element: HTMLButtonElement | null) => { if (guideOrderId !== null) guideTargets.register(workGuidanceTargets.proposalReview(guideOrderId), guideOrderId, element, canAccept); }, [guideTargets, guideOrderId, canAccept]);
+  const guideReviewRef = useCallback((element: HTMLButtonElement | null) => {
+    if (guideOrderId !== null) guideTargets.register(workGuidanceTargets.proposalReview(guideOrderId), guideOrderId, element, canAccept);
+    guideTargets.register(workGuidanceTargets.proposalAccept(proposal.id), proposal.id, element, canAccept);
+  }, [guideTargets, guideOrderId, proposal.id, canAccept]);
   if (addressChange !== null && addressOrder !== null) return <section className="order-detail proposal-screen address-review" aria-labelledby="proposal-title">
     <div className="detail-heading"><h1 id="proposal-title" tabIndex={-1}>Check address</h1><span className="order-id">{addressOrder.id}</span></div>
     <div className="address-evidence"><div><span>Order</span><p>{addressChange.before}</p></div><div><span>Customer</span><p>“{addressOrder.evidence[0]?.value}”</p></div></div>
@@ -567,9 +570,12 @@ export default function App() {
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (cancelled) return;
       const registered = agentOperation.kind === "highlight" && agentOperation.targetId === workGuidanceTargets.batchReview
-        ? guideTargets.find(workGuidanceTargets.batchReview, null) : null;
+        ? guideTargets.find(workGuidanceTargets.batchReview, null)
+        : agentOperation.kind === "highlight" && agentOperation.proposalId !== undefined && agentOperation.targetId === workGuidanceTargets.proposalAccept(agentOperation.proposalId)
+          ? proposal?.id === agentOperation.proposalId ? guideTargets.find(agentOperation.targetId, agentOperation.proposalId) : null
+          : null;
       const target = agentOperation.kind === "highlight"
-        ? agentOperation.targetId === workGuidanceTargets.batchReview
+        ? agentOperation.targetId === workGuidanceTargets.batchReview || agentOperation.proposalId !== undefined
           ? registered?.available ? registered.element : null
           : document.getElementById(agentOperation.targetId)
         : agentOperation.kind === "present_proposal"
@@ -588,7 +594,7 @@ export default function App() {
       acknowledgeAgentOperation(agentOperation, target === null ? "missing" : "applied");
     }));
     return () => { cancelled = true; };
-  }, [agentOperation?.id, snapshot?.currentProposal?.id]);
+  }, [agentOperation?.id, snapshot?.currentProposal?.id, proposal?.id]);
   useEffect(() => {
     const active = snapshot?.activeTurn;
     if (snapshot === null || active == null || active.phase !== "Rendering answer") return;

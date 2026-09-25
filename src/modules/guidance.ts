@@ -25,6 +25,7 @@ export type GuidanceTargetId = typeof workGuidanceTargets.queue |
   ReturnType<typeof workGuidanceTargets.orderEvidence> |
   ReturnType<typeof workGuidanceTargets.reviewChange> |
   ReturnType<typeof workGuidanceTargets.proposalReview> |
+  ReturnType<typeof workGuidanceTargets.proposalAccept> |
   (typeof auditGuidanceTargets)[keyof typeof auditGuidanceTargets];
 
 export interface CreateGuidanceContextInput {
