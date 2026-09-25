@@ -184,6 +184,71 @@ test("Ready help reports a missing target when its real button is unavailable", 
   expect(workspaceState.current.runCommand).not.toHaveBeenCalled();
 });
 
+test("current preview help scrolls to the actual six-change Accept button without replacing the preview", async () => {
+  const registrations = vi.spyOn(GuideTargetRegistry.prototype, "register");
+  const batch: ReviewedProposal = { ...proposal, id: "proposal-six", title: "Review 6 changes", changes: Array.from({ length: 6 }, (_, index) => ({ ...proposal.changes[0]!, orderId: `BB-${1050 + index}`, effect: "Release this order to packing after review of the included orders." })) };
+  workspaceState.current = createWorkspace({ snapshot: { ...snapshot, currentProposal: batch, chat: [
+    { id: "preview-user", turnId: "preview-turn", role: "user", content: "I opened the page but I cant see how to accept. Is there a button somewhere?", createdAt: "2026-09-25T12:39:57.000Z" },
+    { id: "preview-answer", turnId: "preview-turn", role: "assistant", content: "I've pointed to Accept 6 changes on the open preview. Check the changes before accepting.", createdAt: "2026-09-25T12:39:58.000Z" },
+  ] } });
+  const app = await render(<App />);
+  const accept = page.getByRole("button", { name: "Accept 6 changes" });
+  await expect.element(accept).toBeVisible();
+  const button = accept.element();
+  const preview = button.closest("section")!;
+  expect(button.getBoundingClientRect().bottom).toBeGreaterThan(Math.min(window.innerHeight, preview.getBoundingClientRect().bottom));
+  expect(registrations.mock.calls.some(([id, entityId, element, available]) => id === workGuidanceTargets.proposalAccept(batch.id) && entityId === batch.id && element === button && available === true)).toBe(true);
+  const operation = { id: "preview-highlight", turnId: "preview-turn", generation: snapshot.generation, kind: "highlight" as const, targetId: workGuidanceTargets.proposalAccept(batch.id), proposalId: batch.id };
+  workspaceState.current = { ...workspaceState.current!, agentOperation: operation };
+  await app.rerender(<App />);
+  await expect.element(accept).toHaveClass(/agent-highlight/);
+  await expect.poll(() => workspaceState.current!.acknowledgeAgentOperation.mock.calls.at(-1)?.[1]).toBe("applied");
+  await expect.poll(() => {
+    const bounds = button.getBoundingClientRect();
+    const frame = preview.getBoundingClientRect();
+    return bounds.top >= Math.max(0, frame.top) && bounds.bottom <= Math.min(window.innerHeight, frame.bottom);
+  }).toBe(true);
+  expect(button).toHaveFocus();
+  withinViewport(button);
+  expect(contrast(getComputedStyle(button).color, getComputedStyle(button).backgroundColor)).toBeGreaterThanOrEqual(4.5);
+  await expect.element(page.getByRole("heading", { name: "Review 6 changes" })).toBeVisible();
+  expect(workspaceState.current.runCommand).not.toHaveBeenCalled();
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+  await checkpoint("current-preview-accept");
+});
+
+test("preview help binds the address Accept button and rejects a different proposal or disabled control", async () => {
+  const registrations = vi.spyOn(GuideTargetRegistry.prototype, "register");
+  workspaceState.current = createWorkspace({ snapshot: { ...snapshot, currentProposal: addressProposal } });
+  const app = await render(<App />);
+  const accept = page.getByRole("button", { name: "Accept 1 change" });
+  await expect.element(accept).toBeVisible();
+  const button = accept.element();
+  expect(registrations.mock.calls.some(([id, entityId, element, available]) => id === workGuidanceTargets.proposalAccept(addressProposal.id) && entityId === addressProposal.id && element === button && available === true)).toBe(true);
+  const wrong = { id: "wrong-preview", turnId: "preview-turn", generation: snapshot.generation, kind: "highlight" as const, targetId: workGuidanceTargets.proposalAccept("another-proposal"), proposalId: "another-proposal" };
+  workspaceState.current = { ...workspaceState.current!, agentOperation: wrong };
+  await app.rerender(<App />);
+  await expect.poll(() => workspaceState.current!.acknowledgeAgentOperation.mock.calls.at(-1)?.[1]).toBe("missing");
+  await expect.element(accept).not.toHaveClass(/agent-highlight/);
+  const correct = { ...wrong, id: "right-preview", targetId: workGuidanceTargets.proposalAccept(addressProposal.id), proposalId: addressProposal.id };
+  workspaceState.current = { ...workspaceState.current!, agentOperation: correct };
+  await app.rerender(<App />);
+  await expect.element(accept).toHaveClass(/agent-highlight/);
+  await expect.poll(() => workspaceState.current!.acknowledgeAgentOperation.mock.calls.at(-1)?.[1]).toBe("applied");
+  expect(button).toHaveFocus();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  const held: ReviewedProposal = { ...addressProposal, id: "held-address", ready: false };
+  workspaceState.current = { ...workspaceState.current!, snapshot: { ...snapshot, sequence: snapshot.sequence + 1, currentProposal: held }, agentOperation: null };
+  await app.rerender(<App />);
+  await page.getByRole("button", { name: "Review saved proposal" }).click();
+  await expect.element(page.getByRole("button", { name: "Held" })).toBeDisabled();
+  const heldOperation = { ...wrong, id: "held-preview", targetId: workGuidanceTargets.proposalAccept(held.id), proposalId: held.id };
+  workspaceState.current = { ...workspaceState.current!, agentOperation: heldOperation };
+  await app.rerender(<App />);
+  await expect.poll(() => workspaceState.current!.acknowledgeAgentOperation.mock.calls.at(-1)?.[1]).toBe("missing");
+  expect(workspaceState.current.runCommand).not.toHaveBeenCalled();
+});
+
 test("a missing or differently bound target gives recovery text without marking another item", async () => {
   const registry = new GuideTargetRegistry();
   const dismiss = vi.fn();

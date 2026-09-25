@@ -219,6 +219,9 @@ h1 { margin: 0; color: var(--text); font-size: 28px; line-height: 1.25; font-wei
 
 .loading-panel p { color: var(--muted); }
 .agent-highlight { outline: 4px solid #7f9caa !important; outline-offset: 5px; border-radius: 8px; background: #e5eef2 !important; transition: outline-color .2s ease, background-color .2s ease; }
+.batch-action.agent-highlight { background: var(--green) !important; }
+.accept-action.agent-highlight, .address-action.agent-highlight { background: var(--blue) !important; }
+.danger-action.agent-highlight { background: #8f3a2d !important; }
 .empty-route { min-height: 420px; padding: 36px 30px; }
 .empty-route p { max-width: 560px; color: var(--muted); }
 

@@ -15,7 +15,7 @@ import { makeMinistralAdapter } from "./providers/ministral.js";
 import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, ToolExecutionError, type AgentUiRequest } from "./tool-registry.js";
 import { toolHandlers } from "./tool-handlers.js";
 import { standardAgentInstruction } from "./agent-instructions.js";
-import { describeOrderAnswer, describeProposalReview, describeQueueAnswer, describeTutorialState, tutorialPackingReply, workGuidanceTargets, workOperatorGuide, workPolicyReplies } from "../modules/work/index.js";
+import { describeOrderAnswer, describeProposalReview, describeQueueAnswer, describeTutorialState, proposalAcceptanceLabel, tutorialPackingReply, workGuidanceTargets, workOperatorGuide, workPolicyReplies } from "../modules/work/index.js";
 import { operatorReplyRequest, selectedOperatorReply } from "./operator-replies.js";
 import { createGuidanceContext, type GuidanceContext, type GuidanceProblem } from "../modules/guidance.js";
 
@@ -580,14 +580,27 @@ export const makeAgentCoordinator = (
           repository, identity: active.identity, generation: active.generation,
           requestId: `${active.turnId}:reply`, turnId: active.turnId, mode: config.agentMode,
           notify: (userId, attempt) => hub.publishAudit(userId, attempt),
-        }, adapters.jev, operatorReplyRequest(message, orderId !== null, selectedProgress)));
+        }, adapters.jev, operatorReplyRequest(message, orderId !== null, selectedProgress, viewContext.focus?.kind === "proposal" ? viewContext.focus.proposal : null)));
         if (!selection.ok) throw selection.error;
         if (active.cancelled) throw new Error("cancelled");
         await ensureCurrentGeneration(active, repository);
         const reply = selectedOperatorReply(selection.value);
         let content: string | null = null;
         let progress: OrderProgress | null = null;
-        if (reply === "ready_help") {
+        const selectedProposal = viewContext.focus?.kind === "proposal" ? viewContext.focus.proposal : null;
+        if (reply === "current_preview_help" || (reply === "ready_help" && selectedProposal !== null)) {
+          const currentProposal = selectedProposal === null ? null : await Effect.runPromise(repository.resolveAgentViewContext(active.identity, active.generation, { view: "work", focus: { kind: "proposal", proposalId: selectedProposal.id } })).then((resolved) => resolved.focus?.kind === "proposal" ? resolved.focus.proposal : null, () => null);
+          if (currentProposal === null) content = "I can't see that preview anymore. Open the proposal again to review its current changes. I didn't accept anything for you.";
+          else if (!currentProposal.ready) content = "This preview is held. Its action button says Held and cannot be used. Review the reasons shown in the preview. I didn't accept anything for you.";
+          else {
+            const pointed = await requestUi(active, repository, history, { kind: "highlight", targetId: workGuidanceTargets.proposalAccept(currentProposal.id), proposalId: currentProposal.id });
+            const stillPending = pointed.applied && await Effect.runPromise(repository.resolveAgentViewContext(active.identity, active.generation, { view: "work", focus: { kind: "proposal", proposalId: currentProposal.id } })).then(() => true, () => false);
+            if (pointed.applied && !stillPending) active.uiMissing = true;
+            content = stillPending
+              ? `I've pointed to ${proposalAcceptanceLabel(currentProposal)} on the open preview. ${workPolicyReplies.current_preview_help}`
+              : "I couldn't point to the acceptance control on that preview. It may have closed, changed, or become unavailable. Check the preview currently on screen before using it. I didn't accept anything for you.";
+          }
+        } else if (reply === "ready_help") {
           const opened = await requestUi(active, repository, history, { kind: "navigate", view: "work", filter: "ready" });
           const pointed = opened.applied
             ? await requestUi(active, repository, history, { kind: "highlight", targetId: workGuidanceTargets.batchReview })

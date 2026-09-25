@@ -173,6 +173,86 @@ describe("agent runtime", () => {
     }));
   });
 
+  it.each([
+    { name: "batch", prompt: "I opened the page but I cant see how to accept. Is there a button somewhere?", orderId: null, outcome: "applied" },
+    { name: "correction", prompt: "Where is the Accept button on this correction preview?", orderId: "BB-1042", outcome: "applied" },
+    { name: "reset", prompt: "Where is the action on this reset preview?", orderId: null, outcome: "applied" },
+    { name: "target missing", prompt: "Show me where to accept this preview", orderId: null, outcome: "missing" },
+    { name: "closed during selection", prompt: "Where is the Accept button on this preview?", orderId: null, outcome: "closed" },
+    { name: "closed after highlight", prompt: "Where is the Accept button on this preview?", orderId: null, outcome: "closed-after-highlight" },
+    { name: "held", prompt: "Where is the Accept button on this preview?", orderId: "BB-1076", outcome: "held" },
+  ] as const)("points to the current $name preview without replacing or accepting it", async ({ name, prompt, orderId, outcome }) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let modelCalls = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => { modelCalls++; return result([], "Unexpected model answer."); }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const prepared = name === "reset" ? yield* repository.prepareReset(identity, 1) : orderId === null ? yield* repository.prepareBatch(identity, 1) : yield* repository.prepareResolution(identity, 1, orderId);
+      expect(prepared.ready).toBe(outcome !== "held");
+      const before = yield* repository.snapshot(identity);
+      const jev: JevAdapter = { decide: (request) => Effect.gen(function* () {
+        expect(request.state).toMatchObject({ request: prompt, currentPreview: { id: prepared.id, kind: prepared.kind, title: prepared.title, ready: prepared.ready, totalChanges: prepared.changes.length } });
+        if (outcome === "closed") yield* Effect.promise(() => Effect.runPromise(repository.accept(identity, 1, prepared.id, "closed-while-selecting")));
+        const choice = name === "batch" ? "ready_help" : "current_preview_help";
+        return { kind: "decisions" as const, answers: { reply: { type: "choice" as const, choice, confidence: 0.95, probabilities: { [choice]: 0.95 } } }, metadata, safeRequest: request, safeResponse: { choice } };
+      }) };
+      const coordinator = makeAgentCoordinator({ ...config, agentMode: "live" }, { ministral, jev });
+      const turnId = `turn_12345678-preview-${name.replaceAll(" ", "-")}`;
+      const connectionId = turnId;
+      const operations: Array<Extract<ServerMessage, { type: "agent_ui_operation" }>["operation"]> = [];
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: turnId,
+        message: prompt, viewContext: { view: "work", focus: { kind: "proposal", proposalId: prepared.id } }, connectionId,
+        send: async (message) => {
+          if (message.type !== "agent_ui_operation") return;
+          operations.push(message.operation);
+          if (outcome === "closed-after-highlight") await Effect.runPromise(repository.accept(identity, 1, prepared.id, "closed-after-highlight"));
+          queueMicrotask(() => coordinator.acknowledgeUi(identity, 1, turnId, message.operation.id, connectionId, outcome === "missing" ? "missing" : "applied"));
+        },
+      }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, [outcome === "missing" || outcome === "closed-after-highlight" ? "complete" : "waiting_for_ui"]));
+      expect(modelCalls).toBe(0);
+      expect(operations.map((operation) => operation.kind)).toEqual(outcome === "held" || outcome === "closed" ? [] : ["highlight"]);
+      if (operations.length > 0) expect(operations[0]).toMatchObject({ targetId: `work.proposal.accept:${prepared.id}`, proposalId: prepared.id });
+      const answer = turn.history.at(-1)?.content ?? "";
+      if (outcome === "applied") expect(answer).toContain(`I've pointed to ${prepared.kind === "reset" ? "Reset my demo" : `Accept ${prepared.changes.length} ${prepared.changes.length === 1 ? "change" : "changes"}`}`);
+      if (outcome === "held") expect(answer).toContain("button says Held and cannot be used");
+      if (outcome === "closed") expect(answer).toContain("can't see that preview anymore");
+      if (outcome === "missing" || outcome === "closed-after-highlight") expect(answer).toContain("couldn't point to the acceptance control");
+      if (outcome !== "closed" && outcome !== "closed-after-highlight") {
+        const after = yield* repository.snapshot(identity);
+        expect(after.currentProposal?.id).toBe(prepared.id);
+        expect(after.orders).toEqual(before.orders);
+        expect(after.latestReceipt).toEqual(before.latestReceipt);
+      }
+    }));
+  });
+
+  it.each(["current_preview_help", "acceptance_only"] as const)("does not prepare or navigate when $0 is selected without a displayed preview", async (choice) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const jev: JevAdapter = { decide: (request) => Effect.sync(() => {
+      expect(request.state).toMatchObject({ currentPreview: null });
+      return { kind: "decisions", answers: { reply: { type: "choice", choice, confidence: 0.95, probabilities: { [choice]: 0.95 } } }, metadata, safeRequest: request, safeResponse: { choice } };
+    }) };
+    const ministral: MinistralAdapter = { complete: () => Effect.fail(providerFailure("provider_error", "No model call expected.")) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const before = yield* repository.snapshot(identity);
+      const coordinator = makeAgentCoordinator({ ...config, agentMode: "live" }, { ministral, jev });
+      const sent: ServerMessage[] = [];
+      const turnId = `turn_12345678-no-preview-${choice === "acceptance_only" ? "accept" : "help"}`;
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: turnId,
+        message: choice === "acceptance_only" ? "Accept it for me" : "Where is the Accept button?", viewContext: workView, connectionId: choice, send: async (message) => { sent.push(message); },
+      }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(sent.filter((message) => message.type === "agent_ui_operation")).toHaveLength(0);
+      expect(turn.history.at(-1)?.content).toContain(choice === "acceptance_only" ? "Only you can accept" : "can't see that preview anymore");
+      const after = yield* repository.snapshot(identity);
+      expect(after.orders).toEqual(before.orders);
+      expect(after.currentProposal).toBeNull();
+      expect(after.latestReceipt).toEqual(before.latestReceipt);
+    }));
+  });
+
   it.each(["BB-1088", "BB-1096"])("describes an accepted action on %s without claiming the remaining issue is resolved", async (orderId) => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const jev: JevAdapter = { decide: (request) => Effect.succeed({ kind: "decisions", answers: { reply: { type: "choice", choice: "order_details", confidence: 1, probabilities: { order_details: 1 } } }, metadata, safeRequest: request, safeResponse: {} }) };
