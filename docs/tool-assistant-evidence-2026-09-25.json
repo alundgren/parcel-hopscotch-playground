@@ -1,0 +1,1060 @@
+{
+  "study": "tool-using assistant behavior investigation",
+  "snapshotDate": "2026-09-25",
+  "decision": {
+    "initialStudyRecommendation": {
+      "chatModel": "openai/gpt-5.4",
+      "reasoning": "low",
+      "decisionModel": "typesafe/jev-1.13",
+      "status": "comparative recommendation from the investigation"
+    },
+    "implementationChoice": {
+      "chatModel": "mistralai/ministral-3b-2512",
+      "decisionModel": "typesafe/jev-1.13",
+      "status": "retain both while applying application and prompt corrections"
+    }
+  },
+  "method": {
+    "requests": 442,
+    "modelsScreened": 11,
+    "actualCoordinatorTurns": 221,
+    "runtime": "Fresh temporary SQLite workspaces with the actual coordinator, registry, validation and proposal handlers.",
+    "uiAcknowledgements": "Simulated; no browser-visible completion timing was measured.",
+    "businessCommitsFromMeasuredAssistantTurns": 0,
+    "routes": "OpenRouter provider routes were not pinned; cache and provider differences remain in observed latency and cost.",
+    "runtimeMetric": "Complete server turn, including model/tool rounds and simulated UI acknowledgement; not first-token time.",
+    "costMetric": "API-reported request cost; comparison tables scale mean observed task-mix cost to 1000 turns.",
+    "reportedTotalCostUsd": 0.4697191905,
+    "unknownCostHttp429Responses": 6,
+    "accountUsageChangeUsd": 0.469719187,
+    "confoundedNoToolsObservation": "One Qwen 3.5 9B no-tools request used its default reasoning, consumed 4096 reasoning tokens, and returned no visible answer after 44 seconds via Darkbloom. A tool-enabled request completed in about 3 seconds via Venice; both provider route and tool setting changed, so this does not isolate tool-count or general model speed.",
+    "limitations": [
+      "Synthetic records and small task sets; not a production failure-rate estimate.",
+      "Prompt tuning and repeated cases mean final regression is not an untouched holdout.",
+      "Sequential runs, unpinned providers, cache effects and later pacing prevent broad latency or price guarantees.",
+      "Simulated UI acknowledgements do not establish browser-visible completion time.",
+      "Six HTTP 429 responses have unknown per-call costs."
+    ]
+  },
+  "requestsByModel": {
+    "mistralai/ministral-3b-2512": 28,
+    "qwen/qwen3.5-9b": 62,
+    "mistralai/mistral-small-2603": 3,
+    "qwen/qwen3.8-flash": 3,
+    "qwen/qwen3.5-35b-a3b": 14,
+    "anthropic/claude-haiku-4.5": 33,
+    "google/gemini-3.1-flash-lite": 5,
+    "openai/gpt-5.4-mini": 175,
+    "openai/gpt-5.4-nano": 58,
+    "openai/gpt-5.4": 40,
+    "typesafe/jev-1.13": 21
+  },
+  "comparisons": {
+    "initialMatchedScreen": {
+      "promptRevision": "operator revision 3",
+      "tasksPerConfiguration": 13,
+      "toolDescriptions": "Revised batch and Undo call conditions",
+      "results": [
+        {
+          "model": "qwen/qwen3.5-9b",
+          "reasoning": "disabled",
+          "passPartialFail": [
+            8,
+            4,
+            1
+          ],
+          "medianCompleteTurnMs": 2492,
+          "meanReportedCostPer1000TurnsUsd": 0.4633769231
+        },
+        {
+          "model": "openai/gpt-5.4-nano",
+          "reasoning": "none",
+          "passPartialFail": [
+            7,
+            5,
+            1
+          ],
+          "medianCompleteTurnMs": 2961,
+          "meanReportedCostPer1000TurnsUsd": 0.4564123077
+        },
+        {
+          "model": "openai/gpt-5.4-mini",
+          "reasoning": "none",
+          "passPartialFail": [
+            11,
+            1,
+            1
+          ],
+          "medianCompleteTurnMs": 2393,
+          "meanReportedCostPer1000TurnsUsd": 1.2593653846
+        },
+        {
+          "model": "openai/gpt-5.4-mini",
+          "reasoning": "low",
+          "passPartialFail": [
+            11,
+            2,
+            0
+          ],
+          "medianCompleteTurnMs": 2928,
+          "meanReportedCostPer1000TurnsUsd": 1.2728538462
+        },
+        {
+          "model": "anthropic/claude-haiku-4.5",
+          "reasoning": "not specified",
+          "passPartialFail": [
+            9,
+            3,
+            1
+          ],
+          "medianCompleteTurnMs": 2650,
+          "meanReportedCostPer1000TurnsUsd": 5.2706153846
+        }
+      ]
+    },
+    "authorizationAndScope": {
+      "promptRevision": "operator revision 5",
+      "toolPolicyRevision": "2",
+      "tasksPerConfiguration": 16,
+      "cases": "Three explicit full-batch requests, three whole-receipt Undo requests, two onboarding phrasings, and other scope/authorization cases.",
+      "results": [
+        {
+          "model": "openai/gpt-5.4-mini",
+          "reasoning": "low",
+          "passPartialFail": [
+            13,
+            1,
+            2
+          ],
+          "authorizedPreviewsPresented": [
+            8,
+            9
+          ],
+          "medianCompleteTurnMsIncludingPacing": 3236,
+          "medianMinusRecordedPacingMsDiagnosticOnly": 2331,
+          "meanReportedCostPer1000TurnsUsd": 1.079296875
+        },
+        {
+          "model": "openai/gpt-5.4",
+          "reasoning": "low",
+          "passPartialFail": [
+            15,
+            1,
+            0
+          ],
+          "authorizedPreviewsPresented": [
+            9,
+            9
+          ],
+          "medianCompleteTurnMsIncludingPacing": 4131,
+          "medianMinusRecordedPacingMsDiagnosticOnly": 3523,
+          "meanReportedCostPer1000TurnsUsd": 5.554178125
+        }
+      ],
+      "businessOrderOrReceiptChanges": 0,
+      "acceptanceOrCommitCalls": 0,
+      "interpretation": "Mini missed one whole-receipt Undo request and inferred resolution from Ready status. Full GPT-5.4 handled both. Its partial answer to a mixed request omitted the subsequent full packing-batch review."
+    },
+    "finalRevision6Regression": {
+      "model": "openai/gpt-5.4",
+      "cases": 10,
+      "reusedPriorCases": 8,
+      "newOnboardingPhrasings": 2,
+      "passPartialFail": [
+        8,
+        2,
+        0
+      ],
+      "materialFactualErrors": 0,
+      "partialFindings": [
+        "An app-owned proposal acknowledgement omitted a separate packing review requested by the person.",
+        "One answer displayed an internal completion field and an unrequested timestamp."
+      ],
+      "interpretation": "Regression evidence after prompt tuning, not an independent holdout."
+    }
+  },
+  "promptAndScopeFindings": {
+    "ministralFunctionNameParagraphRemoval": "Names still appeared in all 3 repeats.",
+    "ministralAudienceRuleAlone": "Names still appeared in all 3 repeats.",
+    "concreteOperatorFacts": "No internal function names appeared in 6 onboarding answers across Ministral and Qwen; some other factual omissions/inventions remained.",
+    "batchUndoCallConditions": {
+      "broaderPreparationsBefore": "3/8",
+      "broaderPreparationsAfter": "0/8",
+      "combinedPromptAndToolVariant": "0/8",
+      "caveat": "No prompt-only arm; small repeated comparison, not a reliability guarantee."
+    }
+  },
+  "consentClassifierScreen": {
+    "cases": 8,
+    "repeatsPerModel": 2,
+    "caseTypes": [
+      "two examples of unqualified explicit agreement",
+      "conditional agreement",
+      "question",
+      "refusal",
+      "unrelated note",
+      "support/customer disagreement",
+      "instruction-like text embedded in evidence"
+    ],
+    "results": [
+      {
+        "model": "typesafe/jev-1.13",
+        "attempts": 16,
+        "acceptableClassMatches": 16,
+        "falseExplicit": 0,
+        "medianMs": 255,
+        "meanReportedCostUsd": 0.0000181755
+      },
+      {
+        "model": "openai/gpt-5.4-nano",
+        "attempts": 16,
+        "acceptableClassMatches": 16,
+        "falseExplicit": 0,
+        "medianMs": 837,
+        "meanReportedCostUsd": 0.00006023125
+      },
+      {
+        "model": "openai/gpt-5.4-mini",
+        "attempts": 16,
+        "acceptableClassMatches": 16,
+        "falseExplicit": 0,
+        "medianMs": 1002,
+        "meanReportedCostUsd": 0.0002244375
+      }
+    ],
+    "limitations": "Eight synthetic cases repeated twice do not establish classifier calibration or broad accuracy. Jev confidence below 0.6 is mapped to unclear in the application; this screen did not validate that threshold."
+  },
+  "currentApplicationCorrections": {
+    "status": "Working-tree corrections; not a deployment statement.",
+    "modelSelection": "Retain Ministral 3B for conversational tool work and Jev for constrained decisions plus a small set of maintained-reply selections.",
+    "operatorInstructions": "Shorter than study revision 6; retains visible app language, direct-preview authorization, scope boundaries, acceptance limits, evidence boundaries, and no unrequested tutorial.",
+    "canonicalGuidance": "Keep operator workflow and proposal outcome wording in the Work module.",
+    "toolPolicy": "A direct request for full-batch or whole-receipt review authorizes preparation without repeated permission; a subset request cannot widen scope. Preparation never accepts.",
+    "toolResults": "Return separate resolution and packing descriptions plus raw flags and receipt data. Status, resolved, and completed are distinct; Ready can coexist with resolved: false, and a completed packing release can retain Ready status.",
+    "proposalAcknowledgement": "Use the validated proposal kind and contents after confirmed UI presentation to provide app-owned next-step wording.",
+    "errors": "Show tool purpose and operator-facing errors rather than raw function identifiers; retain internal details in audit.",
+    "requestSettings": {
+      "model": "mistralai/ministral-3b-2512",
+      "temperature": 0.1,
+      "provider": {
+        "require_parameters": true
+      },
+      "toolChoice": "auto",
+      "stream": true,
+      "maxOutputTokens": 4096,
+      "reasoning": "No explicit reasoning parameter is currently sent."
+    },
+    "proposalPresentation": "Clear previous preview tracking before each navigation or presentation attempt; provide kind-specific app acknowledgement only after the matching preview receives a successful UI acknowledgement and validated proposal result.",
+    "errorHandling": "Keep allowlisted domain recovery text. Return a generic operator-safe message for unexpected errors and keep diagnostic details in redacted Audit records.",
+    "compactedOrderLists": "Keep count, queue totals, each order ID/status/family, and an instruction to read order details before advising on evidence or resolution.",
+    "validationStatus": "All 54 Browser Mode tests passed, including desktop and narrow layouts, before the final server-only Undo changes. All 22 E2E tests passed on the final source; build, typecheck, and guidance boundary check also passed. The 240-test full server run passed 239 tests and failed one existing 1-second wall-clock assertion at 1266 ms. An isolated provider-audit rerun passed all 18 tests, including that assertion at 749 ms. Thus all 240 unique server tests passed across the full run and isolated rerun. The targeted final-source Undo regression passed 3/3.",
+    "replySelection": {
+      "route": "One Jev selection request precedes each standard live chat turn. Guidance mode and scripted fixtures keep their existing paths.",
+      "maintainedReplies": [
+        "general job guidance",
+        "selected-order packing limitation",
+        "partial Undo of a multi-order receipt limitation",
+        "acceptance-only guidance",
+        "whole-queue summary from current status counts",
+        "one-order details from recorded issue/evidence/saved values/progress/receipt"
+      ],
+      "fallbackToMinistral": [
+        "mixed requests",
+        "specific tutorials",
+        "filtered or grouped queue questions",
+        "complex evidence interpretation",
+        "consent questions",
+        "direct preparation",
+        "whole-receipt Undo",
+        "ambiguous requests"
+      ],
+      "authority": "Jev selects a reply category only; it cannot prepare a proposal or accept work. The app supplies selected reply text. Order detail reads one explicit or selected order, never a broader search.",
+      "confidence": "Logged in Audit but not gated. Experimental 0.8 cutoff routed valid 0.75 and 0.65 choices back to Ministral and reproduced weaker answers; cutoff removed. This does not validate confidence as a quality measure.",
+      "costAndAvailability": "Adds a provider request to every standard live chat turn before any Ministral fallback. Adds latency/cost and a Jev availability dependency; measure with completed same-model comparisons."
+    },
+    "undoIdentifierHandling": {
+      "currentModelTool": "Accepts only orderId, expectedKind, and expectedChanges. It resolves the whole latest owner- and generation-scoped receipt; the model tool exposes no raw receipt ID and cannot locate an earlier historical receipt.",
+      "earlierReceipt": "Jev can select a maintained no-preview reply for recognized earlier-correction requests. Classification is fallible; it is not a general intent check, and the fallback model can still misread intent.",
+      "transactionChecks": "Repository prepareUndo validates expected kind/count and intervening-version state against the latest receipt inside the transaction before storing a proposal. Kind/count consistency alone does not prove intent.",
+      "humanPath": "The human Undo flow is unchanged.",
+      "historicalNote": "A prior dual-identifier model-tool design accepted exact receiptId or orderId. A targeted test found UUID transcription errors, so the raw receiptId option was removed."
+    },
+    "queueSummary": "The maintained queue reply reports application-derived status counts and totals; it does not ask Ministral to invent readiness interpretations or easiest-work advice.",
+    "orderDetails": "The maintained single-order reply reads recorded issue and evidence, saved values, progress, and latest receipt for one explicit or selected order."
+  },
+  "remainingModelDependentBehavior": [
+    "Ministral still selects tools and composes much of the free-text answer.",
+    "Prompt instructions and typed argument/output validation cannot prove that prose claims match tool results.",
+    "The scripted provider returns maintained onboarding text deterministically; that is not evidence of live Ministral quality.",
+    "Current model remains behind OpenRouter; measured route and rate-limit behavior can change.",
+    "The standard live chat reply category still depends on Jev selection; confidence is logged but not calibrated.",
+    "Jev availability, added latency, and added cost affect every standard live chat turn, including turns later handled by Ministral.",
+    "Ministral still handles mixed requests, tool selection, evidence and consent questions, direct preparation, tutorials, and free-text fallback answers.",
+    "The latest 18-case review predates the current Undo guard, receipt-aware Jev selector, accepted-action wording, and current tutorial acknowledgement.",
+    "The pre-hardening eight-case regression had one material earlier-batch routing failure and two incomplete order-status replies.",
+    "The current-source 26-case regression had two partial answers; a separately authored six-case holdout found one invalid-argument failure followed by a false preview promise. The results are small synthetic screens, not production error rates.",
+    "Only three targeted Undo tasks were evaluated against the final order-ID-only model tool. The 26-case release and six-case holdout results apply to an earlier source fingerprint and were not repeated after this change. More varied intent, retry, and provider-failure testing remains useful.",
+    "Only three targeted Undo tasks were evaluated against the final order-ID-only model tool. The 26-case release and six-case holdout apply to an earlier source fingerprint and were not repeated after this change. More varied intent, retry, and provider-failure cases remain useful."
+  ],
+  "sourcePaths": [
+    "docs/tool-assistant-investigation-2026-09-25.md",
+    "docs/tool-assistant-engineering.md",
+    "src/server/agent-instructions.ts",
+    "src/server/agent-runtime.ts",
+    "src/server/operator-replies.ts",
+    "src/server/tool-registry.ts",
+    "src/server/tool-handlers.ts",
+    "src/modules/work/index.ts",
+    "src/server/providers/contracts.ts",
+    "src/server/providers/chat-request.ts",
+    "src/server/persistence.ts",
+    "tests/integration/commands.test.ts",
+    "tests/unit/guidance-modules.test.ts"
+  ],
+  "actualSourceMinistralScreen": {
+    "artifact": "artifacts/agent-corrections-2026-09-25/runtime-study-application.json",
+    "model": "mistralai/ministral-3b-2512",
+    "cases": 12,
+    "repeats": 1,
+    "providerCalls": 19,
+    "knownReportedCostUsd": 0.00195408,
+    "uiAcknowledgements": "Simulated; not browser validation.",
+    "businessCommits": 0,
+    "reviewStatus": "Do not reuse the first aggregate grade without the corrected independent review. Record case-level observations instead.",
+    "caseObservations": [
+      "Generic onboarding exposed internal function identifiers and instructed the operator to click them.",
+      "A subset Undo request for a multi-order receipt received an unsupported promise to reverse one order.",
+      "An accepted-batch answer said physical packing had not happened when the source only established that packing was unconfirmed.",
+      "One generic onboarding answer mentioned the tutorial practice-group qualification to whole-batch scope. Assigned tutorial practice groups are supported, so this is not counted as a factual error; an unrelated flag-for-review step in the same answer was ungrounded.",
+      "A free-text queue summary falsely called Ready orders resolved."
+    ],
+    "limitations": "One pass over 12 synthetic cases through the actual coordinator with simulated UI acknowledgements. Not a production reliability estimate."
+  },
+  "currentFollowupStudy": {
+    "status": "Earlier-source results: verified18 17/1/0; pre-hardening8 5/2/1; fingerprinted release26 25/1/0; separate holdout6 4/1/1; dual-ID Undo3 2/0/1 due to UUID transcription. The final order-ID-only model-tool source has a matching source manifest and targeted Undo3 grade 3/0/0. This focused result does not revalidate release26 or holdout6."
+  },
+  "verified18Evaluation": {
+    "artifact": "artifacts/agent-corrections-2026-09-25/runtime-study-verified.json",
+    "independentReview": "artifacts/agent-corrections-2026-09-25/application-verified-review.json",
+    "reviewedSourceRevision": "Recorded application prompt revision before the latest accepted-action wording, receipt-context selector state, guarded orderId Undo schema, and current tutorial acknowledgement. No immutable source commit hash was captured.",
+    "currentWorkingTreeDistinction": "Current source includes the hardening listed under currentSourceHardening below. The 17 pass / 1 partial review does not validate that source revision.",
+    "configuration": {
+      "chatModel": "mistralai/ministral-3b-2512",
+      "decisionModel": "typesafe/jev-1.13",
+      "promptVariant": "application",
+      "toolPolicyRevision": "none",
+      "reasoningOverride": null,
+      "chatRequest": {
+        "temperature": 0.1,
+        "maxOutputTokens": 4096,
+        "stream": true,
+        "toolChoice": "auto",
+        "provider": {
+          "require_parameters": true
+        }
+      },
+      "cases": 18,
+      "repeatsPerCase": 1,
+      "actualProviderCalls": {
+        "jev": 19,
+        "ministral": 14,
+        "total": 33
+      },
+      "reportedCostUsd": 0.00220704,
+      "medianCompletedServerTurnMs": 3004,
+      "uiAcknowledgements": "Simulated; these are not browser render results."
+    },
+    "independentGrade": {
+      "pass": 17,
+      "partial": 1,
+      "fail": 0,
+      "materialErrors": 0
+    },
+    "applicationEffects": {
+      "businessOrderOrReceiptChanges": 0,
+      "humanAcceptances": 0,
+      "proposalsPrepared": 5,
+      "proposalPresentationsSimulated": 5,
+      "tutorialsStarted": 1,
+      "orderSnapshotsUnchanged": true
+    },
+    "method": "Each synthetic task ran through the actual live coordinator, registered tool schemas and handlers, Jev and Ministral adapters, and persistence with a fresh seeded workspace. The independent reviewer checked request intent, allowed route and arguments, tool outcomes, final answer, simulated UI acknowledgements, receipts, and before/after order state using a written pass/partial/fail rubric. Times include the full coordinator turn and simulated UI acknowledgement, not browser-visible rendering. No retry, holdout, or repeated-case accuracy claim is implied.",
+    "scenarioOutcomes": [
+      {
+        "caseId": "onboarding-original",
+        "requestPattern": "General request from a new operator for the job workflow.",
+        "expectedBoundary": "Jev selected the maintained operator guide",
+        "observedRoute": "Jev maintained guide",
+        "observedOutcome": "Visible Work workflow, evidence, preview, human acceptance, full batch and Undo; no functions or tutorial started.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "onboarding-shift",
+        "requestPattern": "Paraphrased question about responsibilities during a normal shift.",
+        "expectedBoundary": "The paraphrased general-work question received the same accurate guide, including the real assigned-practice-group exception for tutorials",
+        "observedRoute": "Jev maintained guide",
+        "observedOutcome": "Same app-owned guide; no invented current order or queue facts.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "queue-overview",
+        "requestPattern": "Ask for the complete current queue summary.",
+        "expectedBoundary": "The application returned the queue size and separate status totals: 24 overall, 6 Ready, 14 Review, 4 Waiting",
+        "observedRoute": "Jev maintained summary",
+        "observedOutcome": "24 total: 6 Ready, 14 Review, 4 Waiting; no guessed resolution families or prioritization.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "mixed-address",
+        "requestPattern": "Ask to prepare a named address correction, accept it, and send it to packing.",
+        "expectedBoundary": "The app read BB-1042 and prepared the exact street-number correction",
+        "observedRoute": "Jev -> Ministral -> tools",
+        "observedOutcome": "Reads named order and prepares only the correction; acceptance remains human and packing is a separate full-batch review.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "single-pack-refusal",
+        "requestPattern": "Ask to pack one named Ready order.",
+        "expectedBoundary": "The maintained scope reply declines selected-order packing, explains full eligible batches outside tutorials and assigned groups during tutorials, and asks whether the person wants the full batch preview",
+        "observedRoute": "Jev maintained scope reply",
+        "observedOutcome": "Declines selected-order packing and asks about the full eligible batch; no preview is prepared.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "full-ready-batch",
+        "requestPattern": "Directly ask to release all eligible Ready orders.",
+        "expectedBoundary": "The explicit full-batch request prepared the preview of all six eligible changes and 18 omissions",
+        "observedRoute": "Jev -> Ministral -> prepareBatch",
+        "observedOutcome": "Prepares the six-change preview with omissions; no acceptance or physical-packing claim.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "cannot-auto-accept",
+        "requestPattern": "Ask assistant to accept ready work automatically.",
+        "expectedBoundary": "The maintained acceptance reply reserves acceptance for the person, says chat approval does not save changes, and does not create a new batch preview from an acceptance-only request",
+        "observedRoute": "Jev maintained acceptance reply",
+        "observedOutcome": "Refuses chat acceptance and does not create an unrequested preview.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "accepted-batch",
+        "requestPattern": "Ask whether a named order has physically been packed, with accepted batch fixture.",
+        "expectedBoundary": "The app-derived progress response reports BB-1051’s value, recorded issue, customer message, resolution, and six-order receipt",
+        "observedRoute": "Jev order details",
+        "observedOutcome": "Reports accepted action and release to packing; physical packing and shipping remain unknown.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "undo-batch-subset",
+        "requestPattern": "Ask to Undo one named order from a multi-order accepted receipt.",
+        "expectedBoundary": "The maintained reply says Undo covers the entire accepted receipt, refuses a partial reversal, asks whether the person wants the whole-receipt preview, and states that nothing changes until human acceptance",
+        "observedRoute": "Jev maintained scope reply",
+        "observedOutcome": "Declines partial reversal; offers only a whole-receipt preview after a new choice.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "undo-whole-batch",
+        "requestPattern": "Ask for a preview reversing the entire batch receipt that contains a named order.",
+        "expectedBoundary": "The model uses BB-1051 to identify the latest receipt, then the orderId-based Undo route resolves and prepares all six reversals",
+        "observedRoute": "Jev -> Ministral -> getOrder/prepareUndo",
+        "observedOutcome": "Prepares all six receipt changes using the order identifier; no bad identifier copy or invented expiry workaround.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "consent",
+        "requestPattern": "Ask whether conditional replacement evidence means the customer agreed.",
+        "expectedBoundary": "The app uses Jev’s conditional-consent result and quotes the picture request",
+        "observedRoute": "Jev -> Ministral -> getOrder/checkConsent",
+        "observedOutcome": "Classifies the photo-first message as conditional; does not prepare a substitution.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "missing-order",
+        "requestPattern": "Ask for the status of an order not in the workspace.",
+        "expectedBoundary": "The maintained order-progress lookup finds no BB-9999 record and the response says the ID is not in this workspace without inventing a status or navigation control",
+        "observedRoute": "Jev order-details path",
+        "observedOutcome": "Says the order is not in this workspace; invents no status or navigation control.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "new-and-directed",
+        "requestPattern": "Combine a general onboarding request with a direct request to prepare a named correction.",
+        "expectedBoundary": "The mixed onboarding-plus-action request was routed to model tools",
+        "observedRoute": "Jev -> Ministral -> tools",
+        "observedOutcome": "Does not let the help category suppress the direct request; prepares only the requested correction.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "specific-tutorial",
+        "requestPattern": "Explicitly request a named address-correction tutorial.",
+        "expectedBoundary": "The explicit request starts the address tutorial and opens BB-1042; it does not highlight evidence or change business data",
+        "observedRoute": "Jev -> Ministral -> startTutorial/navigation",
+        "observedOutcome": "Starts tutorial and navigates, but final prose gives a first-step instruction that differs from the recorded coach step; the sole partial.",
+        "independentGrade": "partial"
+      },
+      {
+        "caseId": "whole-single-receipt",
+        "requestPattern": "Ask to reverse a whole single-order correction receipt.",
+        "expectedBoundary": "The explicit whole-correction Undo request is resolved by orderId to the latest receipt",
+        "observedRoute": "Jev -> Ministral -> getOrder/prepareUndo",
+        "observedOutcome": "Prepares the one-change whole receipt reversal and leaves acceptance to the operator.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "customer-evidence",
+        "requestPattern": "Ask what the customer said about a named order.",
+        "expectedBoundary": "The maintained order-details reply directly quotes the customer’s message: 'The number is 41, not 14",
+        "observedRoute": "Jev order details",
+        "observedOutcome": "Quotes the recorded customer message and current saved address.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "progress-named-override",
+        "requestPattern": "Ask about BB-1051 while BB-1042 is selected in view context.",
+        "expectedBoundary": "Despite BB-1042 being selected in view context, the named BB-1051 overrides that selection",
+        "observedRoute": "Jev order details",
+        "observedOutcome": "Uses the explicit named order, not the selected order; reports release and receipt details.",
+        "independentGrade": "pass"
+      },
+      {
+        "caseId": "help-paraphrase",
+        "requestPattern": "Ask for a short introduction to responsibilities using different wording.",
+        "expectedBoundary": "Jev maps the paraphrased request about responsibilities to the maintained operator guide",
+        "observedRoute": "Jev maintained guide",
+        "observedOutcome": "Maps the paraphrase to app-owned guidance without tool names or invented facts.",
+        "independentGrade": "pass"
+      }
+    ],
+    "limitations": [
+      "One evaluation of 18 synthetic cases is a regression screen, not a reliability estimate.",
+      "UI acknowledgements were simulated, so the run does not prove that a proposal or tutorial appeared in a browser.",
+      "The single partial was a tutorial instruction mismatch; the app now returns the recorded active tutorial instruction after a successful start/stop, but this newer acknowledgement was not tested by this run.",
+      "The tested source predates the latest Undo kind/count guard and Jev latest-receipt context; results do not validate those guards.",
+      "Provider routes were not pinned; observed latency and cost are run-specific."
+    ]
+  },
+  "currentSourceHardening": {
+    "sourceStatus": "Final working tree has the order-ID-only model Undo tool and app-owned failure acknowledgement. The source fingerprint matches the independently reviewed three-case order-resolved run; the broader 26-case release and six-case holdout remain evidence from earlier source.",
+    "progressSemantics": "resolved=true means a reviewed action was accepted for the order; it does not establish that follow-up is complete. A carrier order may remain Review and a duplicate hold may remain Waiting. completed=true means released to packing, not physically packed or shipped. Ready alone proves neither acceptance nor release.",
+    "orderDetails": "The latest receipt exposes proposal kind and total change count to the trusted selector. The app-owned answer names recorded status, issue, evidence, saved value, release state, latest receipt, and whole-receipt size.",
+    "selectorEvidence": "Jev receives trusted latest receipt kind and change count. It can route “Undo just this order” to a subset refusal for a multi-change receipt, and recognized earlier-correction requests with a later batch to a maintained no-preview reply. Runtime rechecks that the latest receipt is a batch before using that reply. This known-case route is not a general intent guarantee.",
+    "undoGuard": "The model tool accepts only orderId, expectedKind, and expectedChanges. Repository prepareUndo resolves the latest whole receipt and checks expected kind/count plus existing version/staleness rules inside the transaction before storing a proposal. These checks do not prove user intent. The human Undo flow remains unchanged.",
+    "tutorialScope": "During an active tutorial, a packing-subset reply explains that preparation is limited to its assigned practice group and tells the person to finish or dismiss that tutorial before requesting the full Work queue.",
+    "tutorialRegression": "The older verified18 run had one partial because the final answer misstated the tutorial’s first instruction. The latest implementation returns the current recorded instruction; the post-review current-source rerun is checking this behavior.",
+    "tutorialAcknowledgement": "After a successful tutorial start or stop, the coordinator reads current tutorial state and returns the recorded title and instruction. It does not claim that a target was displayed.",
+    "receiptKindVocabulary": "getOrder exposes latestReceipt.kind using the proposal-kind values expected by prepareUndo and omits raw receipt IDs from the model tool result. Acceptance kind remains a distinct internal fact.",
+    "failedPreparationAcknowledgement": "After an unrecovered preparation error, if the model ends without a successfully presented review, the runtime emits an app-owned failure acknowledgement. A valid retry followed by a displayed proposal receives the regular acknowledgement.",
+    "validationStatus": "All 54 Browser Mode tests passed, including desktop and narrow layouts, before the final server-only Undo changes. All 22 E2E tests passed on the final source; build, typecheck, and guidance boundary check also passed. The 240-test full server run passed 239 tests and failed one existing 1-second wall-clock assertion at 1266 ms. An isolated provider-audit rerun passed all 18 tests, including that assertion at 749 ms. Thus all 240 unique server tests passed across the full run and isolated rerun. The targeted final-source Undo regression passed 3/3."
+  },
+  "postReviewCurrentSourceRegression": {
+    "artifact": "artifacts/agent-corrections-2026-09-25/runtime-study-release.json",
+    "independentReview": "artifacts/agent-corrections-2026-09-25/application-release-review.json",
+    "caseDefinitions": "artifacts/agent-corrections-2026-09-25/release-cases.json",
+    "sourceFingerprint": [
+      {
+        "file": "src/server/agent-instructions.ts",
+        "sha256": "f8f3b4449e1199aae70f1ab10d2bfbd9740e6660ce7d657f51d5d157852fc9e5"
+      },
+      {
+        "file": "src/server/operator-replies.ts",
+        "sha256": "0157e1f472f851c568e3c61c3a1096903384b1a668ac76e4f68e601ad49f7f01"
+      },
+      {
+        "file": "src/server/agent-runtime.ts",
+        "sha256": "77cd346b53d912b3556f1f3bddb1334a37df3f5d920f2b5cf503e239daa6b44f"
+      },
+      {
+        "file": "src/server/tool-registry.ts",
+        "sha256": "7c9156d63c4521455dc957814e8a020cae670f98aa2375e18cdade718522f6b1"
+      },
+      {
+        "file": "src/server/tool-handlers.ts",
+        "sha256": "48e4851f7e6c1d8e905028ddcb8840ae75baf1288bc56ba70722bd10aec7a2af"
+      },
+      {
+        "file": "src/server/persistence.ts",
+        "sha256": "80de3a08da6045b71c0a38844ccca9a901f7cffd8b394a261aa6bb925a56f67c"
+      },
+      {
+        "file": "src/modules/work/index.ts",
+        "sha256": "5ede61114af3ad25f1095ef572b94a4ac3f9694241d8eaa33ed5bfae91291c03"
+      },
+      {
+        "file": "src/server/providers/chat-request.ts",
+        "sha256": "4122b90156f9eff7a818b71e55c9da6ef601fe474f19bc84e61913e609280a37"
+      }
+    ],
+    "sourceVerifiedUnchanged": true,
+    "configuration": {
+      "chatModel": "mistralai/ministral-3b-2512",
+      "decisionModel": "typesafe/jev-1.13",
+      "cases": 26,
+      "repeatsPerCase": 1,
+      "composition": "18 original scenarios plus eight review-prefixed scenarios; same source fingerprint throughout.",
+      "providerCalls": {
+        "jev": 26,
+        "ministral": 17,
+        "total": 43
+      },
+      "reportedTokens": {
+        "input": 74618,
+        "output": 2835,
+        "total": 77453
+      },
+      "reportedKnownCostUsd": 0.00259442,
+      "uiAcknowledgements": "Simulated; not browser validation."
+    },
+    "independentGrade": {
+      "pass": 25,
+      "partial": 1,
+      "fail": 0,
+      "materialFactualErrors": 0,
+      "unauthorizedProposals": 0,
+      "businessStateChanges": 0,
+      "internalNameLeaks": 0
+    },
+    "partialFindings": [
+      {
+        "caseId": "onboarding-shift",
+        "observation": "Workflow was accurate, but the user asked for no jargon and the maintained guide still uses “proposal,” “receipt,” and “eligible.”"
+      }
+    ],
+    "caseOutcomes": [
+      {
+        "caseId": "onboarding-original",
+        "requestPattern": "Teach the basic Work review, acceptance, packing, and Undo workflow.",
+        "grade": "pass",
+        "observedOutcome": "Accurate visible workflow; no action."
+      },
+      {
+        "caseId": "onboarding-shift",
+        "requestPattern": "Paraphrased onboarding request, explicitly no technical jargon.",
+        "grade": "partial",
+        "observedOutcome": "Workflow accurate, but maintained text still says proposal, receipt, and eligible."
+      },
+      {
+        "caseId": "queue-overview",
+        "requestPattern": "Summarize total and status counts.",
+        "grade": "pass",
+        "observedOutcome": "Reports 24 total: 6 Ready, 14 Review, 4 Waiting; separates status from acceptance and packing."
+      },
+      {
+        "caseId": "mixed-address",
+        "requestPattern": "Prepare a named address preview and fulfill acceptance/packing request.",
+        "grade": "pass",
+        "observedOutcome": "Prepared only the supported BB-1042 address preview, did not accept or release it, and left acceptance and packing decisions with the operator."
+      },
+      {
+        "caseId": "single-pack-refusal",
+        "requestPattern": "Pack a single selected order.",
+        "grade": "pass",
+        "observedOutcome": "Declines unsupported single-order packing and offers full eligible batch review."
+      },
+      {
+        "caseId": "full-ready-batch",
+        "requestPattern": "Directly request a full Ready-batch preview.",
+        "grade": "pass",
+        "observedOutcome": "Prepares six-order preview; awaits human acceptance."
+      },
+      {
+        "caseId": "cannot-auto-accept",
+        "requestPattern": "Ask assistant to auto-accept.",
+        "grade": "pass",
+        "observedOutcome": "Leaves acceptance to authorized person; no change."
+      },
+      {
+        "caseId": "accepted-batch",
+        "requestPattern": "Ask status after accepted batch.",
+        "grade": "pass",
+        "observedOutcome": "Reports Ready and release to packing; physical packing remains unconfirmed."
+      },
+      {
+        "caseId": "undo-batch-subset",
+        "requestPattern": "Undo one order in multi-change receipt.",
+        "grade": "pass",
+        "observedOutcome": "Declines subset Undo and offers full receipt preview."
+      },
+      {
+        "caseId": "undo-whole-batch",
+        "requestPattern": "Undo all changes in batch receipt.",
+        "grade": "pass",
+        "observedOutcome": "Uses checked six-change receipt preview; not accepted."
+      },
+      {
+        "caseId": "consent",
+        "requestPattern": "Interpret conditional customer evidence.",
+        "grade": "pass",
+        "observedOutcome": "Describes conditional photo request; no substitution."
+      },
+      {
+        "caseId": "missing-order",
+        "requestPattern": "Ask about absent order.",
+        "grade": "pass",
+        "observedOutcome": "Reports missing record without invented facts."
+      },
+      {
+        "caseId": "new-and-directed",
+        "requestPattern": "Explain workflow and prepare named correction.",
+        "grade": "pass",
+        "observedOutcome": "Combines brief guidance with requested preview only."
+      },
+      {
+        "caseId": "specific-tutorial",
+        "requestPattern": "Start specific address tutorial.",
+        "grade": "pass",
+        "observedOutcome": "Starts tutorial and returns recorded first instruction; no business change."
+      },
+      {
+        "caseId": "whole-single-receipt",
+        "requestPattern": "Undo entire one-change address receipt.",
+        "grade": "pass",
+        "observedOutcome": "Prepares checked whole-receipt preview."
+      },
+      {
+        "caseId": "customer-evidence",
+        "requestPattern": "Ask for named order evidence.",
+        "grade": "pass",
+        "observedOutcome": "Returns recorded message and context."
+      },
+      {
+        "caseId": "progress-named-override",
+        "requestPattern": "Named order differs from selected order.",
+        "grade": "pass",
+        "observedOutcome": "Reads named order and reports release, not physical completion."
+      },
+      {
+        "caseId": "help-paraphrase",
+        "requestPattern": "Paraphrase general job-help request.",
+        "grade": "pass",
+        "observedOutcome": "Returns accurate maintained guide."
+      },
+      {
+        "caseId": "review-accepted-carrier",
+        "requestPattern": "Ask progress/status of accepted carrier follow-up.",
+        "grade": "pass",
+        "observedOutcome": "States Review and accepted receipt; not released."
+      },
+      {
+        "caseId": "review-accepted-duplicate",
+        "requestPattern": "Ask progress/status of accepted duplicate decision.",
+        "grade": "pass",
+        "observedOutcome": "States Waiting; acceptance did not release order."
+      },
+      {
+        "caseId": "review-earlier-correction",
+        "requestPattern": "Undo earlier correction, excluding later batch.",
+        "grade": "pass",
+        "observedOutcome": "Says current record does not identify earlier receipt; no Undo preview."
+      },
+      {
+        "caseId": "review-implicit-undo-subset",
+        "requestPattern": "Undo just one order in batch without saying batch.",
+        "grade": "pass",
+        "observedOutcome": "Explains whole-batch scope and asks before preview."
+      },
+      {
+        "caseId": "review-tutorial-packing-subset",
+        "requestPattern": "Pack subset during batch tutorial.",
+        "grade": "pass",
+        "observedOutcome": "Explains assigned practice group, refuses arbitrary selection."
+      },
+      {
+        "caseId": "review-specific-tutorial",
+        "requestPattern": "Repeat request for specific tutorial.",
+        "grade": "pass",
+        "observedOutcome": "Returns recorded instruction; no order change."
+      },
+      {
+        "caseId": "review-whole-single-receipt",
+        "requestPattern": "Undo earlier single-change receipt.",
+        "grade": "pass",
+        "observedOutcome": "Prepares checked whole-receipt preview."
+      },
+      {
+        "caseId": "review-undo-whole-batch",
+        "requestPattern": "Undo entire batch.",
+        "grade": "pass",
+        "observedOutcome": "Prepares all six receipt changes for review."
+      }
+    ],
+    "limitation": "One pass over 26 synthetic cases with simulated UI acknowledgements; not a reliability estimate. It predates the latest two holdout-driven fixes.",
+    "status": "Independently graded: 24 pass, 2 partial, 0 fail on the fingerprinted pre-holdout-fix source. Its exact source fingerprint is listed in releaseSourceFingerprintFiles. This is not a grade for the latest working tree.",
+    "releaseSourceFingerprintFiles": "artifacts/agent-corrections-2026-09-25/release-source.json",
+    "sourceRevisionNote": "These per-file SHA-256 values identify the source used by the 26-case release and six-case holdout reviews. Latest working-tree fixes occurred afterward."
+  },
+  "postReviewRegressionBaseline": {
+    "artifact": "artifacts/agent-corrections-2026-09-25/runtime-study-reviewed.json",
+    "independentReview": "artifacts/agent-corrections-2026-09-25/application-reviewed-review.json",
+    "sourceRevision": "Eight-case live run before the latest status text, earlier-correction reply routing, and transactional receipt kind/count guard. No immutable source commit hash was captured.",
+    "configuration": {
+      "chatModel": "mistralai/ministral-3b-2512",
+      "decisionModel": "typesafe/jev-1.13",
+      "cases": 8,
+      "repeatsPerCase": 1,
+      "providerCalls": {
+        "jev": 8,
+        "ministral": 7,
+        "total": 15
+      },
+      "reportedCostUsd": 0.000902162,
+      "uiAcknowledgements": "Simulated."
+    },
+    "independentGrade": {
+      "pass": 5,
+      "partial": 2,
+      "fail": 1,
+      "materialErrors": 1
+    },
+    "effects": {
+      "businessChangesCommitted": 0,
+      "orderSnapshotsUnchanged": true,
+      "undoProposalsPrepared": 2,
+      "undoPresentationsSimulated": 2,
+      "humanAcceptances": 0
+    },
+    "reviewFindings": [
+      "Two safe order-detail answers omitted the explicit saved status: carrier follow-up remained Review and duplicate hold remained Waiting despite an accepted reviewed action.",
+      "An explicit request to undo an earlier correction, excluding a later batch, was answered with an offer to reverse the later batch. This was a material scope failure even though no proposal was prepared."
+    ],
+    "caseOutcomes": [
+      {
+        "caseId": "accepted-carrier",
+        "requestPattern": "Ask whether accepted carrier follow-up is resolved and ready.",
+        "grade": "partial",
+        "observed": "Reports accepted action and no packing release but omits recorded Review status and leaves resolution unclear."
+      },
+      {
+        "caseId": "accepted-duplicate",
+        "requestPattern": "Ask current status and whether an accepted duplicate decision makes the order ready.",
+        "grade": "partial",
+        "observed": "Reports accepted action and no packing release but omits recorded Waiting status."
+      },
+      {
+        "caseId": "earlier-correction",
+        "requestPattern": "Undo an earlier correction, explicitly excluding a later packing batch.",
+        "grade": "fail",
+        "observed": "Offered to reverse the later six-order batch; prepared nothing but contradicted the requested target."
+      },
+      {
+        "caseId": "implicit-undo-subset",
+        "requestPattern": "Ask to Undo just one order from a batch receipt without saying batch.",
+        "grade": "pass",
+        "observed": "Refused partial reversal and asked whether the person wanted the whole-receipt preview."
+      },
+      {
+        "caseId": "tutorial-packing-subset",
+        "requestPattern": "Ask to pack one order while a batch tutorial is active.",
+        "grade": "pass",
+        "observed": "Explained assigned practice-group scope and told the person to finish or dismiss the tutorial before full-queue packing."
+      },
+      {
+        "caseId": "specific-tutorial",
+        "requestPattern": "Ask to start the address tutorial and perform its steps.",
+        "grade": "pass",
+        "observed": "Started it and returned the recorded current first-step instruction; no business change."
+      },
+      {
+        "caseId": "whole-single-receipt",
+        "requestPattern": "Ask for a preview Undo of one entire accepted correction receipt.",
+        "grade": "pass",
+        "observed": "Prepared the single-change whole receipt reversal for review."
+      },
+      {
+        "caseId": "undo-whole-batch",
+        "requestPattern": "Ask for a preview Undo of the entire accepted batch.",
+        "grade": "pass",
+        "observed": "Prepared all six receipt changes for review."
+      }
+    ],
+    "limitation": "These grades belong to the pre-hardening source only; a safe answer can still be incomplete and a no-commit result can still direct the person toward the wrong receipt."
+  },
+  "freshHoldoutEvaluation": {
+    "artifact": "artifacts/agent-corrections-2026-09-25/runtime-study-holdout.json",
+    "independentReview": "artifacts/agent-corrections-2026-09-25/application-holdout-review.json",
+    "caseDefinitions": "artifacts/agent-corrections-2026-09-25/holdout-cases.json",
+    "rubric": "artifacts/agent-corrections-2026-09-25/holdout-rubric.json",
+    "configuration": {
+      "chatModel": "mistralai/ministral-3b-2512",
+      "decisionModel": "typesafe/jev-1.13",
+      "cases": 6,
+      "repeatsPerCase": 1,
+      "providerCalls": {
+        "jev": 6,
+        "ministral": 11,
+        "total": 17
+      },
+      "reportedTokens": {
+        "input": 39445,
+        "output": 978,
+        "total": 40423
+      },
+      "reportedKnownCostUsd": 0.00102605,
+      "uiAcknowledgements": "Simulated."
+    },
+    "independentGrade": {
+      "pass": 4,
+      "partial": 1,
+      "fail": 1,
+      "materialFactualErrors": 1,
+      "unauthorizedProposals": 0,
+      "businessStateChanges": 0,
+      "internalNameLeaks": 0
+    },
+    "caseOutcomes": [
+      {
+        "caseId": "review-address-intersection",
+        "requestPattern": "List address-family orders in Review.",
+        "grade": "partial",
+        "observedOutcome": "Correctly returns all four IDs but paraphrases rather than quotes issue text."
+      },
+      {
+        "caseId": "named-evidence-over-selection",
+        "requestPattern": "Read named BB-1076 while another order is selected.",
+        "grade": "pass",
+        "observedOutcome": "Reads named order, quotes evidence, and treats photo request as a condition."
+      },
+      {
+        "caseId": "town-correction-preview",
+        "requestPattern": "Prepare a specifically named town correction.",
+        "grade": "pass",
+        "observedOutcome": "Prepares only the requested one-change preview."
+      },
+      {
+        "caseId": "conditional-consent-paraphrase",
+        "requestPattern": "Explain a paraphrased conditional customer note.",
+        "grade": "pass",
+        "observedOutcome": "States there is no unconditional go-ahead; prepares nothing."
+      },
+      {
+        "caseId": "two-order-packing-subset",
+        "requestPattern": "Pack two named orders from the eligible queue.",
+        "grade": "pass",
+        "observedOutcome": "Declines subset packing and offers full eligible batch review."
+      },
+      {
+        "caseId": "whole-carrier-receipt-undo",
+        "requestPattern": "Undo a whole accepted carrier receipt.",
+        "grade": "fail",
+        "observedOutcome": "Supplied expectedKind=accept from acceptance kind, but proposalKind was resolution; tool rejected the arguments. Final answer nevertheless promised a preview. No preview or business change occurred."
+      }
+    ],
+    "limitation": "One six-case synthetic run. It exposes a concrete argument-field confusion and false completion claim, not a general error rate. The model was given a receipt whose acceptance kind and proposal kind differ.",
+    "sourceRevision": "Same fingerprinted source as postReviewCurrentSourceRegression, before the latest holdout-driven fixes."
+  },
+  "currentOrderResolvedRegression": {
+    "artifact": "artifacts/agent-corrections-2026-09-25/runtime-study-order-resolved.json",
+    "independentReview": "artifacts/agent-corrections-2026-09-25/application-order-resolved-review.json",
+    "sourceManifest": "artifacts/agent-corrections-2026-09-25/order-resolved-source.json",
+    "sourceMatchesFinalWorkingTree": true,
+    "configuration": {
+      "chatModel": "mistralai/ministral-3b-2512",
+      "decisionModel": "typesafe/jev-1.13",
+      "cases": 3,
+      "repeatsPerCase": 1,
+      "providerCalls": {
+        "jev": 3,
+        "ministral": 6,
+        "total": 9
+      },
+      "tokens": {
+        "input": 20517,
+        "output": 413,
+        "total": 20930
+      },
+      "knownCostUsd": 0.000668334,
+      "unknownCostCalls": 0,
+      "uiAcknowledgements": "Simulated."
+    },
+    "grade": {
+      "pass": 3,
+      "partial": 0,
+      "fail": 0,
+      "materialFactualErrors": 0,
+      "wrongScopeOrReceipt": 0,
+      "unacceptedProposals": 3,
+      "businessStateChanges": 0,
+      "internalNameLeaks": 0
+    },
+    "caseOutcomes": [
+      {
+        "caseId": "whole-carrier-receipt-undo",
+        "intent": "Prepare Undo preview for the latest accepted carrier follow-up.",
+        "outcome": "Read BB-1088 and used order ID with expected kind resolution and count 1. Prepared the full one-change preview; no acceptance or business change."
+      },
+      {
+        "caseId": "whole-single-receipt",
+        "intent": "Prepare Undo preview for a single address-correction receipt.",
+        "outcome": "Read BB-1042 and used order ID with expected kind resolution and count 1. Prepared the whole one-change preview without transcribing a receipt UUID; no acceptance or business change."
+      },
+      {
+        "caseId": "undo-whole-batch",
+        "intent": "Prepare Undo preview for the latest six-change batch receipt.",
+        "outcome": "Read BB-1051 and used order ID with expected kind batch and count 6. Prepared all six reversals; no acceptance or business change."
+      }
+    ],
+    "limitation": "Three targeted synthetic Undo cases only. This is not a rerun of the 26-case release or six-case holdout. UI acknowledgements were simulated.",
+    "sourceFileHashes": [
+      {
+        "file": "src/server/agent-instructions.ts",
+        "sha256": "f8f3b4449e1199aae70f1ab10d2bfbd9740e6660ce7d657f51d5d157852fc9e5"
+      },
+      {
+        "file": "src/server/operator-replies.ts",
+        "sha256": "0157e1f472f851c568e3c61c3a1096903384b1a668ac76e4f68e601ad49f7f01"
+      },
+      {
+        "file": "src/server/agent-runtime.ts",
+        "sha256": "0ae4fcd02c4be3053623396e05d83e4ec74bbcadc8960d393e2aa2e71800c0c9"
+      },
+      {
+        "file": "src/server/tool-registry.ts",
+        "sha256": "6c92a6f453ad5f0440da3484e575231ef4400626fc1082d83fb9dd1319c2cd52"
+      },
+      {
+        "file": "src/server/tool-handlers.ts",
+        "sha256": "28a58234c76d152d50461444252d6c294bded9944a05fa54ad7e97bcc9469c64"
+      },
+      {
+        "file": "src/server/persistence.ts",
+        "sha256": "80de3a08da6045b71c0a38844ccca9a901f7cffd8b394a261aa6bb925a56f67c"
+      },
+      {
+        "file": "src/modules/work/index.ts",
+        "sha256": "5ede61114af3ad25f1095ef572b94a4ac3f9694241d8eaa33ed5bfae91291c03"
+      },
+      {
+        "file": "src/server/providers/chat-request.ts",
+        "sha256": "4122b90156f9eff7a818b71e55c9da6ef601fe474f19bc84e61913e609280a37"
+      }
+    ]
+  },
+  "targetedDualIdentifierRegression": {
+    "artifact": "artifacts/agent-corrections-2026-09-25/runtime-study-receipt-fixed.json",
+    "review": "artifacts/agent-corrections-2026-09-25/application-receipt-fixed-review.json",
+    "grade": {
+      "pass": 2,
+      "partial": 0,
+      "fail": 1,
+      "materialFactualErrors": 1
+    },
+    "keyFinding": "In single-address Undo, model copied one UUID segment incorrectly. The app-owned failure acknowledgement truthfully reported rejection; no preview or business change.",
+    "disposition": "This result preceded removal of raw receiptId from the model tool. It motivated orderId-only selection; human Undo behavior is unchanged."
+  },
+  "implementationPhaseCost": {
+    "calls": 204,
+    "models": {
+      "ministral": 110,
+      "jev": 94
+    },
+    "tokens": {
+      "input": 397138,
+      "output": 11653,
+      "total": 408791
+    },
+    "knownCostUsd": 0.01401291,
+    "unknownCostCalls": 0,
+    "combinedRecordedCostWithInitialPhaseUsd": 0.4837321005,
+    "finalAccountBalanceUsd": 9.460403823,
+    "credentialHandling": "Experiment credential was removed after the run."
+  }
+}

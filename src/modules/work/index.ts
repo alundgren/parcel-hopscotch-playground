@@ -1,5 +1,65 @@
 import type { GuidanceModule, GuidanceTargetDefinition, GuidanceGuideDefinition } from "../../guidance/catalog.js";
 import type { GuidanceInput, GuidanceOrder, GuidanceProblem } from "../input.js";
+import type { OrderStatus, ReviewedProposal, TutorialState } from "../../shared/contracts.js";
+
+export const workOperatorGuide = `Start in Work. Open an order to inspect its recorded issue, current details, and customer or operator evidence.
+
+Review change opens a proposal. Compare the before/after values, consequences, and excluded orders, then choose Accept or Cancel. A proposal is only a preview. Only your acceptance saves a business change.
+
+Resolving an exception can move an order into the Ready queue. Those orders still await release to packing. Outside tutorials, Review ready orders previews all currently eligible Ready orders together. Tutorials use their assigned practice groups. Accepting a packing batch releases its included orders to packing. There is no arbitrary single-order or selected-order packing control.
+
+An accepted change has a receipt. Undo, when available, prepares a checked reversal of the whole receipt, including every order in an accepted batch. Review and accept that reversal too. A later change can make Undo unavailable.`;
+
+export const describeOrderProgress = (order: { readonly status: OrderStatus; readonly completed: boolean; readonly resolved: boolean }) => ({
+  resolution: order.resolved ? "A reviewed action was accepted for this order. Check its current issue for any remaining work." : "No reviewed action is currently applied to this order.",
+  packing: order.completed
+    ? "Released to packing. This does not establish that physical packing or shipping has finished."
+    : order.status === "ready"
+      ? "Awaiting release to packing through a separate review of all currently eligible Ready orders."
+      : "Not released to packing. Review the recorded issue and evidence.",
+});
+
+export const workPolicyReplies = {
+  job_guide: workOperatorGuide,
+  packing_subset: "Packing individual or selected orders is not supported. Outside tutorials, Review ready orders previews all currently eligible Ready orders. Tutorials use assigned practice groups. Would you like to review the full eligible batch? Nothing changes until you accept the preview in the app.",
+  undo_subset: "Undo reverses the whole accepted receipt, including every order in a batch. A partial reversal of a batch is not supported. Would you like a preview of reversing the whole receipt? Nothing changes until you review and accept it in the app; later changes can make Undo unavailable.",
+  undo_earlier_correction: "The latest accepted receipt for this order is a packing batch. This record does not identify the earlier correction receipt. Undo cannot overwrite later accepted changes. No Undo preview was prepared.",
+  acceptance_only: "Only you can accept a reviewed change in the app. Inspect the preview, then use its acceptance control if it is correct. Chat approval does not save changes. I can help inspect evidence or prepare a preview when you request one.",
+} as const;
+
+export const tutorialPackingReply = "This tutorial can prepare only its assigned practice group. It cannot select arbitrary orders or prepare the full Work queue. Finish or dismiss the tutorial before requesting a review of the full eligible batch. No new preview was prepared.";
+
+export const describeTutorialState = (tutorial: Pick<TutorialState, "title" | "instruction"> | null): string => tutorial === null
+  ? "The tutorial is dismissed. Accepted work is unchanged."
+  : `The ${tutorial.title} tutorial is active. ${tutorial.instruction} Follow the tutorial in the app; your verified actions advance it, and you can dismiss it at any time.`;
+
+export const describeOrderAnswer = (record: {
+  readonly order: { readonly id: string; readonly businessValue: string; readonly issue: string; readonly status: OrderStatus; readonly statusLabel: string; readonly evidence: ReadonlyArray<{ readonly label: string; readonly value: string }> };
+  readonly completed: boolean;
+  readonly resolved: boolean;
+  readonly latestReceipt: { readonly title: string; readonly totalChanges: number; readonly change: { readonly before: string; readonly after: string } } | null;
+}): string => {
+  const progress = describeOrderProgress({ status: record.order.status, completed: record.completed, resolved: record.resolved });
+  const receipt = record.latestReceipt;
+  const plain = (value: string) => value.replace(/[\\`*_[\]<>#]/g, "\\$&");
+  const evidence = record.order.evidence.map((item) => `${plain(item.label)}: ${plain(item.value)}`).join("\n\n");
+  return `${plain(record.order.id)}: ${plain(record.order.businessValue)}\n\nRecorded status: ${plain(record.order.statusLabel)}. Recorded issue: ${plain(record.order.issue)}\n\n${evidence}\n\n${progress.resolution} ${progress.packing}\n\n${receipt === null ? "No accepted change receipt is recorded for this order." : `Latest receipt: ${plain(receipt.title)}. This order's change: ${plain(receipt.change.before)} → ${plain(receipt.change.after)}. The receipt contains ${receipt.totalChanges} ${receipt.totalChanges === 1 ? "change" : "changes"}. If Undo is available, it reverses the whole receipt.`}`;
+};
+
+export const describeQueueAnswer = (orders: ReadonlyArray<{ readonly status: OrderStatus }>): string =>
+  `Work has ${orders.length} orders.\nReady: ${orders.filter((order) => order.status === "ready").length}\nReview: ${orders.filter((order) => order.status === "review").length}\nWaiting: ${orders.filter((order) => order.status === "waiting").length}\n\nOpen an order to inspect its issue and evidence. Ready orders can enter a packing review if current checks pass; Ready alone does not establish an accepted correction or physical packing.`;
+
+export const describeProposalReview = (proposal: Pick<ReviewedProposal, "kind" | "ready" | "changes">): string => {
+  if (!proposal.ready) return "The preview is held and cannot be accepted. Review the reasons shown. No business changes were saved.";
+  const count = proposal.changes.length;
+  const changes = `${count} ${count === 1 ? "change" : "changes"}`;
+  switch (proposal.kind) {
+    case "resolution": return "The correction preview is ready for your review. Nothing changes until you accept it in the app. Accepting this correction does not release the order to packing. When ready to release eligible orders, use Review ready orders to review and accept a separate packing batch.";
+    case "batch": return `The packing preview contains ${changes}. Check the included orders and exclusions. Nothing changes until you accept it in the app. Accepting releases the included orders to packing; it does not confirm that packing or shipping has finished.`;
+    case "undo": return `The Undo preview reverses ${changes} from the whole accepted receipt. Check every reversal before accepting. Nothing changes until you accept it in the app.`;
+    case "reset": return "The reset preview is ready for your review. Accepting restores the example workspace and keeps Audit history. Nothing changes until you accept it in the app.";
+  }
+};
 
 export const workGuidanceTargets = {
   queue: "work.queue",

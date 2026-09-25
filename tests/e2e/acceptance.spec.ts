@@ -143,7 +143,7 @@ test("records server-turn, browser completed-work, and accept-to-visible measure
 
   await send(page, "Prepare all the green orders as a batch.");
   await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
-  await expect(page.getByText("The proposal is ready for your review. Nothing changes until you accept it.")).toBeVisible();
+  await expect(page.getByText(/The packing preview contains 6 changes/)).toBeVisible();
   const turnId = await page.locator('[data-chat-role="user"]').last().getAttribute("data-chat-turn");
   expect(turnId).not.toBeNull();
   await demonstrationPause(page);

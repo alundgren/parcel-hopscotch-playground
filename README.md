@@ -4,7 +4,9 @@
 
 Parcel Hopscotch is a private playground for completing synthetic fulfilment work through ordinary controls or a small embedded agent. Bracken & Beam, the fictional shop, has seeded address, stock, bundle, weight, carrier and duplicate-order exceptions. Every model-proposed business change waits for a human to review and accept it.
 
-The experiment compares Ministral conversation and tool use with Jev constrained decisions through OpenRouter. Audit records complete request and turn timing, actual model and provider data, tokens, costs, failures and resulting app activity. Each operator has isolated work. Reset restores seeded work while retaining inference audit and cost history.
+The experiment uses Ministral for conversational tasks and Jev for constrained decisions and a small set of maintained-reply selections through OpenRouter. Audit records complete request and turn timing, actual model and provider data, tokens, costs, failures and resulting app activity. Each operator has isolated work. Reset restores seeded work while retaining inference audit and cost history.
+
+See the [tool-using assistant engineering guide](docs/tool-assistant-engineering.md) for reusable design and evaluation guidance. The [25 September investigation](docs/tool-assistant-investigation-2026-09-25.md) and its [durable evidence summary](docs/tool-assistant-evidence-2026-09-25.json) record measured findings, the decision to retain Ministral and Jev, and the limits of the synthetic study.
 
 ## Fresh local setup
 

@@ -9,7 +9,7 @@ C4Context
   Person(user, "Demo operator", "Learns and resolves fulfilment exceptions")
   System(app, "Parcel Hopscotch", "Personal fulfilment playground with agent assistance and audit")
   System_Ext(access, "Cloudflare Access and Tunnel", "Authenticates approved emails and forwards requests")
-  System_Ext(router, "OpenRouter", "Runs Ministral chat and Jev decisions")
+  System_Ext(router, "OpenRouter", "Runs Ministral chat and Jev selections and decisions")
   Rel(user, access, "Signs in and uses the app", "HTTPS / WebSocket")
   Rel(access, app, "Forwards authenticated email and app traffic", "Local HTTP / WebSocket")
   Rel(app, router, "Sends bounded inference requests using a server secret", "HTTPS")
@@ -43,6 +43,51 @@ C4Container
 - The agent runtime coordinates bounded turns and validates every requested tool. UI guidance addresses registered target IDs and advances tutorials from verified app events.
 - OpenRouter adapters normalize chat and decision responses, cancellation, failures, usage, and actual billing data.
 - Audit records provider attempts and app outcomes using allowlisted payloads and complete-duration measurements. Its request list groups calls by owner, generation, and agent turn ID before pagination, returns every call for the selected requests, and uses retained completion records for request outcomes and send-to-completed-work duration.
+
+## Tool-using assistant behavior
+
+Keep operator-facing guidance in visible application language and keep function
+names and argument details in the server contract and Audit. Domain modules own
+canonical facts and operator guidance; tool descriptions state the conditions
+and scope under which each action may be prepared. The runtime validates model
+requests and uses app-owned text after a confirmed proposal display. Only an
+authorized application command accepts a proposal and commits business state.
+
+For order progress, `status`, `resolved`, and `completed` are distinct facts.
+`resolved` means a reviewed action was accepted, not that all exception
+follow-up work is resolved. A carrier order can remain in Review and a duplicate
+hold can remain Waiting. `completed` means released to packing; it does not
+establish physical packing or shipping. An order may retain stored status
+`Ready` after release, and Ready alone does not establish acceptance or release.
+The order result provides server-derived descriptions and its latest receipt;
+the model must use those facts rather than infer completion from status alone.
+See the [tool-assistant engineering guide](tool-assistant-engineering.md)
+and the [investigation evidence](tool-assistant-evidence-2026-09-25.json) for
+evaluation method and measured limits. The current app uses Ministral 3B for
+conversational work. On standard live chat, Jev first selects among maintained
+help, scope, acceptance-only, whole-queue, and single-order detail replies or
+routes the request to Ministral. Its input includes trusted latest-receipt kind
+and size, so it can recognize an implicit partial Undo request. Jev also handles
+the existing constrained decisions. It cannot prepare or accept business
+changes. Mixed requests, direct preparation, specific tutorials, filtered or
+grouped queue questions, and complex evidence questions use the Ministral tool
+loop. The model's whole-receipt Undo tool accepts only an order ID, the expected
+operation kind, and the change count. The repository resolves the latest
+owner-scoped receipt and checks those facts transactionally before storing a
+proposal. The model tool does not accept a receipt ID or locate an earlier
+receipt. Jev has a maintained no-preview reply for recognized requests to undo
+an earlier correction, but this classification is not a general intent check.
+Expected kind/count checks that the selected latest receipt matches current
+data; existing record-version checks separately reject intervening edits.
+Neither check proves the model selected the receipt the person meant. The human
+Undo flow is unchanged. After successful tutorial
+start or stop, the runtime returns the recorded current instruction without
+claiming that a target appeared. The `getOrder` result and `prepareUndo`
+parameter use the same proposal-kind values, distinct from acceptance kind. If
+preparation fails and no review was successfully presented, the runtime returns
+an app-owned failure acknowledgement so the assistant cannot claim that an
+absent preview is ready. These safeguards validate application state and error
+handling; they do not prove that the model interpreted the person's intent.
 
 Keep these responsibilities as plain modules in one application. Separate packages only when a concrete reuse need justifies them.
 

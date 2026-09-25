@@ -84,6 +84,8 @@ export const buildMinistralWireRequest = (
     messages: request.messages.map(serializeMessage),
     stream: true,
     max_tokens: request.maxOutputTokens ?? providerBounds.maximumOutputTokens,
+    temperature: 0.1,
+    provider: { require_parameters: true },
     tools: (request.tools ?? []).map((tool) => ({
       type: "function",
       function: {

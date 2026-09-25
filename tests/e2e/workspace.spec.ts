@@ -155,6 +155,17 @@ test("uses the agent to inspect evidence, prepare a batch for human acceptance, 
   await expect(page.getByTestId("connection-status")).toContainText("Connected");
   const composer = page.getByPlaceholder("Message...");
 
+  await composer.fill("im new here. explain how to do this job");
+  await page.getByRole("button", { name: "Send message" }).click();
+  const introduction = page.locator('[data-chat-role="assistant"]').last();
+  await expect(introduction).toContainText("Start in Work");
+  await expect(introduction).toContainText("Review ready orders");
+  await expect(introduction).toContainText("whole receipt");
+  await expect(introduction).not.toContainText(/listOrders|getOrder|prepareBatch|startTutorial/);
+  await expect(page.locator(".proposal-screen")).toHaveCount(0);
+  await expect(page.locator(".tutorial-panel")).toHaveCount(0);
+  await capture(page, testInfo, "agent-operator-introduction.png");
+
   await composer.fill("Find BB-1042, open it, and highlight the evidence.");
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByText("I found the order and showed the relevant evidence.")).toBeVisible();
@@ -173,7 +184,7 @@ test("uses the agent to inspect evidence, prepare a batch for human acceptance, 
   await composer.fill("Prepare all the green orders as a batch.");
   await page.getByRole("button", { name: "Send message" }).click();
   await expect(page.getByRole("heading", { name: /Review \d+ changes/ })).toBeVisible();
-  await expect(page.getByText("The proposal is ready for your review. Nothing changes until you accept it.")).toBeVisible();
+  await expect(page.getByText(/The packing preview contains 6 changes/)).toBeVisible();
   await expect(page.getByText("Accepted by you")).toHaveCount(0);
   await expect(page.getByLabel("Orders left out")).toContainText("BB-1088");
   await capture(page, testInfo, "agent-batch-review.png");
