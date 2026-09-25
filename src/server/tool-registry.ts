@@ -100,7 +100,7 @@ export interface ToolContext {
   readonly requestUi: (operation: AgentUiRequest) => Promise<{ readonly applied: boolean; readonly message: string; readonly outcome?: "applied" | "missing" | "missing_target" | "stale_context"; readonly currentContext?: typeof PublicGuidanceContext.Type }>;
 }
 export type AgentUiRequest =
-  | { readonly kind: "navigate"; readonly view: "work" | "explore" | "audit" | "order"; readonly orderId?: string }
+  | { readonly kind: "navigate"; readonly view: "work" | "explore" | "audit" | "order"; readonly orderId?: string; readonly filter?: "ready" }
   | { readonly kind: "highlight"; readonly targetId: string }
   | { readonly kind: "present_proposal"; readonly proposalId: string }
   | { readonly kind: "offer_guide"; readonly contextRef: string; readonly offer: import("../guidance/contracts.js").GuidanceOffer }
@@ -189,16 +189,16 @@ const specs = {
     output: Schema.Struct({ attempts: Schema.Array(Schema.Struct({ id: Schema.String, requestId: Schema.String, turnId: Schema.String, model: Schema.String, actualModel: Schema.NullOr(Schema.String), outcome: Schema.String, durationMs: Schema.NullOr(Schema.Number), inputTokens: Schema.NullOr(Schema.Int), outputTokens: Schema.NullOr(Schema.Int), costUsd: Schema.NullOr(Schema.Number) })) }),
   },
   navigate: {
-    description: "Open Work, Explore, Audit, or a current order.",
+    description: "Open Work, Explore, Audit, or a current order. Use filter ready with Work only when the person asks to see the Ready queue. Navigation never opens a preview or accepts a change.",
     category: "Guide", purpose: "Open a view", allowedEffects: ["navigate_registered_view"],
     example: { arguments: { view: "order", orderId: "BB-1042" }, result: { ok: true, message: "Opened BB-1042." } },
-    input: Schema.Struct({ view: Schema.Literals(["work", "explore", "audit", "order"]), orderId: Schema.optionalKey(Identifier) }), output: ResultMessage,
+    input: Schema.Struct({ view: Schema.Literals(["work", "explore", "audit", "order"]), orderId: Schema.optionalKey(Identifier), filter: Schema.optionalKey(Schema.Literal("ready")) }), output: ResultMessage,
   },
   highlight: {
-    description: "Point to a queue, control, order, or its evidence.",
+    description: "Point to a queue, control, order, or its recorded notes. Use batchReview to point to Review ready orders without opening its preview.",
     category: "Guide", purpose: "Point to evidence", allowedEffects: ["highlight_registered_target"],
     example: { arguments: { target: "orderEvidence", orderId: "BB-1042" }, result: { ok: true, message: "Highlighted the evidence." } },
-    input: Schema.Struct({ target: Schema.Literals(["workQueue", "readyFilter", "chatComposer", "orderRow", "orderEvidence"]), orderId: Schema.optionalKey(Identifier) }), output: ResultMessage,
+    input: Schema.Struct({ target: Schema.Literals(["workQueue", "readyFilter", "batchReview", "chatComposer", "orderRow", "orderEvidence"]), orderId: Schema.optionalKey(Identifier) }), output: ResultMessage,
   },
   startTutorial: {
     description: "Start a fixed tutorial only when the person explicitly requests a specific supported walkthrough. A general onboarding or job explanation does not authorize choosing a tutorial. Inspect any named order before selecting address-correction, substitution-review, or batch-approval. Real user actions advance it and keep all review and acceptance requirements.",

@@ -6,7 +6,7 @@ import { targets } from "../shared/targets";
 import type { GuidanceSession, GuidanceProgressEvent, GuidanceReturnContext } from "../guidance/contracts";
 import { advanceGuidance, beginGuidance, consentToGuidance, decodeSavedGuidance, dismissGuidance, encodeSavedGuidance, pauseGuidance, resumeGuidance } from "../guidance/runtime";
 import { createGuidanceContext, guidanceGuideVersion, workGuideNote, workGuidanceTargets, workGuides, auditGuidanceTargets, auditGuides, type GuidanceProblem } from "../modules/guidance";
-import { reviewChangeAvailability, type ReviewChangeAvailability } from "../modules/work";
+import { readyReviewAvailability, reviewChangeAvailability, type ReviewChangeAvailability } from "../modules/work";
 import { Button } from "./components/ui/button";
 import { GuideDisplay } from "./guidance/GuideDisplay";
 import { GuideTargetRegistry, useGuideTarget } from "./guidance/targets";
@@ -109,13 +109,15 @@ function WorkQueueRow({ order, selectOrder, guideTargets }: { order: OrderSummar
 
 function WorkQueue({ orders, latestReceipt, tutorialReceipt, savedProposal, tutorialProposal, connected, selectedOrderId, selectOrder, prepare, prepareBatch, prepareReset, advance, openReceipt, openTutorialReceipt, openSavedProposal, openTutorialProposal, selectReady, coach, filter, setFilter, guideTargets, reviewAvailability }: { orders: ReadonlyArray<OrderSummary>; latestReceipt: CommandReceipt | null; tutorialReceipt: CommandReceipt | null; savedProposal: ReviewedProposal | null; tutorialProposal: ReviewedProposal | null; connected: boolean; selectedOrderId: string | null; selectOrder: (id: string | null) => void; prepare: (id: string) => void; prepareBatch: () => void; prepareReset: () => void; advance: () => void; openReceipt: () => void; openTutorialReceipt: () => void; openSavedProposal: () => void; openTutorialProposal: () => void; selectReady: () => void; coach: ReactNode; filter: Filter; setFilter: (filter: Filter) => void; guideTargets: GuideTargetRegistry; reviewAvailability: ReviewChangeAvailability }) {
   const queueRef = useGuideTarget(guideTargets, workGuidanceTargets.queue, null);
-  const selectedOrder = resolveSelectedOrder(orders, selectedOrderId);
   const readyCount = orders.filter((order) => order.status === "ready").length;
+  const canReviewReady = readyReviewAvailability(connected, orders).available;
+  const batchReviewRef = useGuideTarget(guideTargets, workGuidanceTargets.batchReview, null, canReviewReady);
+  const selectedOrder = resolveSelectedOrder(orders, selectedOrderId);
   const visibleOrders = useMemo(() => orders.filter((order) => filter === "all" || order.status === "ready"), [filter, orders]);
   if (selectedOrder !== null) return <OrderDetail order={selectedOrder} onBack={() => selectOrder(null)} review={{ disabled: !reviewAvailability.available, run: () => prepare(selectedOrder.id) }} coach={coach} guideTargets={guideTargets} />;
   return <section className="work-panel" aria-labelledby="work-title" id={targets.workQueue} ref={queueRef}>
     <h1 id="work-title">Decisions</h1>
-    <div className="queue-toolbar"><div className="filters" aria-label="Filter decisions"><Button variant="quiet" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>All {orders.length}</Button><Button variant="quiet" id={targets.readyFilter} aria-pressed={filter === "ready"} onClick={() => { setFilter("ready"); selectReady(); }}>Ready {readyCount}</Button></div><span>{savedProposal !== null && <Button variant="link" onClick={openSavedProposal}>Review saved proposal</Button>}{tutorialProposal !== null && tutorialProposal.id !== savedProposal?.id && <Button variant="link" onClick={openTutorialProposal}>Continue tutorial proposal</Button>}<Button variant="link" id={targets.batchReview} onClick={prepareBatch} disabled={!connected || readyCount === 0}>Review ready orders</Button></span></div>
+    <div className="queue-toolbar"><div className="filters" aria-label="Filter decisions"><Button variant="quiet" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>All {orders.length}</Button><Button variant="quiet" id={targets.readyFilter} aria-pressed={filter === "ready"} onClick={() => { setFilter("ready"); selectReady(); }}>Ready {readyCount}</Button></div><span>{savedProposal !== null && <Button variant="link" onClick={openSavedProposal}>Review saved proposal</Button>}{tutorialProposal !== null && tutorialProposal.id !== savedProposal?.id && <Button variant="link" onClick={openTutorialProposal}>Continue tutorial proposal</Button>}<Button variant="link" id={targets.batchReview} ref={batchReviewRef} onClick={prepareBatch} disabled={!canReviewReady}>Review ready orders</Button></span></div>
     {coach}
     <ul className="order-list" data-testid="order-list">{visibleOrders.map((order) => <WorkQueueRow key={order.id} order={order} selectOrder={selectOrder} guideTargets={guideTargets} />)}</ul>
     <div className="workspace-controls"><span>{latestReceipt !== null && <Button variant="link" id={targets.receiptLink} onClick={openReceipt}>View last receipt</Button>}{tutorialReceipt !== null && tutorialReceipt.id !== latestReceipt?.id && <Button variant="link" onClick={openTutorialReceipt}>Continue tutorial receipt</Button>}<Button variant="link" onClick={advance} disabled={!connected}>Advance stock scenario</Button></span><Button variant="link" className="reset-link" onClick={prepareReset} disabled={!connected}>Reset my demo</Button></div>
@@ -553,6 +555,7 @@ export default function App() {
     if (agentOperation.kind === "navigate") {
       setProposal(null);
       setReceipt(null);
+      if (agentOperation.view === "work" && agentOperation.filter === "ready") setQueueFilter("ready");
       if (agentOperation.view === "order") { setView("work"); setSelectedOrderId(agentOperation.orderId ?? null); }
       else { setView(agentOperation.view); setSelectedOrderId(null); }
     }
@@ -563,16 +566,23 @@ export default function App() {
     let cancelled = false;
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (cancelled) return;
+      const registered = agentOperation.kind === "highlight" && agentOperation.targetId === workGuidanceTargets.batchReview
+        ? guideTargets.find(workGuidanceTargets.batchReview, null) : null;
       const target = agentOperation.kind === "highlight"
-        ? document.getElementById(agentOperation.targetId)
+        ? agentOperation.targetId === workGuidanceTargets.batchReview
+          ? registered?.available ? registered.element : null
+          : document.getElementById(agentOperation.targetId)
         : agentOperation.kind === "present_proposal"
           ? document.getElementById("proposal-title")
+          : agentOperation.view === "work" && agentOperation.filter === "ready"
+            ? document.getElementById(targets.readyFilter)?.getAttribute("aria-pressed") === "true" ? document.getElementById(targets.readyFilter) : null
           : agentOperation.view === "order"
             ? agentOperation.orderId === undefined ? null : document.getElementById(targets.orderEvidence(agentOperation.orderId))
             : document.querySelector(`[data-view="${agentOperation.view}"]`);
       if (target instanceof HTMLElement && agentOperation.kind === "highlight") {
         target.classList.add("agent-highlight");
         target.scrollIntoView({ block: "center", behavior: "smooth" });
+        target.focus({ preventScroll: true });
         window.setTimeout(() => target.classList.remove("agent-highlight"), 2400);
       }
       acknowledgeAgentOperation(agentOperation, target === null ? "missing" : "applied");

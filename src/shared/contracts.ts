@@ -190,7 +190,7 @@ export const CommandResultSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("tutorial"), message: Schema.String, advanced: Schema.Boolean }),
 ]);
 export const AgentUiOperationSchema = Schema.Union([
-  Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("navigate"), view: Schema.Literals(["work", "explore", "audit", "order"]), orderId: Schema.optionalKey(Schema.String) }),
+  Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("navigate"), view: Schema.Literals(["work", "explore", "audit", "order"]), orderId: Schema.optionalKey(Schema.String), filter: Schema.optionalKey(Schema.Literal("ready")) }),
   Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("highlight"), targetId: Schema.String }),
   Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("present_proposal"), proposalId: Schema.String }),
   Schema.Struct({ id: Schema.String, turnId: Schema.String, generation: Schema.Int, kind: Schema.Literal("offer_guide"), contextRef: AgentContextId, offer: GuidanceOfferSchema }),

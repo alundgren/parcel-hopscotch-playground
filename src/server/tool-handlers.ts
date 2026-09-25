@@ -4,7 +4,7 @@ import type { OrderSummary, ReviewedProposal } from "../shared/contracts.js";
 import { ToolExecutionError, type ToolContext, type ToolHandlers } from "./tool-registry.js";
 import { discoverGuides, validateGuidanceNote, validateGuidanceOffer } from "../guidance/catalog.js";
 import type { GuidanceNoteRequest, GuidanceOfferRequest } from "../guidance/contracts.js";
-import { describeOrderProgress } from "../modules/work/index.js";
+import { describeOrderProgress, workGuidanceTargets } from "../modules/work/index.js";
 
 const orderOutput = (order: OrderSummary) => ({
   id: order.id,
@@ -149,24 +149,26 @@ export const toolHandlers: ToolHandlers = {
     };
   },
   navigate: async (context, input) => {
-    const args = input as { view: "work" | "explore" | "audit" | "order"; orderId?: string };
+    const args = input as { view: "work" | "explore" | "audit" | "order"; orderId?: string; filter?: "ready" };
+    if (args.filter !== undefined && args.view !== "work") throw new ToolExecutionError("invalid_arguments", "The Ready filter belongs to Work.");
     if (args.view === "order") {
       if (args.orderId === undefined) throw new ToolExecutionError("invalid_arguments", "Choose an order before opening its details.");
       await findOrder(context, args.orderId);
     } else if (args.orderId !== undefined) {
       throw new ToolExecutionError("invalid_arguments", "An order can only be selected when opening order details.");
     }
-    const result = await context.requestUi({ kind: "navigate", view: args.view, ...(args.orderId === undefined ? {} : { orderId: args.orderId }) });
+    const result = await context.requestUi({ kind: "navigate", view: args.view, ...(args.orderId === undefined ? {} : { orderId: args.orderId }), ...(args.filter === undefined ? {} : { filter: args.filter }) });
     return { ok: result.applied, message: result.message };
   },
   highlight: async (context, input) => {
-    const args = input as { target: "workQueue" | "readyFilter" | "chatComposer" | "orderRow" | "orderEvidence"; orderId?: string };
+    const args = input as { target: "workQueue" | "readyFilter" | "batchReview" | "chatComposer" | "orderRow" | "orderEvidence"; orderId?: string };
     const requiresOrder = args.target === "orderRow" || args.target === "orderEvidence";
     if (requiresOrder && args.orderId === undefined) throw new ToolExecutionError("invalid_arguments", "Choose an order before pointing to its details or evidence.");
     if (!requiresOrder && args.orderId !== undefined) throw new ToolExecutionError("invalid_arguments", "Choose an order detail or evidence control when pointing to a specific order.");
     if (args.orderId !== undefined) await findOrder(context, args.orderId);
     const targetId = args.target === "workQueue" ? targets.workQueue
       : args.target === "readyFilter" ? targets.readyFilter
+        : args.target === "batchReview" ? workGuidanceTargets.batchReview
         : args.target === "chatComposer" ? targets.chatComposer
           : args.target === "orderRow" ? targets.orderRow(args.orderId!)
             : targets.orderEvidence(args.orderId!);
