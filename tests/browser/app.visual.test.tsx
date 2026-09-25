@@ -8,6 +8,7 @@ const workspaceState = vi.hoisted(() => ({ current: null as ReturnType<typeof cr
 vi.mock("../../src/client/use-workspace", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../src/client/use-workspace")>()), useWorkspace: () => workspaceState.current }));
 
 import App from "../../src/client/App";
+import { describeProposalReview, workOperatorGuide } from "../../src/modules/work";
 
 declare module "vite-plus/test/browser" {
   interface BrowserCommands {
@@ -111,30 +112,30 @@ const contrast = (element: Element) => {
 
 const expectReadable = (element: Element, minimum = 4.5) => expect(contrast(element)).toBeGreaterThanOrEqual(minimum);
 
-const readingSample = `I can help you inspect orders, prepare fixes, and learn the workflows.
+const readingSample = `I can help you inspect orders, prepare reviews, and learn the workflows.
 
-> You review every change before it is committed.
+> You review and accept each change before it is saved.
 
 ### Find what needs attention
-Start with the queue, then open an order for its recorded evidence.
-- Read the queue: See ready, review, and waiting orders. \`getQueueOverview\`
-- Inspect an order: Read its address, stock, and customer note. \`getOrder\`
+Start in Work, then open an order for its recorded evidence.
+- Read the queue: See Ready, Review, and Waiting orders.
+- Inspect an order: Open an order such as \`BB-1042\` to read its current details and customer note.
 
-### Prepare a fix
-Every change starts with a proposal for you to review.
-- Correct an address: Preview the exact address change. \`prepareAddressCorrection\`
-- Review a substitution: Compare the available replacement. \`prepareSubstitution\`
-- Approve a batch: Review eligible orders together. \`prepareBatch\`
+### Prepare a review
+Every proposed change needs your review before acceptance.
+- Correct an address: Use Review change and compare the before and after values with the recorded evidence.
+- Review a substitution: Check the replacement, stock, and consent. A held preview cannot be accepted.
+- Release a batch: Review ready orders includes all currently eligible Ready orders. Accepting that separate batch releases them to packing.
 
 ### Learn a workflow
-A short tutorial guides you through the real workspace.
-- Address correction: Follow the address review steps. \`startTutorial\`
-- Batch approval: Practice reviewing several ready orders. \`startTutorial\`
+You can ask for an explanation or choose a specific walkthrough.
+- Address correction: Learn how to inspect evidence and review the proposed correction.
+- Batch review: Learn how to check included orders and exclusions before accepting the whole batch.
 
 ### Check and undo
-After acceptance, check the receipt. You can prepare an undo for review.
-- Inspect the audit: See completed requests, tokens, and costs. \`Audit\`
-- Undo a change: Review the reversal before accepting. \`prepareUndo\``;
+After acceptance, check the receipt and the saved change.
+- Inspect Audit: See recorded requests, tokens, and costs.
+- Undo: When available, review and accept a checked reversal of the whole receipt. Later changes can make Undo unavailable.`;
 
 const readingChat: typeof snapshot.chat = [
   { ...snapshot.chat[1]!, content: "What can you help me do here?" },
@@ -152,6 +153,40 @@ afterEach(() => {
 });
 
 describe("rendered work UI", () => {
+  test("renders the maintained operator introduction with readable app language", async () => {
+    workspaceState.current = createWorkspace({ snapshot: { ...snapshot, latestReceipt: null, chat: [{ ...snapshot.chat[0]!, content: workOperatorGuide }] } });
+    await render(<App />);
+    const assistant = document.querySelector(".chat-assistant")!;
+    for (const phrase of ["Start in Work", "evidence", "Review change", "Accept or Cancel", "Review ready orders", "whole receipt"]) expect(assistant.textContent).toContain(phrase);
+    expect(assistant.textContent).not.toMatch(/listOrders|getOrder|prepareBatch|startTutorial/);
+    expectReadable(assistant);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    document.querySelector<HTMLElement>(".chat-messages")!.scrollTop = 0;
+    await checkpoint("agent-operator-introduction", document.querySelector(".chat-panel")!);
+  });
+
+  test.each(["resolution", "batch", "held"] as const)("renders the %s acknowledgement alongside the actual review controls", async (kind) => {
+    const currentProposal = kind === "resolution" ? addressProposal : kind === "batch" ? proposal : {
+      ...addressProposal, ready: false, changes: [], omissions: [{ orderId: "BB-1042", reason: "The recorded address evidence needs review." }],
+    };
+    workspaceState.current = createWorkspace({ snapshot: { ...snapshot, latestReceipt: null, currentProposal, chat: [{ ...snapshot.chat[0]!, content: describeProposalReview(currentProposal) }] } });
+    await render(<App />);
+    const assistant = document.querySelector(".chat-assistant")!;
+    if (kind === "held") {
+      await expect.element(page.getByRole("button", { name: "Held" })).toBeDisabled();
+      expect(assistant.textContent).toContain("cannot be accepted");
+    } else {
+      const accept = page.getByRole("button", { name: "Accept 1 change", exact: true }).element() as HTMLButtonElement;
+      expect(accept.disabled).toBe(false);
+      expectReadable(accept);
+      expectNotClipped(accept);
+      expect(assistant.textContent).toContain("Nothing changes until you accept it in the app");
+    }
+    expectReadable(assistant);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    await checkpoint(`agent-${kind}-acknowledgement`, document.querySelector(".chat-panel")!);
+  });
+
   test("renders the prototype answer and keeps draft, work, and reading position while widening", async () => {
     workspaceState.current = createWorkspace({ snapshot: { ...snapshot, chat: readingChat } });
     await render(<App />);
@@ -163,7 +198,7 @@ describe("rendered work UI", () => {
     const assistant = document.querySelector(".chat-assistant")!;
     await expect.element(page.getByText("Find what needs attention", { exact: true })).toBeVisible();
     expect(assistant.querySelector("h3")?.textContent).toBe("Find what needs attention");
-    expect(assistant.querySelector("code")?.textContent).toBe("getQueueOverview");
+    expect(assistant.querySelector("code")?.textContent).toBe("BB-1042");
     expect(assistant.querySelectorAll("li").length).toBe(9);
     expectReadable(assistant);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);

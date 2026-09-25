@@ -26,7 +26,7 @@ const receiptBusinessChange = (change: ProposalChange): ReceiptBusinessChange =>
 });
 
 export interface CommandCommit { readonly receipt: CommandReceipt; readonly snapshot: WorkspaceSnapshot; readonly generationChanged: boolean }
-export interface OrderReceiptSummary { readonly id: string; readonly kind: CommandReceipt["kind"]; readonly title: string; readonly committedAt: string; readonly change: ReceiptBusinessChange; readonly committedVersion: number; readonly totalChanges: number }
+export interface OrderReceiptSummary { readonly id: string; readonly kind: CommandReceipt["kind"]; readonly proposalKind: ReviewedProposal["kind"]; readonly title: string; readonly committedAt: string; readonly change: ReceiptBusinessChange; readonly committedVersion: number; readonly totalChanges: number }
 export interface OrderProgress { readonly order: OrderSummary; readonly completed: boolean; readonly resolved: boolean; readonly latestReceipt: OrderReceiptSummary | null }
 export interface ScenarioCommit { readonly message: string; readonly snapshot: WorkspaceSnapshot }
 export interface TutorialCommit { readonly advanced: boolean; readonly snapshot: WorkspaceSnapshot }
@@ -87,7 +87,7 @@ export interface WorkspaceRepositoryService extends ProviderAttemptRepository {
   readonly orderProgress: (identity: RequestIdentity, generation: number, orderId: string) => Effect.Effect<OrderProgress | null, WorkspaceCommandError>;
   readonly prepareResolution: (identity: RequestIdentity, generation: number, orderId: string) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
   readonly prepareBatch: (identity: RequestIdentity, generation: number) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
-  readonly prepareUndo: (identity: RequestIdentity, generation: number, receiptId: string) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
+  readonly prepareUndo: (identity: RequestIdentity, generation: number, receiptId: string, expectedReceipt?: { readonly kind: "resolution" | "batch"; readonly totalChanges: number }) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
   readonly prepareReset: (identity: RequestIdentity, generation: number) => Effect.Effect<ReviewedProposal, WorkspaceCommandError>;
   readonly startTutorial: (identity: RequestIdentity, generation: number, tutorialId: TutorialId) => Effect.Effect<TutorialState, WorkspaceCommandError>;
   readonly stopTutorial: (identity: RequestIdentity, generation: number) => Effect.Effect<void, WorkspaceCommandError>;
@@ -660,16 +660,17 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
         targetId: targets.orderRow(orderId), evidence: evidence.map((entry) => ({ label: entry.label, value: entry.value, occurredAt: entry.occurred_at, age: ageLabel(entry.occurred_at, Date.now()) })),
       };
     })();
-    const receiptRow = database.prepare(`SELECT r.payload_json FROM receipts r
+    const receiptRow = database.prepare(`SELECT r.payload_json, json_extract(p.payload_json, '$.public.kind') AS proposal_kind FROM receipts r
+      JOIN proposals p ON p.id = r.proposal_id AND p.user_id = r.user_id AND p.generation = r.generation
       WHERE r.user_id = ? AND r.generation = ? AND EXISTS (
         SELECT 1 FROM json_each(r.payload_json, '$.public.changes') AS change
         WHERE json_extract(change.value, '$.orderId') = ?
-      ) ORDER BY r.committed_at DESC, r.rowid DESC LIMIT 1`).get(user.id, generation, orderId) as { payload_json: string } | undefined;
+      ) ORDER BY r.committed_at DESC, r.rowid DESC LIMIT 1`).get(user.id, generation, orderId) as { payload_json: string; proposal_kind: ReviewedProposal["kind"] } | undefined;
     const storedReceipt = receiptRow === undefined ? null : JSON.parse(receiptRow.payload_json) as StoredReceipt;
     const applied = storedReceipt?.applied.find((entry) => entry.change.orderId === orderId);
     if (storedReceipt !== null && applied === undefined) throw fail("receipt_state_invalid", "The saved receipt does not contain this order's applied change.");
     const latestReceipt = storedReceipt === null || applied === undefined ? null : {
-      id: storedReceipt.public.id, kind: storedReceipt.public.kind, title: storedReceipt.public.title, committedAt: storedReceipt.public.committedAt,
+      id: storedReceipt.public.id, kind: storedReceipt.public.kind, proposalKind: receiptRow!.proposal_kind, title: storedReceipt.public.title, committedAt: storedReceipt.public.committedAt,
       change: receiptBusinessChange(applied.change),
       committedVersion: applied.committedVersion, totalChanges: storedReceipt.public.changes.length,
     };
@@ -763,12 +764,19 @@ const repositoryLayer = (filename: string, agentMode: WorkspaceSnapshot["agentMo
     advanceTutorial(database, user.id, generation, { kind: "proposal_prepared", proposalKind: "batch", orderIds: proposal.changes.map((change) => change.orderId) }, { proposalId: proposal.id });
     return proposal;
   }));
-  const prepareUndo: WorkspaceRepositoryService["prepareUndo"] = (identity, generation, receiptId) => command(() => transact(database, () => {
+  const prepareUndo: WorkspaceRepositoryService["prepareUndo"] = (identity, generation, receiptId, expectedReceipt) => command(() => transact(database, () => {
     const user = ensureUser(database, identity); expectGeneration(user.generation, generation);
-    const receiptRow = database.prepare("SELECT payload_json, undone_by FROM receipts WHERE id = ? AND user_id = ? AND generation = ?").get(receiptId, user.id, generation) as { payload_json: string; undone_by: string | null } | undefined;
+    const receiptRow = database.prepare("SELECT payload_json, undone_by, proposal_id FROM receipts WHERE id = ? AND user_id = ? AND generation = ?").get(receiptId, user.id, generation) as { payload_json: string; undone_by: string | null; proposal_id: string } | undefined;
     if (receiptRow === undefined) throw fail("receipt_not_found", "That receipt is not available in this workspace.");
     if (receiptRow.undone_by !== null) throw fail("already_undone", "That receipt was already undone.");
     const receipt = JSON.parse(receiptRow.payload_json) as StoredReceipt;
+    if (expectedReceipt !== undefined) {
+      const proposalRow = database.prepare("SELECT payload_json FROM proposals WHERE id = ? AND user_id = ? AND generation = ?").get(receiptRow.proposal_id, user.id, generation) as { payload_json: string } | undefined;
+      const originalKind = proposalRow === undefined ? null : (JSON.parse(proposalRow.payload_json) as StoredProposal).public.kind;
+      if (originalKind !== expectedReceipt.kind || receipt.public.changes.length !== expectedReceipt.totalChanges) {
+        throw fail("receipt_mismatch", "The receipt does not match the requested kind and number of changes. No Undo preview was prepared. Inspect the receipt before choosing a whole-receipt reversal.");
+      }
+    }
     if (!receipt.public.undoable) throw fail("undo_unavailable", "This receipt cannot be undone.");
     const policies = receipt.applied.map((applied): PreparedPolicy => {
       const current = rowFor(database, user.id, applied.change.orderId);

@@ -1,10 +1,10 @@
-import { Effect, Fiber } from "effect";
+import { Effect, Fiber, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { exploreScenarios } from "../shared/explore.js";
-import type { AgentUiOperation, AgentViewContext, ServerMessage, StaleProposalDetail } from "../shared/contracts.js";
+import { ReviewedProposal, TutorialState, type AgentUiOperation, type AgentViewContext, type ServerMessage, type StaleProposalDetail } from "../shared/contracts.js";
 import type { ServerConfig } from "./config.js";
 import type { RequestIdentity } from "./identity.js";
-import type { AgentTurnRecord, ResolvedAgentViewContext, WorkspaceRepositoryService } from "./persistence.js";
+import type { AgentTurnRecord, OrderProgress, ResolvedAgentViewContext, WorkspaceRepositoryService } from "./persistence.js";
 import type { RealtimeHubService } from "./realtime.js";
 import { runAuditedJev, runAuditedMinistral } from "./providers/audit.js";
 import { JEV_MODEL, MINISTRAL_MODEL, ProviderError, providerBounds, type ChatMessage, type JevAdapter, type JevRequest, type JevResult, type MinistralAdapter, type MinistralRequest, type MinistralResult, type ProviderMetadata } from "./providers/contracts.js";
@@ -14,6 +14,9 @@ import { makeJevAdapter } from "./providers/jev.js";
 import { makeMinistralAdapter } from "./providers/ministral.js";
 import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, ToolExecutionError, type AgentUiRequest } from "./tool-registry.js";
 import { toolHandlers } from "./tool-handlers.js";
+import { standardAgentInstruction } from "./agent-instructions.js";
+import { describeOrderAnswer, describeProposalReview, describeQueueAnswer, describeTutorialState, tutorialPackingReply, workOperatorGuide, workPolicyReplies } from "../modules/work/index.js";
+import { operatorReplyRequest, selectedOperatorReply } from "./operator-replies.js";
 import { createGuidanceContext, type GuidanceContext, type GuidanceProblem } from "../modules/guidance.js";
 
 const maximumToolRounds = 8;
@@ -168,6 +171,10 @@ const scriptedMinistral = (): MinistralAdapter => ({
       const response = { content, toolCalls: [] };
       return { kind: "chat" as const, content, toolCalls: [], finishReason: "stop" as const, metadata: metadata(MINISTRAL_MODEL, request, response), safeRequest: request, safeResponse: response };
     }
+    if (last?.role !== "tool" && /new here|how (?:does|do|to).*?(?:job|workspace)|normal shift/.test(text)) {
+      const response = { content: workOperatorGuide, toolCalls: [] };
+      return { kind: "chat", content: workOperatorGuide, toolCalls: [], finishReason: "stop", metadata: metadata(MINISTRAL_MODEL, request, response), safeRequest: request, safeResponse: response };
+    }
     if (text.includes("simulate the provider failure fixture")) {
       return yield* providerFailure("provider_error", "The deterministic provider failure fixture stopped this request.");
     }
@@ -275,20 +282,20 @@ const adaptersFor = (config: ServerConfig): { readonly ministral: MinistralAdapt
   return { ministral: unavailableMinistral, jev: unavailableJev };
 };
 
-export const safeToolResult = (toolName: string, result: unknown) => {
+export const safeToolResult = (_toolName: string, result: unknown) => {
   const encoded = JSON.stringify({ ok: true, result });
   if (encoder.encode(encoded).byteLength <= maximumToolResultBytes) return encoded;
   return JSON.stringify({
     ok: true,
     truncated: true,
-    result: { summary: `${toolName} completed, but its result exceeded the per-tool context limit. Use narrower filters or a detail tool for more information.` },
+    result: { summary: "The action completed, but its result exceeded the context limit. Read a smaller set of records or one record's details for more information." },
   });
 };
 const safeToolFailure = (error: unknown) => JSON.stringify({
   ok: false,
   error: {
     code: error instanceof ToolExecutionError ? error.code : "tool_failed",
-    message: error instanceof Error ? error.message : "The tool failed.",
+    message: error instanceof ToolExecutionError ? error.message : "The requested action could not be completed.",
   },
 });
 const isProviderError = (error: unknown): error is ProviderError =>
@@ -326,7 +333,7 @@ const compactToolContent = (content: string): string => {
       });
     }
     if (value.ok === true && typeof value.result === "object" && value.result !== null) {
-      const result = value.result as { ok?: unknown; message?: unknown };
+      const result = value.result as { ok?: unknown; message?: unknown; count?: unknown; queueTotals?: unknown; orders?: unknown };
       if (result.ok === false) {
         return JSON.stringify({
           ok: true,
@@ -336,6 +343,15 @@ const compactToolContent = (content: string): string => {
             message: typeof result.message === "string" ? result.message.slice(0, 512) : "The requested UI result was not available.",
           },
         });
+      }
+      if (typeof result.count === "number" && Array.isArray(result.orders) && result.orders.every((order: unknown) =>
+        typeof order === "object" && order !== null && "id" in order && "status" in order && "family" in order)) {
+        return JSON.stringify({ ok: true, truncated: true, result: {
+          count: result.count,
+          queueTotals: result.queueTotals,
+          orders: result.orders.map(({ id, status, family }) => ({ id, status, family })),
+          summary: "Item descriptions and issues were omitted. Read an order's details before advising on its evidence or resolution.",
+        } });
       }
     }
     if (value.ok === true) {
@@ -538,8 +554,56 @@ export const makeAgentCoordinator = (
     let history = [...initial.history];
     const disclosures: Array<string> = [];
     let consentRequestId: string | null = null;
+    let lastPreparationFailure: string | null = null;
     try {
       const guidanceMode = guidanceLocation !== undefined;
+      // Scripted mode exercises explicit fixtures. Live standard chat first selects
+      // among a few maintained replies; selection never authorizes a business action.
+      if (!guidanceMode && finalView === "chat" && config.agentMode === "live") {
+        const message = initial.history.find((entry) => entry.role === "user")?.content ?? "";
+        const mentionedIds = [...new Set([...message.matchAll(/\bBB-\d+\b/gi)].map((match) => match[0].toUpperCase()))];
+        const orderId = mentionedIds.length === 1 ? mentionedIds[0]!
+          : mentionedIds.length === 0 && !/\d/.test(message) && viewContext.focus?.kind === "order" ? viewContext.focus.order.id : null;
+        await update(active, repository, history, "running", "Checking request");
+        if (active.cancelled) throw new Error("cancelled");
+        await ensureCurrentGeneration(active, repository);
+        const selectedProgress = orderId === null ? null : await Effect.runPromise(repository.orderProgress(active.identity, active.generation, orderId));
+        active.jevCount += 1;
+        const selection = await providerResult(active, runAuditedJev({
+          repository, identity: active.identity, generation: active.generation,
+          requestId: `${active.turnId}:reply`, turnId: active.turnId, mode: config.agentMode,
+          notify: (userId, attempt) => hub.publishAudit(userId, attempt),
+        }, adapters.jev, operatorReplyRequest(message, orderId !== null, selectedProgress)));
+        if (!selection.ok) throw selection.error;
+        if (active.cancelled) throw new Error("cancelled");
+        await ensureCurrentGeneration(active, repository);
+        const reply = selectedOperatorReply(selection.value);
+        let content: string | null = null;
+        let progress: OrderProgress | null = null;
+        if (reply === "order_details" && orderId !== null) {
+          progress = await Effect.runPromise(repository.orderProgress(active.identity, active.generation, orderId));
+          content = progress === null ? "That order is not in this workspace. Check the order ID and try again." : describeOrderAnswer(progress);
+        } else if (reply === "undo_earlier_correction") {
+          progress = orderId === null ? null : await Effect.runPromise(repository.orderProgress(active.identity, active.generation, orderId));
+          if (progress?.latestReceipt?.proposalKind === "batch") content = workPolicyReplies.undo_earlier_correction;
+        } else if (reply === "queue_summary") content = describeQueueAnswer((await Effect.runPromise(repository.snapshot(active.identity))).orders);
+        else if (reply !== "model" && reply !== "order_details") {
+          content = reply === "packing_subset" && (await Effect.runPromise(repository.snapshot(active.identity))).tutorial !== null
+            ? tutorialPackingReply : workPolicyReplies[reply];
+        }
+        if (content !== null) {
+          if (active.cancelled) throw new Error("cancelled");
+          await ensureCurrentGeneration(active, repository);
+          await Effect.runPromise(repository.recordApplicationAudit(active.identity, active.generation, {
+            kind: "tool", label: "Explain work from application facts", outcome: "completed", turnId: active.turnId,
+            body: { source: "maintained_reply", reply, ...(progress === null ? {} : { orderId, progress }), content },
+          }));
+          history.push({ role: "assistant", content });
+          waitForFinalRender(active, repository, history);
+          await update(active, repository, history, "waiting_for_ui", "Rendering answer", { finished: true });
+          return null;
+        }
+      }
       let latestGuidanceLocation = guidanceLocation;
       const getCurrentGuidanceContext = async (acknowledgedLocation?: AgentViewContext): Promise<GuidanceContext> => {
         if (guidanceLocation === undefined) throw new Error("Guidance is unavailable for this turn.");
@@ -566,8 +630,10 @@ export const makeAgentCoordinator = (
       const priorGroups = guidanceMode ? [] : await Effect.runPromise(repository.agentHistories(active.identity, active.generation, active.turnId, 6));
       const system: ChatMessage = guidanceMode
         ? { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Explain the current problem briefly using verified application facts. The person performs all business changes. Read the bounded guidance context, find a relevant guide, and offer Show me using its opaque reference. An offer only shows consent; it does not navigate. Use showNote only for a registered target in the current context. If a reference is stale or a target is missing, use the returned current context and explain what is available. Never claim a note or offer appeared when its result says otherwise. Do not prepare, accept, navigate, highlight, or start tutorials in this guidance turn. Keep your final answer concise." }
-        : { role: "system", content: "You are the Bracken & Beam fulfilment assistant. Use only the registered tools. Never accept or commit a proposal. Prepare exact previews for the person to review. Application policy owns stock, arithmetic, permissions, and eligibility. For queue overviews, report each status total on its own line as Ready: N, Review: N, Waiting: N. Use listOrders.queueTotals for these whole-queue totals; listOrders.count describes only its filtered result. Then give one to three review orders, if any exist, each on its own line as ID: status, family. Exact recorded issue. Include only these lines, with no inferred urgency or other claims. Match each named order to its returned status; never place a ready order under review or waiting. If a filtered list has no review examples, fetch them before claiming none exist. Read individual order facts before describing issues. Independent status and family groups are not intersections; match order IDs to combine them. Omit unused filters rather than inventing filter values. Use getOrder for order IDs, evidence, and claimed prior acceptance; it reads but does not open the order. For accepted work, compare getOrder current value and flags with latestReceipt.change and committedVersion. Explain before and after, including recorded price or stock effects. Resolved Ready means changed but packing is pending; never say no action remains. Completed means released to packing. To complete Ready work, a person reviews and accepts the full eligible Ready batch. After already_resolved, use getOrder; do not suggest another resolution or unasked Undo. prepareBatch includes all eligible Ready orders, never just one. Undo reverses a whole receipt, never selected batch orders. If asked to pack one order, say no such control exists; never suggest batch then Undo. Prepare batch only for an explicit full-batch preview; the person accepts. To show or highlight order evidence, first navigate to the order view with its orderId, then highlight orderEvidence after navigation succeeds. Never claim a UI operation succeeded when its result says ok: false. Use classifyNote only for actual customer or operator note text, never for an ID or a request to find an order. Use checkConsent to assess an order's customer consent. For teaching requests, inspect the task and start the matching available tutorial: address-correction, substitution-review, or batch-approval. Prepare tools show the review automatically; the application acknowledges a displayed proposal, so do not request another narration step. Keep answers concise. A work item named in the latest user message overrides the selected application context. If a tool reports a missing UI target or another recoverable result, say what remains available. The application displays validated consent evidence and every returned alternative directly; do not repeat them unless the person asks." };
-      const applicationContext: ChatMessage = { role: "system", content: `${contextPrefix}${JSON.stringify(initialGuidanceContext?.publicContext ?? viewContext)}` };
+        : { role: "system", content: standardAgentInstruction };
+      const tutorial = (await Effect.runPromise(repository.snapshot(active.identity))).tutorial;
+      const standardContext = { ...viewContext, activeTutorial: tutorial === null ? null : { title: tutorial.title, phase: tutorial.phase, instruction: tutorial.instruction } };
+      const applicationContext: ChatMessage = { role: "system", content: `${contextPrefix}${JSON.stringify(initialGuidanceContext?.publicContext ?? standardContext)}` };
       for (let round = 0; round < maximumToolRounds; round += 1) {
         if (active.cancelled) throw new Error("cancelled");
         await ensureCurrentGeneration(active, repository);
@@ -585,9 +651,11 @@ export const makeAgentCoordinator = (
         if (!result.ok) throw result.error;
         if (active.cancelled) throw new Error("cancelled");
         await ensureCurrentGeneration(active, repository);
-        const returnedContent = result.value.content.trim();
-        const finalContent = result.value.toolCalls.length === 0 && disclosures.length > 0
-          ? `${disclosures.join(" ")} ${returnedContent}`.trim()
+        const returnedContent = result.value.toolCalls.length === 0 && lastPreparationFailure !== null
+          ? `I could not complete the requested review. ${lastPreparationFailure} No business changes were saved.`
+          : result.value.content.trim();
+        const finalContent = result.value.toolCalls.length === 0
+          ? [...disclosures, returnedContent].join(" ").trim()
           : result.value.content;
         const assistant: ChatMessage = { role: "assistant", content: finalContent || null, ...(result.value.toolCalls.length === 0 ? {} : { toolCalls: result.value.toolCalls }) };
         history.push(assistant);
@@ -606,7 +674,9 @@ export const makeAgentCoordinator = (
           return consentRequestId;
         }
         if (result.value.toolCalls.length > maximumCallsPerRound) throw new Error("The provider requested too many tools in one round.");
-        let displayedProposal = false;
+        let displayedProposalId: string | null = null;
+        let displayedProposal: ReviewedProposal | null = null;
+        let tutorialChanged = false;
         const toolFailures: Array<string> = [];
         for (const call of result.value.toolCalls) {
           if (active.cancelled) throw new Error("cancelled");
@@ -616,8 +686,9 @@ export const makeAgentCoordinator = (
           let content: string;
           let output: unknown = null;
           let providerError: ProviderError | null = null;
+          let diagnostic: ToolExecutionError["diagnostic"];
           if (tool === null || (guidanceMode && !isGuidanceToolAllowed(call.name)) || (!guidanceMode && !standardModelTools.some((candidate) => candidate.name === call.name))) {
-            content = safeToolFailure(new ToolExecutionError(tool === null ? "unknown_tool" : "forbidden_tool", tool === null ? `Unknown tool: ${call.name}` : `Tool ${call.name} is unavailable in this turn.`));
+            content = safeToolFailure(new ToolExecutionError(tool === null ? "unknown_tool" : "forbidden_tool", tool === null ? "That action is not available in this workspace." : "That action is not available in this help session."));
           } else {
             try {
               output = await tool.execute({
@@ -640,10 +711,12 @@ export const makeAgentCoordinator = (
                   return jev.value;
                 },
                 requestUi: async (operation) => {
-                  const acknowledgement = await requestUi(active, repository, history, operation, guidanceMode ? getCurrentGuidanceContext : undefined);
-                  if (operation.kind === "navigate" || operation.kind === "present_proposal") {
-                    displayedProposal = operation.kind === "present_proposal" && acknowledgement.applied;
+                  if (operation.kind === "present_proposal" || operation.kind === "navigate") {
+                    displayedProposalId = null;
+                    displayedProposal = null;
                   }
+                  const acknowledgement = await requestUi(active, repository, history, operation, guidanceMode ? getCurrentGuidanceContext : undefined);
+                  if (acknowledgement.applied && operation.kind === "present_proposal") displayedProposalId = operation.proposalId;
                   return acknowledgement;
                 },
               }, call.arguments);
@@ -654,15 +727,25 @@ export const makeAgentCoordinator = (
                 const disclosure = consentDisclosure(output);
                 if (disclosure !== null && !disclosures.includes(disclosure)) disclosures.push(disclosure);
               }
+              if (Schema.is(ReviewedProposal)(output) && output.id === displayedProposalId) {
+                displayedProposal = output;
+                lastPreparationFailure = null;
+              }
+              if ((call.name === "startTutorial" && Schema.is(TutorialState)(output)) || call.name === "stopTutorial") tutorialChanged = true;
               content = safeToolResult(call.name, output);
             } catch (error) {
               if (active.cancelled || (error instanceof Error && error.message === "cancelled")) throw error;
               content = safeToolFailure(error);
+              if (error instanceof ToolExecutionError) diagnostic = error.diagnostic;
               if (isProviderError(error)) providerError = error;
             }
           }
           const payload = JSON.parse(content) as { ok: boolean; error?: { message?: string }; result?: { ok?: boolean; message?: string } };
-          if (!payload.ok || payload.result?.ok === false) toolFailures.push(`${call.name}: ${payload.error?.message ?? payload.result?.message ?? "The tool failed."}`);
+          if (!payload.ok || payload.result?.ok === false) {
+            const failure = `${tool?.purpose ?? "Requested action"}: ${payload.error?.message ?? payload.result?.message ?? "The action could not be completed."}`;
+            toolFailures.push(failure);
+            if (tool?.category === "Prepare") lastPreparationFailure = failure;
+          }
           history.push({ role: "tool", content, toolCallId: call.id });
           let auditedResult: unknown = content;
           try { auditedResult = JSON.parse(content); } catch { /* The bounded text still records the terminal tool outcome. */ }
@@ -676,15 +759,16 @@ export const makeAgentCoordinator = (
             requestId: call.id,
             turnId: active.turnId,
             proposalId,
-            body: { ...(proposalId === null ? {} : { state: "prepared" }), tool: call.name, arguments: call.arguments, result: auditedResult },
+            body: { ...(proposalId === null ? {} : { state: "prepared" }), tool: call.name, arguments: call.arguments, result: auditedResult, ...(diagnostic === undefined ? {} : { diagnostic }) },
           }));
           await update(active, repository, history, "running", "Working");
           if (providerError !== null) throw providerError;
         }
-        if (displayedProposal) {
+        if (displayedProposal !== null || tutorialChanged) {
           if (active.cancelled) throw new Error("cancelled");
           await ensureCurrentGeneration(active, repository);
-          const acknowledgement = "The proposal is ready for your review. Nothing changes until you accept it.";
+          const acknowledgement = displayedProposal !== null ? describeProposalReview(displayedProposal)
+            : describeTutorialState((await Effect.runPromise(repository.snapshot(active.identity))).tutorial);
           history.push({ role: "assistant", content: [...disclosures, acknowledgement, ...toolFailures, ...(active.uiMissing ? ["Some requested UI could not be displayed."] : [])].join(" ") });
           const failed = toolFailures.length > 0;
           if (!failed && !active.uiMissing) waitForFinalRender(active, repository, history);

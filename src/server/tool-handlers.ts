@@ -4,6 +4,7 @@ import type { OrderSummary, ReviewedProposal } from "../shared/contracts.js";
 import { ToolExecutionError, type ToolContext, type ToolHandlers } from "./tool-registry.js";
 import { discoverGuides, validateGuidanceNote, validateGuidanceOffer } from "../guidance/catalog.js";
 import type { GuidanceNoteRequest, GuidanceOfferRequest } from "../guidance/contracts.js";
+import { describeOrderProgress } from "../modules/work/index.js";
 
 const orderOutput = (order: OrderSummary) => ({
   id: order.id,
@@ -107,7 +108,13 @@ export const toolHandlers: ToolHandlers = {
     const orderId = (input as { orderId: string }).orderId;
     const progress = await Effect.runPromise(context.repository.orderProgress(context.identity, context.generation, orderId));
     if (progress === null) throw new ToolExecutionError("tool_failed", "That order is not in this workspace.");
-    return { order: { ...orderOutput(progress.order), completed: progress.completed, resolved: progress.resolved }, latestReceipt: progress.latestReceipt };
+    const latestReceipt = progress.latestReceipt === null ? null : (() => {
+      const { id: _receiptId, proposalKind, kind: _receiptKind, ...receipt } = progress.latestReceipt;
+      return { ...receipt, kind: proposalKind };
+    })();
+    return { order: { ...orderOutput(progress.order), completed: progress.completed, resolved: progress.resolved,
+      progress: describeOrderProgress({ status: progress.order.status, completed: progress.completed, resolved: progress.resolved }),
+    }, latestReceipt };
   },
   groupOrders: async (context, input) => {
     const state = await snapshot(context);
@@ -122,7 +129,7 @@ export const toolHandlers: ToolHandlers = {
   getAuditTrace: async (context, input) => {
     const args = input as { requestId?: string; turnId?: string };
     if (args.requestId === undefined && args.turnId === undefined) {
-      throw new ToolExecutionError("invalid_arguments", "Provide a requestId or turnId.");
+      throw new ToolExecutionError("invalid_arguments", "Choose the recorded request or conversation turn to inspect in Audit.");
     }
     const attempts = await Effect.runPromise(context.repository.providerAttempts(context.identity, 12, args));
     return {
@@ -144,10 +151,10 @@ export const toolHandlers: ToolHandlers = {
   navigate: async (context, input) => {
     const args = input as { view: "work" | "explore" | "audit" | "order"; orderId?: string };
     if (args.view === "order") {
-      if (args.orderId === undefined) throw new ToolExecutionError("invalid_arguments", "An orderId is required for the order view.");
+      if (args.orderId === undefined) throw new ToolExecutionError("invalid_arguments", "Choose an order before opening its details.");
       await findOrder(context, args.orderId);
     } else if (args.orderId !== undefined) {
-      throw new ToolExecutionError("invalid_arguments", "orderId is only accepted for the order view.");
+      throw new ToolExecutionError("invalid_arguments", "An order can only be selected when opening order details.");
     }
     const result = await context.requestUi({ kind: "navigate", view: args.view, ...(args.orderId === undefined ? {} : { orderId: args.orderId }) });
     return { ok: result.applied, message: result.message };
@@ -155,8 +162,8 @@ export const toolHandlers: ToolHandlers = {
   highlight: async (context, input) => {
     const args = input as { target: "workQueue" | "readyFilter" | "chatComposer" | "orderRow" | "orderEvidence"; orderId?: string };
     const requiresOrder = args.target === "orderRow" || args.target === "orderEvidence";
-    if (requiresOrder && args.orderId === undefined) throw new ToolExecutionError("invalid_arguments", "That target requires an orderId.");
-    if (!requiresOrder && args.orderId !== undefined) throw new ToolExecutionError("invalid_arguments", "That target does not accept an orderId.");
+    if (requiresOrder && args.orderId === undefined) throw new ToolExecutionError("invalid_arguments", "Choose an order before pointing to its details or evidence.");
+    if (!requiresOrder && args.orderId !== undefined) throw new ToolExecutionError("invalid_arguments", "Choose an order detail or evidence control when pointing to a specific order.");
     if (args.orderId !== undefined) await findOrder(context, args.orderId);
     const targetId = args.target === "workQueue" ? targets.workQueue
       : args.target === "readyFilter" ? targets.readyFilter
@@ -183,7 +190,13 @@ export const toolHandlers: ToolHandlers = {
   },
   prepareResolution: async (context, input) => prepareResolution(context, (input as { orderId: string }).orderId),
   prepareBatch: async (context) => present(context, await Effect.runPromise(context.repository.prepareBatch(context.identity, context.generation))),
-  prepareUndo: async (context, input) => present(context, await Effect.runPromise(context.repository.prepareUndo(context.identity, context.generation, (input as { receiptId: string }).receiptId))),
+  prepareUndo: async (context, input) => {
+    const args = input as { orderId: string; expectedKind: "resolution" | "batch"; expectedChanges: number };
+    const latest = (await Effect.runPromise(context.repository.orderProgress(context.identity, context.generation, args.orderId)))?.latestReceipt;
+    const receiptId = latest?.id;
+    if (receiptId === undefined) throw new ToolExecutionError("tool_failed", "That order has no accepted receipt available for Undo in this workspace.");
+    return present(context, await Effect.runPromise(context.repository.prepareUndo(context.identity, context.generation, receiptId, { kind: args.expectedKind, totalChanges: args.expectedChanges })));
+  },
   classifyNote: async (context, input) => {
     const note = (input as { note: string }).note;
     const result = await context.runJev({
@@ -203,7 +216,7 @@ export const toolHandlers: ToolHandlers = {
     });
     const answer = result.answers.category;
     if (answer?.type !== "choice" || !["address", "substitution", "bundle", "weight", "carrier", "duplicate", "other"].includes(answer.choice)) {
-      throw new ToolExecutionError("invalid_output", "Jev did not return a permitted note category.");
+      throw new ToolExecutionError("invalid_output", "The note check did not return a usable result.");
     }
     return { category: answer.choice, confidence: answer.confidence, alternatives: probabilityEntries(answer.probabilities).map(({ label, probability }) => ({ category: label, probability })) };
   },
@@ -226,7 +239,7 @@ export const toolHandlers: ToolHandlers = {
     });
     const answer = result.answers.consent;
     if (answer?.type !== "choice" || !["explicit", "conditional", "unclear"].includes(answer.choice)) {
-      throw new ToolExecutionError("invalid_output", "Jev did not return a permitted consent result.");
+      throw new ToolExecutionError("invalid_output", "The consent check did not return a usable result.");
     }
     const consent = answer.choice as "explicit" | "conditional" | "unclear";
     const conservativeConsent = answer.confidence < 0.6 ? "unclear" : consent;

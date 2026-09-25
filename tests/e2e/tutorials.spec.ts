@@ -12,7 +12,7 @@ const startTutorial = async (page: Page, message: string, title: string) => {
   const composer = page.getByPlaceholder("Message...");
   await composer.fill(message);
   await page.getByRole("button", { name: "Send message" }).click();
-  await expect(page.getByText("The tutorial is ready. Your verified work advances it, and you can dismiss it at any time.")).toBeVisible();
+  await expect(page.locator('[data-chat-role="assistant"]').filter({ hasText: `The ${title} tutorial is active.` }).last()).toBeVisible();
   await expect(page.getByLabel(`${title} tutorial`)).toBeVisible();
   await expect(composer).toBeEnabled();
 };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { ClientMessage } from "../../src/shared/contracts";
 import { exploreScenarios } from "../../src/shared/explore";
 import { isRegisteredTarget, targets } from "../../src/shared/targets";
@@ -9,6 +9,7 @@ import { safeToolResult } from "../../src/server/agent-runtime";
 import { GuidanceContextByteLimit, PublicGuidanceContext, guidanceUtf8Bytes } from "../../src/guidance/contracts";
 import type { GuidanceContext } from "../../src/guidance/catalog";
 import type { ToolContext } from "../../src/server/tool-registry";
+import { WorkspaceCommandError } from "../../src/server/persistence";
 
 describe("agent tool registry", () => {
   const registry = makeToolRegistry(toolHandlers);
@@ -50,9 +51,13 @@ describe("agent tool registry", () => {
     expect(tools.highlight?.validateArguments({ target: "#app", selector: "body" })).toBe(false);
     expect(tools.prepareBatch?.validateArguments({ commit: true })).toBe(false);
     expect(tools.prepareBatch?.validateArguments({ orderId: "BB-1051" })).toBe(false);
-    expect(tools.prepareUndo?.validateArguments({ receiptId: "receipt_123", orderId: "BB-1051" })).toBe(false);
+    expect(tools.prepareUndo?.validateArguments({ orderId: "BB-1051" })).toBe(false);
+    expect(tools.prepareUndo?.validateArguments({ orderId: "BB-1051", expectedKind: "batch", expectedChanges: 6 })).toBe(true);
+    expect(tools.prepareUndo?.validateArguments({ receiptId: "receipt_123" })).toBe(false);
+    expect(tools.prepareUndo?.validateArguments({ receiptId: "receipt_123", expectedKind: "resolution", expectedChanges: 1 })).toBe(false);
+    expect(tools.prepareUndo?.validateArguments({ receiptId: "receipt_123", orderId: "BB-1051", expectedKind: "resolution", expectedChanges: 1 })).toBe(false);
     expect(tools.prepareBatch?.description).toContain("all currently eligible Ready orders");
-    expect(tools.prepareUndo?.description).toContain("every change in one");
+    expect(tools.prepareUndo?.description).toContain("every change in the receipt");
     expect(tools.startTutorial?.validateArguments({ tutorialId: "address-correction" })).toBe(true);
     expect(tools.startTutorial?.validateArguments({ tutorialId: "invented-lesson", orderId: "BB-1042" })).toBe(false);
     expect(tools.offerGuide?.validateArguments({ contextRef: "ctx_1", guideRef: "g_1" })).toBe(true);
@@ -86,6 +91,20 @@ describe("agent tool registry", () => {
     const wrappedStale = JSON.parse(safeToolResult("offerGuide", stale)) as { truncated?: boolean; result?: { kind?: string; currentContext?: { contextRef?: string } } };
     expect(wrappedStale).toMatchObject({ result: { kind: "stale_context", currentContext: { contextRef: "ctx_current" } } });
     expect(wrappedStale.truncated).toBeUndefined();
+  });
+
+  it("keeps domain recovery messages while separating unexpected diagnostics", async () => {
+    const run = (error: Error) => makeToolRegistry({ ...toolHandlers, prepareBatch: () => Effect.runPromise(Effect.fail(error)) }).prepareBatch.execute({} as ToolContext, {});
+    await expect(run(new WorkspaceCommandError({ code: "already_resolved", message: "That resolution was already accepted. Read the current order and its latest receipt before advising another action." }))).rejects.toMatchObject({
+      message: expect.stringContaining("Read the current order and its latest receipt"),
+    });
+    for (const error of [new Error("internalMethod failed in SQLite"), new WorkspaceCommandError({ code: "command_failed", message: "internalMethod failed in SQLite" })]) {
+      await expect(run(error)).rejects.toMatchObject({
+        message: "The request to prepare a batch could not be completed. Try again or inspect Audit for details.",
+        diagnostic: { message: "internalMethod failed in SQLite" },
+      });
+    }
+    await expect(registry.prepareBatch.execute({} as ToolContext, { orderId: "BB-1042" })).rejects.toMatchObject({ message: "The request to prepare a batch has invalid details." });
   });
 
   it("rejects excess realtime fields before dispatch", () => {

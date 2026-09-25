@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import type { AgentUiOperation, ReviewedProposal } from "../shared/contracts.js";
 import { OrderStatus, ResolutionFamily, ReviewedProposal as ReviewedProposalSchema, TutorialId, TutorialState } from "../shared/contracts.js";
 import type { RequestIdentity } from "./identity.js";
-import type { WorkspaceRepositoryService } from "./persistence.js";
+import { WorkspaceCommandError, type WorkspaceRepositoryService } from "./persistence.js";
 import { ProviderError, type JevRequest, type JevResult } from "./providers/contracts.js";
 import { PublicGuidanceContext } from "../guidance/contracts.js";
 import type { GuidanceContext } from "../guidance/catalog.js";
@@ -70,10 +70,11 @@ const orderResult = Schema.Struct({
   businessValue: Schema.String,
   completed: Schema.Boolean,
   resolved: Schema.Boolean,
+  progress: Schema.Struct({ resolution: Schema.String, packing: Schema.String }),
   evidence: Schema.Array(Schema.Struct({ label: Schema.String, value: Schema.String, occurredAt: Schema.String, age: Schema.String })),
 });
 const orderReceiptResult = Schema.Struct({
-  id: Schema.String, kind: Schema.Literals(["accept", "undo", "reset"]), title: Schema.String,
+  kind: Schema.Literals(["resolution", "batch", "undo", "reset"]), title: Schema.String,
   committedAt: Schema.String,
   change: Schema.Struct({ orderId: Schema.String, family: ResolutionFamily, before: Schema.String, after: Schema.String, effect: Schema.String }),
   committedVersion: Schema.Int, totalChanges: Schema.Int,
@@ -106,10 +107,16 @@ export type AgentUiRequest =
   | { readonly kind: "show_note"; readonly contextRef: string; readonly note: import("../guidance/contracts.js").GuidanceNote };
 
 export class ToolExecutionError extends Error {
-  constructor(readonly code: "unknown_tool" | "forbidden_tool" | "invalid_arguments" | "invalid_output" | "tool_failed", message: string) {
+  constructor(readonly code: "unknown_tool" | "forbidden_tool" | "invalid_arguments" | "invalid_output" | "tool_failed", message: string, readonly diagnostic?: { readonly code: string; readonly message: string }) {
     super(message);
   }
 }
+
+const publicCommandErrors = new Set([
+  "generation_changed", "order_not_found", "order_completed", "already_resolved",
+  "nothing_ready", "receipt_not_found", "receipt_mismatch", "already_undone", "undo_unavailable", "undo_conflict",
+  "tutorial_unavailable", "tutorial_step_required",
+]);
 
 interface ToolSpec {
   readonly description: string;
@@ -157,11 +164,12 @@ const specs = {
     output: Schema.Struct({ count: Schema.Int, queueTotals: Schema.Struct({ ready: Schema.Int, review: Schema.Int, waiting: Schema.Int }), orders: Schema.Array(orderListResult) }),
   },
   getOrder: {
-    description: "Look up an order ID and read its current details, completion state, and latest receipt affecting it, including an Undo. committedVersion is the order version after that receipt was accepted. A resolved order may still be Ready for a separate reviewed packing batch; completed orders leave the Work queue. Compare the current value with the receipt change before claiming acceptance did or did not apply. Use this for order IDs, not classifyNote.",
+    description: "Read current order details, plain-language resolution and packing progress, and the latest receipt affecting it, including Undo. Reading does not open the order on screen. Explain progress using the returned descriptions, not raw field names. Ready status alone establishes neither an accepted resolution nor packing release: released orders can retain that stored status. Compare current values with the receipt change and committedVersion before describing accepted work. The receipt timestamp records acceptance; evidence timestamps do not. Use this lookup to find the receipt for an explicitly requested whole-receipt Undo instead of asking the person for an ID you can retrieve.",
     category: "Read", purpose: "Inspect an order", allowedEffects: ["read_workspace"],
     example: { arguments: { orderId: "BB-1042" }, result: { order: {
       id: "BB-1042", item: "Woven basket", issue: "Street number needs checking.", status: "review", family: "address", version: 1,
       businessValue: "14 Willow Lane, Bath BA1 2AB", completed: false, resolved: false,
+      progress: { resolution: "No reviewed action is currently applied to this order.", packing: "Not released to packing. Review the recorded issue and evidence." },
       evidence: [{ label: "Customer", value: "The number is 41, not 14. Everything else is right.", occurredAt: "2026-09-21T08:40:00.000Z", age: "34 min ago" }],
     }, latestReceipt: null } },
     input: OrderIdInput, output: Schema.Struct({ order: orderResult, latestReceipt: Schema.NullOr(orderReceiptResult) }),
@@ -193,7 +201,7 @@ const specs = {
     input: Schema.Struct({ target: Schema.Literals(["workQueue", "readyFilter", "chatComposer", "orderRow", "orderEvidence"]), orderId: Schema.optionalKey(Identifier) }), output: ResultMessage,
   },
   startTutorial: {
-    description: "Teach a task with address-correction, substitution-review, or batch-approval. Choose the tutorial matching the inspected order or requested workflow. Real user actions advance it.",
+    description: "Start a fixed tutorial only when the person explicitly requests a specific supported walkthrough. A general onboarding or job explanation does not authorize choosing a tutorial. Inspect any named order before selecting address-correction, substitution-review, or batch-approval. Real user actions advance it and keep all review and acceptance requirements.",
     category: "Guide", purpose: "Teach a task", allowedEffects: ["start_bounded_tutorial"],
     example: { arguments: { tutorialId: "address-correction" }, result: { id: "address-correction", instanceId: "tutorial_example", title: "Address correction", step: 0, totalSteps: 8, phase: "teaching", instruction: "Open BB-1042 and compare the saved address with the evidence.", targetId: "target-order-BB-1042" } },
     input: Schema.Struct({ tutorialId: TutorialId }), output: TutorialState,
@@ -223,15 +231,15 @@ const specs = {
     input: OrderIdInput, output: ProposalOutput,
   },
   prepareBatch: {
-    description: "Prepare one batch containing all currently eligible Ready orders with exact inclusions and omissions. This tool has no order selector and cannot release only one Ready order. The user must inspect and accept or cancel the entire preview.",
+    description: "Use when the person explicitly requests a preview of the FULL eligible Ready batch or asks to release that full batch to packing. That request authorizes preparing this review; do not ask for the same permission again. This tool presents a preview, never accepts it. For a request to pack one order or a subset, do not call: explain the limitation and ask whether they want the full batch, then wait for their answer. A request only to accept or auto-approve existing work does not authorize a new preview. Outside tutorials this prepares all currently eligible Ready orders with exact inclusions and omissions. Active tutorials restrict preparation to their assigned practice group; explain that restriction before treating a tutorial batch as the whole queue. There is no arbitrary order selector. Only the person can accept the entire preview to release it to packing.",
     category: "Prepare", purpose: "Prepare a batch", allowedEffects: ["create_reviewed_proposal"],
     example: { arguments: {}, result: proposalExample("batch", "Review 1 change", substitutionExample) }, input: EmptyInput, output: ProposalOutput,
   },
   prepareUndo: {
-    description: "Prepare a checked reversal of every change in one of the current user's receipts. This tool cannot undo selected orders from a batch receipt. The user must accept the entire preview.",
+    description: "Prepare reversal of the WHOLE latest accepted receipt affecting one order. An explicit whole-receipt Undo request authorizes this preview; do not ask again. First inspect the order. Pass its orderId, expectedKind from latestReceipt.kind, and expectedChanges from latestReceipt.totalChanges. The server resolves the receipt; never pass a receipt ID. An orderId selects its entire latest receipt, including all orders in a batch. Never substitute a later batch for an earlier correction. This tool cannot locate an earlier receipt: explain that limitation if the requested receipt is not the latest. For a selected-order or subset Undo whose receipt has multiple changes, do not call: explain that every change in the receipt would be reversed and ask whether they want that whole review, then wait. This tool presents a checked preview, never accepts it. Only the person can accept the entire preview. A later edit may make Undo unavailable.",
     category: "Prepare", purpose: "Prepare an undo", allowedEffects: ["create_reviewed_proposal"],
-    example: { arguments: { receiptId: "receipt_example" }, result: proposalExample("undo", "Undo 1 accepted change", undoExample) },
-    input: Schema.Struct({ receiptId: Identifier }), output: ProposalOutput,
+    example: { arguments: { orderId: "BB-1051", expectedKind: "resolution", expectedChanges: 1 }, result: proposalExample("undo", "Undo 1 accepted change", undoExample) },
+    input: Schema.Struct({ orderId: Identifier, expectedKind: Schema.Literals(["resolution", "batch"]), expectedChanges: Schema.Int }), output: ProposalOutput,
   },
   classifyNote: {
     description: "Classify actual customer or operator note text into the six exception families plus other using Jev. Never pass an order ID or an order lookup request; use getOrder to retrieve evidence first.",
@@ -283,19 +291,26 @@ export const makeToolRegistry = (handlers: ToolHandlers): Readonly<Record<ToolNa
       try {
         decoded = Schema.decodeUnknownSync(spec.input, { onExcessProperty: "error" })(input);
       } catch {
-        throw new ToolExecutionError("invalid_arguments", `Arguments for ${name} do not match its schema.`);
+        throw new ToolExecutionError("invalid_arguments", `The request to ${spec.purpose.toLowerCase()} has invalid details.`);
       }
       let output: unknown;
       try {
         output = await handlers[name](context, decoded as never);
       } catch (error) {
         if (error instanceof ToolExecutionError || error instanceof ProviderError) throw error;
-        throw new ToolExecutionError("tool_failed", error instanceof Error ? error.message : `${name} failed.`);
+        const domainError = error instanceof WorkspaceCommandError;
+        const message = domainError && publicCommandErrors.has(error.code)
+          ? error.message
+          : `The request to ${spec.purpose.toLowerCase()} could not be completed. Try again or inspect Audit for details.`;
+        throw new ToolExecutionError("tool_failed", message, {
+          code: domainError ? error.code : "unexpected_error",
+          message: (error instanceof Error ? error.message : String(error)).slice(0, 2_000),
+        });
       }
       try {
         return Schema.decodeUnknownSync(spec.output, { onExcessProperty: "error" })(output);
       } catch {
-        throw new ToolExecutionError("invalid_output", `${name} returned an invalid result.`);
+        throw new ToolExecutionError("invalid_output", `The request to ${spec.purpose.toLowerCase()} returned an invalid result.`);
       }
     };
     return [name, { name, description: spec.description, category: spec.category, purpose: spec.purpose, allowedEffects: spec.allowedEffects, example: spec.example, parameters: jsonSchema(spec.input), outputSchema: jsonSchema(spec.output), execute }] as const;

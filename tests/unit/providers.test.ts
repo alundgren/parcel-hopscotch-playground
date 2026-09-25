@@ -431,6 +431,8 @@ describe("Ministral OpenRouter adapter", () => {
     };
     await Effect.runPromise(adapter.complete(history));
     expect(sent).toMatchObject({
+      temperature: 0.1,
+      provider: { require_parameters: true },
       messages: [
         { role: "user", content: "Find BB-1042." },
         { role: "assistant", content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "getOrder", arguments: "{\"orderId\":\"BB-1042\"}" } }] },

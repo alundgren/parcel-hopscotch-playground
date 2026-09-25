@@ -182,6 +182,7 @@ await new Promise((resolve, reject) => { build.once('error', reject); build.once
 const require = createRequire(join(repo, 'package.json'));
 const { chromium } = require('@playwright/test');
 const knownTools = ['listOrders', 'getOrder', 'groupOrders', 'getAuditTrace', 'navigate', 'highlight', 'startTutorial', 'stopTutorial', 'prepareAddressCorrection', 'prepareSubstitution', 'prepareResolution', 'prepareBatch', 'prepareUndo', 'classifyNote', 'checkConsent', 'prepareReset'];
+const catalogueTools = [...knownTools, 'readGuidanceContext', 'findGuides', 'offerGuide', 'showNote'];
 const cases = [
   { id: 'explore-overview', button: 'Try in Work: Get your bearings', tools: [], kind: 'overview' },
   { id: 'explore-learn', button: 'Try in Work: Learn a task', tools: ['getOrder', 'startTutorial'], kind: 'tutorial' },
@@ -344,7 +345,7 @@ try {
         await page.getByTestId('connection-status').filter({ hasText: 'Connected' }).waitFor();
         await page.getByRole('button', { name: 'All 24', exact: true }).waitFor();
         await wait(() => snapshot && catalogue, 'workspace and tool catalogue');
-        if (JSON.stringify(catalogue.map((tool) => tool.id).sort()) !== JSON.stringify([...knownTools].sort())) throw new Error('Registry changed; update this suite before running paid tests.');
+        if (JSON.stringify(catalogue.map((tool) => tool.id).sort()) !== JSON.stringify([...catalogueTools].sort())) throw new Error('Registry changed; update this suite before running paid tests.');
         const userId = rows('SELECT id FROM users ORDER BY rowid DESC LIMIT 1')[0].id;
         business(userId);
         if (check) {

@@ -7,11 +7,12 @@ import type { ServerMessage } from "../../src/shared/contracts";
 import { makeAgentCoordinator } from "../../src/server/agent-runtime";
 import type { ServerConfig } from "../../src/server/config";
 import { resolveIdentity } from "../../src/server/identity";
-import { runWithWorkspaceRepository, WorkspaceRepository, type AgentTurnRecord, type WorkspaceRepositoryService } from "../../src/server/persistence";
+import { runWithWorkspaceRepository, WorkspaceCommandError, WorkspaceRepository, type AgentTurnRecord, type WorkspaceRepositoryService } from "../../src/server/persistence";
 import type { ChatMessage, JevAdapter, MinistralAdapter, MinistralRequest, MinistralResult, ProviderMetadata } from "../../src/server/providers/contracts";
 import { buildMinistralWireRequest } from "../../src/server/providers/chat-request";
 import { jsonBytes, providerFailure } from "../../src/server/providers/http";
 import type { RealtimeHubService } from "../../src/server/realtime";
+import { workPolicyReplies } from "../../src/modules/work";
 
 const paths: Array<string> = [];
 const config: ServerConfig = {
@@ -77,6 +78,259 @@ afterEach(async () => {
 });
 
 describe("agent runtime", () => {
+  it.each(["job_guide", "packing_subset", "undo_subset", "acceptance_only", "order_details", "queue_summary", "model", "uncertain"] as const)("uses a bounded live reply selection for %s without granting action authority", async (reply) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let chatCalls = 0;
+    let decisionCalls = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => { chatCalls += 1; return result([], "The general assistant answered."); }) };
+    const jev: JevAdapter = { decide: (request) => Effect.sync(() => {
+      decisionCalls += 1;
+      expect(request.questions.reply?.type).toBe("choice");
+      if (reply === "order_details") expect(request.state).toMatchObject({ latestReceipt: { orderId: "BB-1051", kind: "batch", totalChanges: 6 } });
+      const choice = reply === "uncertain" ? "job_guide" : reply;
+      return { kind: "decisions", answers: { reply: { type: "choice", choice, confidence: reply === "uncertain" ? 0.6 : 0.99, probabilities: { [choice]: 1 } } }, metadata: { ...metadata, requestedModel: "typesafe/jev-1.13" }, safeRequest: request, safeResponse: { choice } };
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      if (reply === "order_details") {
+        const batch = yield* repository.prepareBatch(identity, 1);
+        yield* repository.accept(identity, 1, batch.id, "progress-before-turn");
+      }
+      const before = yield* repository.snapshot(identity);
+      const coordinator = makeAgentCoordinator({ ...config, agentMode: "live" }, { ministral, jev });
+      const turnId = `turn_12345678-reply-${reply.replaceAll("_", "-")}`;
+      const sent: ServerMessage[] = [];
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: reply, message: reply === "order_details" ? "Has BB-1051 been packed?" : "Test the selected response.", viewContext: { view: "work", focus: { kind: "order", orderId: "BB-1042" } }, connectionId: reply, send: async (message) => { sent.push(message); } }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      const content = turn.history.at(-1)?.content ?? "";
+      expect(decisionCalls).toBe(1);
+      expect(chatCalls).toBe(reply === "model" ? 1 : 0);
+      if (reply === "order_details") {
+        expect(content).toContain("BB-1051:");
+        expect(content).not.toContain("BB-1042");
+        expect(content).toContain("A reviewed action was accepted for this order");
+        expect(content).toContain("Customer message: Sage is perfect, please swap it.");
+        expect(content).toContain("Released to packing. This does not establish that physical packing or shipping has finished.");
+        expect(content).toContain("Latest receipt:");
+        expect(content).toContain("The receipt contains 6 changes. If Undo is available, it reverses the whole receipt.");
+      } else if (reply === "queue_summary") {
+        expect(content).toContain("Work has 24 orders.");
+        expect(content).toContain("Ready: 6\nReview: 14\nWaiting: 4");
+      } else if (reply === "uncertain") expect(content).toBe(workPolicyReplies.job_guide);
+      else if (reply !== "model") expect(content).toBe(workPolicyReplies[reply]);
+      expect(sent.filter((message) => message.type === "agent_ui_operation")).toHaveLength(0);
+      const after = yield* repository.snapshot(identity);
+      expect(after.orders).toEqual(before.orders);
+      expect(after.latestReceipt).toEqual(before.latestReceipt);
+      expect(after.currentProposal).toBeNull();
+      const attempts = yield* repository.providerAttempts(identity, 10, { turnId });
+      expect(attempts.find((attempt) => attempt.kind === "decisions")).toMatchObject({ requestedModel: "typesafe/jev-1.13", outcome: "success" });
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, reply)).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it.each(["BB-1088", "BB-1096"])("describes an accepted action on %s without claiming the remaining issue is resolved", async (orderId) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const jev: JevAdapter = { decide: (request) => Effect.succeed({ kind: "decisions", answers: { reply: { type: "choice", choice: "order_details", confidence: 1, probabilities: { order_details: 1 } } }, metadata, safeRequest: request, safeResponse: {} }) };
+    const ministral: MinistralAdapter = { complete: () => Effect.fail(providerFailure("provider_error", "No chat call is expected.")) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const proposal = yield* repository.prepareResolution(identity, 1, orderId);
+      yield* repository.accept(identity, 1, proposal.id, `remaining-${orderId}`);
+      expect((yield* repository.orderProgress(identity, 1, orderId))?.order.status).toBe(orderId === "BB-1088" ? "review" : "waiting");
+      const coordinator = makeAgentCoordinator({ ...config, agentMode: "live" }, { ministral, jev });
+      const turnId = `turn_12345678-remaining-${orderId}`;
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: orderId, message: `What happened to ${orderId}?`, viewContext: workView, connectionId: orderId, send: async () => undefined }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(turn.history.at(-1)?.content).toContain("A reviewed action was accepted for this order. Check its current issue for any remaining work.");
+      expect(turn.history.at(-1)?.content).toContain("Not released to packing.");
+      expect(turn.history.at(-1)?.content).toContain(`Recorded status: ${orderId === "BB-1088" ? "Review" : "Waiting"}.`);
+      expect(turn.history.at(-1)?.content).not.toContain("exception is resolved");
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, orderId)).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it.each(["tutorial-packing", "receipt-subset"] as const)("uses current trusted scope for the %s reply", async (scenario) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const jev: JevAdapter = { decide: (request) => Effect.sync(() => {
+      if (scenario === "receipt-subset") expect(request.state).toMatchObject({ latestReceipt: { orderId: "BB-1051", kind: "batch", totalChanges: 6 } });
+      const choice = scenario === "tutorial-packing" ? "packing_subset" : "undo_subset";
+      return { kind: "decisions", answers: { reply: { type: "choice", choice, confidence: 1, probabilities: { [choice]: 1 } } }, metadata, safeRequest: request, safeResponse: {} };
+    }) };
+    const ministral: MinistralAdapter = { complete: () => Effect.fail(providerFailure("provider_error", "No chat call is expected.")) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      if (scenario === "tutorial-packing") yield* repository.startTutorial(identity, 1, "batch-approval");
+      else {
+        const proposal = yield* repository.prepareBatch(identity, 1);
+        yield* repository.accept(identity, 1, proposal.id, "batch-before-subset");
+      }
+      const before = yield* repository.snapshot(identity);
+      const coordinator = makeAgentCoordinator({ ...config, agentMode: "live" }, { ministral, jev });
+      const turnId = `turn_12345678-${scenario}`;
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: scenario, message: scenario === "tutorial-packing" ? "Pack BB-1051 only." : "Undo just BB-1051.", viewContext: workView, connectionId: scenario, send: async () => undefined }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(turn.history.at(-1)?.content).toContain(scenario === "tutorial-packing" ? "Finish or dismiss the tutorial before requesting a review of the full eligible batch." : "A partial reversal of a batch is not supported.");
+      expect((yield* repository.snapshot(identity)).currentProposal).toEqual(before.currentProposal);
+      expect((yield* repository.snapshot(identity)).orders).toEqual(before.orders);
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, scenario)).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it.each(["resolution", "batch"] as const)("rejects an Undo whose requested %s receipt differs from the current receipt", async (expectedKind) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const requests: MinistralRequest[] = [];
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      requests.push(request);
+      return requests.length === 1 ? result([{ id: "wrong-receipt", name: "prepareUndo", arguments: { orderId: "BB-1051", expectedKind, expectedChanges: 1 } }]) : result([], "I will prepare the Undo now. Wait for the preview to appear.");
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const correction = yield* repository.prepareResolution(identity, 1, "BB-1051");
+      yield* repository.accept(identity, 1, correction.id, "earlier-correction");
+      const batch = yield* repository.prepareBatch(identity, 1);
+      yield* repository.accept(identity, 1, batch.id, "later-batch");
+      const before = yield* repository.snapshot(identity);
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = `turn_12345678-wrong-receipt-${expectedKind}`;
+      const sent: ServerMessage[] = [];
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: expectedKind, message: "Undo the earlier correction for BB-1051.", viewContext: workView, connectionId: expectedKind, send: async (message) => { sent.push(message); } }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(toolPayloads(requests[1]!.messages)[0]?.payload).toMatchObject({ ok: false, error: { code: "tool_failed", message: expect.stringContaining("receipt does not match") } });
+      expect(turn.history.at(-1)?.content).toContain("I could not complete the requested review.");
+      expect(turn.history.at(-1)?.content).not.toContain("Wait for the preview to appear");
+      expect(sent.filter((message) => message.type === "agent_ui_operation")).toHaveLength(0);
+      expect((yield* repository.snapshot(identity)).orders).toEqual(before.orders);
+      expect((yield* repository.snapshot(identity)).currentProposal).toEqual(before.currentProposal);
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, expectedKind)).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it.each([false, true])("checks the recorded batch before explaining an earlier-correction Undo (later batch: %s)", async (laterBatch) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let chatCalls = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => { chatCalls += 1; return result([], "Inspect the requested correction receipt."); }) };
+    const jev: JevAdapter = { decide: (request) => Effect.succeed({ kind: "decisions", answers: { reply: { type: "choice", choice: "undo_earlier_correction", confidence: 1, probabilities: { undo_earlier_correction: 1 } } }, metadata, safeRequest: request, safeResponse: {} }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const correction = yield* repository.prepareResolution(identity, 1, "BB-1051");
+      yield* repository.accept(identity, 1, correction.id, "earlier-reply-correction");
+      if (laterBatch) {
+        const batch = yield* repository.prepareBatch(identity, 1);
+        yield* repository.accept(identity, 1, batch.id, "earlier-reply-batch");
+      }
+      const before = yield* repository.snapshot(identity);
+      const coordinator = makeAgentCoordinator({ ...config, agentMode: "live" }, { ministral, jev });
+      const turnId = `turn_12345678-earlier-${laterBatch}`;
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "earlier", message: "Undo the earlier correction for BB-1051, not its later batch.", viewContext: workView, connectionId: "earlier", send: async () => undefined }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(chatCalls).toBe(laterBatch ? 0 : 1);
+      if (laterBatch) expect(turn.history.at(-1)?.content).toContain("This record does not identify the earlier correction receipt. Undo cannot overwrite later accepted changes.");
+      else expect(turn.history.at(-1)?.content).not.toContain("latest accepted receipt for this order is a packing batch");
+      expect((yield* repository.snapshot(identity)).orders).toEqual(before.orders);
+      expect((yield* repository.snapshot(identity)).currentProposal).toEqual(before.currentProposal);
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "earlier")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it.each(["same-round", "retry-then-navigate"] as const)("records the actual outcome after a failed preparation and %s success", async (mode) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let calls = 0;
+    const bad = { id: "bad", name: "prepareAddressCorrection", arguments: { orderId: "BB-9999" } };
+    const good = { id: "good", name: "prepareAddressCorrection", arguments: { orderId: "BB-1042" } };
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => {
+      calls += 1;
+      if (calls === 1) return result(mode === "same-round" ? [bad, good] : [bad]);
+      if (calls === 2) return result([good, { id: "work", name: "navigate", arguments: { view: "work" } }]);
+      return result([], "Work is open. The prepared correction still needs your acceptance.");
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = `turn_12345678-${mode}`;
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: mode, message: "Prepare BB-1042's correction, then open Work.", viewContext: workView, connectionId: mode, send: async (message) => {
+        if (message.type === "agent_ui_operation") coordinator.acknowledgeUi(identity, 1, turnId, message.operation.id, mode, "applied");
+      } }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, [mode === "same-round" ? "failed" : "waiting_for_ui"]));
+      if (mode === "same-round") {
+        // A successful separate call does not prove that every requested step succeeded.
+        expect(turn.history.at(-1)?.content).toContain("The correction preview is ready for your review.");
+        expect(turn.history.at(-1)?.content).toContain("That order is not in this workspace.");
+        expect(turn.measurement).toBe("incomplete");
+      } else {
+        expect(turn.history.at(-1)?.content).toBe("Work is open. The prepared correction still needs your acceptance.");
+        expect(coordinator.acknowledgeComplete(identity, 1, turnId, mode)).toBe(true);
+        yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+      }
+      expect((yield* repository.snapshot(identity)).latestReceipt).toBeNull();
+    }));
+  });
+
+  it.each([false, true])("acknowledges current tutorial state without another model narration (dismissed: %s)", async (dismissed) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let calls = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => {
+      calls += 1;
+      return result([{ id: "start", name: "startTutorial", arguments: { tutorialId: "address-correction" } }, ...(dismissed ? [{ id: "stop", name: "stopTutorial", arguments: {} }] : [])]);
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = `turn_12345678-tutorial-${dismissed}`;
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "tutorial", message: "Start the address tutorial.", viewContext: workView, connectionId: "tutorial", send: async () => undefined }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(calls).toBe(1);
+      expect(turn.history.at(-1)?.content).toContain(dismissed ? "The tutorial is dismissed. Accepted work is unchanged." : "Open BB-1042 and compare the saved address with the evidence.");
+      expect((yield* repository.snapshot(identity)).latestReceipt).toBeNull();
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "tutorial")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it("stops a failed reply selection without requesting chat or changing business state", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let chatCalls = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => { chatCalls += 1; return result([], "Unexpected fallback"); }) };
+    const jev: JevAdapter = { decide: () => Effect.fail(providerFailure("credits_exhausted", "Credits exhausted.")) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator({ ...config, agentMode: "live" }, { ministral, jev });
+      const turnId = "turn_12345678-selection-failed";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "selection-failed", message: "How do I do this job?", viewContext: workView, connectionId: "selection-failed", send: async () => undefined }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["failed"]));
+      expect(chatCalls).toBe(0);
+      expect(turn.history.at(-1)?.content).toContain("prepaid model credits are exhausted");
+      expect((yield* repository.snapshot(identity)).currentProposal).toBeNull();
+    }));
+  });
+
+  it("cancels a pending live reply selection before an answer or chat request", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let started: () => void = () => undefined;
+    const selectionStarted = new Promise<void>((resolve) => { started = resolve; });
+    let chatCalls = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => { chatCalls += 1; return result([], "Unexpected fallback"); }) };
+    const jev: JevAdapter = { decide: () => Effect.suspend(() => { started(); return Effect.never; }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator({ ...config, agentMode: "live" }, { ministral, jev });
+      const turnId = "turn_12345678-selection-cancel";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "selection-cancel", message: "How do I do this job?", viewContext: workView, connectionId: "selection-cancel", send: async () => undefined }));
+      yield* Effect.promise(() => selectionStarted);
+      yield* Effect.promise(() => coordinator.cancel(repository, identity, 1, turnId));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["cancelled"]));
+      expect(chatCalls).toBe(0);
+      expect(turn.history.at(-1)?.content).toContain("Cancelled");
+      expect(turn.history.at(-1)?.content).not.toContain("Start in Work");
+      expect((yield* repository.snapshot(identity)).currentProposal).toBeNull();
+    }));
+  });
+
   it("finishes a five-request workflow with standard tools and bounded persisted history", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const requests: Array<MinistralRequest> = [];
@@ -102,6 +356,8 @@ describe("agent runtime", () => {
         expect(request.messages.length).toBeLessThanOrEqual(32);
       }
       expect(turn.history.at(-1)?.content).toContain("Nothing changes until you accept it");
+      expect(turn.history.at(-1)?.content).toContain("Accepting this correction does not release the order to packing");
+      expect(turn.history.at(-1)?.content).toContain("Review ready orders");
       expect(jsonBytes(turn.history)).toBeLessThanOrEqual(24 * 1024);
       expect(turn.serverDurationMs).toBeGreaterThanOrEqual(0);
       expect(turn.measurement).toBe("pending");
@@ -137,9 +393,10 @@ describe("agent runtime", () => {
       const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, [condition === "cancelled" ? "cancelled" : condition === "tool-failure" ? "failed" : "complete"]));
       const content = turn.history.at(-1)?.content ?? "";
       if (condition === "tool-failure") {
-        expect(content).toContain("The proposal is ready for your review");
-        expect(content).toContain("Unknown tool: unknownTool");
-      } else expect(content).not.toContain("The proposal is ready for your review");
+        expect(content).toContain("The correction preview is ready for your review");
+        expect(content).toContain("That action is not available in this workspace.");
+        expect(content).not.toContain("unknownTool");
+      } else expect(content).not.toContain("The correction preview is ready for your review");
       expect(requests).toHaveLength(condition === "cancelled" || condition === "tool-failure" ? 1 : 2);
       if (condition === "missing") expect(toolPayloads(requests[1]!.messages)[0]?.payload).toMatchObject({ ok: false });
       expect(turn.measurement).toBe("incomplete");
@@ -160,6 +417,108 @@ describe("agent runtime", () => {
       expect(attempts).toHaveLength(1);
       expect(attempts[0]?.kind).toBe("chat");
       expect(yield* repository.agentTurn(identity, 1, "turn_12345678-no-consent")).toMatchObject({ status: "failed", measurement: "incomplete" });
+    }));
+  });
+
+  it.each(["navigate", "present"] as const)("does not acknowledge an earlier preview after a missing %s operation", async (operation) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let requests = 0;
+    let operations = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => ++requests === 1 ? result([
+      { id: "first", name: "prepareAddressCorrection", arguments: { orderId: "BB-1042" } },
+      operation === "navigate" ? { id: "later", name: "navigate", arguments: { view: "work" } }
+        : { id: "later", name: "prepareResolution", arguments: { orderId: "BB-1076" } },
+    ]) : result([], "The latest screen could not be displayed. Open Work to review saved work.")) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev }, { finalAcknowledgementMs: 100 });
+      const turnId = `turn_12345678-missing-${operation}`;
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: operation, message: "Prepare the review and show the requested screen.", viewContext: workView, connectionId: operation, send: async (message) => {
+        if (message.type === "agent_ui_operation") coordinator.acknowledgeUi(identity, 1, turnId, message.operation.id, operation, ++operations === 1 ? "applied" : "missing");
+      } }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["complete"]));
+      expect(requests).toBe(2);
+      expect(turn.history.at(-1)?.content).not.toContain("The correction preview is ready");
+      expect(turn.measurement).toBe("incomplete");
+      expect((yield* repository.snapshot(identity)).latestReceipt).toBeNull();
+    }));
+  });
+
+  it("keeps unexpected failure diagnostics in redacted Audit, outside model and operator text", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const requests: MinistralRequest[] = [];
+    const ministral: MinistralAdapter = { complete: (request) => Effect.sync(() => {
+      requests.push(request);
+      return requests.length === 1 ? result([{ id: "reset", name: "prepareReset", arguments: {} }]) : result([], "The fresh start could not be prepared. Check Audit for details.");
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const failingRepository: WorkspaceRepositoryService = { ...repository, prepareReset: () => Effect.fail(new WorkspaceCommandError({ code: "command_failed", message: "internalMethod failed in SQLite for operator@example.test" })) };
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = "turn_12345678-private-error";
+      yield* Effect.promise(() => coordinator.start({ repository: failingRepository, hub, identity, generation: 1, turnId, requestId: "private-error", message: "Prepare a fresh start.", viewContext: workView, connectionId: "private-error", send: async () => undefined }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(JSON.stringify(requests)).not.toContain("internalMethod");
+      expect(JSON.stringify(turn.history)).not.toContain("internalMethod");
+      expect(toolPayloads(requests[1]!.messages)[0]?.payload).toMatchObject({ ok: false, error: { message: "The request to prepare a fresh start could not be completed. Try again or inspect Audit for details." } });
+      const attempts = yield* repository.providerAttempts(identity, 10, { turnId });
+      const detail = yield* repository.auditDetail(identity, attempts[0]!.id);
+      const audit = JSON.stringify(detail?.application);
+      expect(audit).toContain("internalMethod");
+      expect(audit).not.toContain("operator@example.test");
+      expect(audit).toContain("command_failed");
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "private-error")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it.each(["held", "undo", "undo-retry", "reset", "last-held"] as const)("acknowledges the displayed %s proposal from validated state", async (kind) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let requests = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => {
+      requests += 1;
+      if (kind === "undo-retry" && requests === 1) return result([{ id: "wrong-kind", name: "prepareUndo", arguments: { orderId: "BB-1051", expectedKind: "accept", expectedChanges: 6 } }]);
+      if (requests > (kind === "undo-retry" ? 2 : 1)) return result([], "Unexpected extra narration.");
+      const calls: MinistralResult["toolCalls"] = kind === "undo" || kind === "undo-retry"
+        ? [{ id: "undo", name: "prepareUndo", arguments: { orderId: "BB-1051", expectedKind: "batch", expectedChanges: 6 } }]
+        : kind === "reset" ? [{ id: "reset", name: "prepareReset", arguments: {} }]
+          : [
+            ...(kind === "last-held" ? [{ id: "first", name: "prepareAddressCorrection", arguments: { orderId: "BB-1042" } }] : []),
+            { id: "held", name: "prepareResolution", arguments: { orderId: "BB-1076" } },
+          ];
+      return result(calls);
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      if (kind === "undo" || kind === "undo-retry") {
+        const batch = yield* repository.prepareBatch(identity, 1);
+        yield* repository.accept(identity, 1, batch.id, `ack-${kind}`);
+      }
+      const before = yield* repository.snapshot(identity);
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = `turn_12345678-ack-${kind}`;
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: kind, message: "Prepare the requested review.", viewContext: workView, connectionId: kind, send: async (message) => {
+        if (message.type === "agent_ui_operation") coordinator.acknowledgeUi(identity, 1, turnId, message.operation.id, kind, "applied");
+      } }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      const content = turn.history.at(-1)?.content ?? "";
+      expect(requests).toBe(kind === "undo-retry" ? 2 : 1);
+      if (kind === "held" || kind === "last-held") {
+        expect(content).toContain("The preview is held and cannot be accepted.");
+        expect(content).not.toContain("ready for your review");
+      } else if (kind === "undo" || kind === "undo-retry") {
+        expect(content).toContain("reverses 6 changes from the whole accepted receipt");
+        expect(content).toContain("Nothing changes until you accept it in the app");
+        expect(content).not.toContain("could not complete the requested review");
+      } else {
+        expect(content).toContain("Accepting restores the example workspace and keeps Audit history");
+        expect(content).toContain("Nothing changes until you accept it in the app");
+      }
+      const after = yield* repository.snapshot(identity);
+      expect(after.orders).toEqual(before.orders);
+      expect(after.latestReceipt).toEqual(before.latestReceipt);
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, kind)).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
     }));
   });
 
@@ -392,7 +751,9 @@ describe("agent runtime", () => {
       const terminal = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
       expect(round).toBe(1);
       expect(nextRequest).toBeNull();
-      expect(terminal.history.at(-1)).toMatchObject({ role: "assistant", content: "The proposal is ready for your review. Nothing changes until you accept it." });
+      expect(terminal.history.at(-1)).toMatchObject({ role: "assistant", content: expect.stringContaining("The packing preview contains 6 changes.") });
+      expect(terminal.history.at(-1)?.content).toContain("Nothing changes until you accept it in the app.");
+      expect(terminal.history.at(-1)?.content).toContain("does not confirm that packing or shipping has finished");
       const storedResults = toolPayloads(terminal.history);
       for (const results of [storedResults]) {
         expect(results).toHaveLength(5);
@@ -440,9 +801,6 @@ describe("agent runtime", () => {
       expect(round).toBe(2);
       const request = replyRequest as MinistralRequest | null;
       expect(request).not.toBeNull();
-      const system = request?.messages.find((message) => message.role === "system");
-      expect(system?.content).toContain("listOrders.queueTotals");
-      expect(system?.content).toContain("never place a ready order under review or waiting");
       const ready = toolPayloads(request?.messages ?? []).find((entry) => entry.id === "ready_only")?.payload;
       expect(ready).toMatchObject({ ok: true, result: { count: 6, queueTotals: { ready: 6, review: 14, waiting: 4 } } });
       expect(ready?.result?.orders?.find((order) => order.id === "BB-1112")?.status).toBe("ready");
@@ -464,6 +822,8 @@ describe("agent runtime", () => {
     }) };
     await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
       const repository = yield* WorkspaceRepository;
+      const initialProgress = yield* repository.orderProgress(identity, 1, "BB-1051");
+      expect(initialProgress).toMatchObject({ order: { status: "ready" }, completed: false, resolved: false });
       const proposal = yield* repository.prepareResolution(identity, 1, "BB-1051");
       yield* repository.accept(identity, 1, proposal.id, "accepted-order-context-key");
       const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
@@ -472,14 +832,12 @@ describe("agent runtime", () => {
       const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
       expect(round).toBe(2);
       const request = replyRequest as MinistralRequest | null;
-      const system = request?.messages.find((message) => message.role === "system");
-      expect(system?.content).toContain("Explain before and after, including recorded price or stock effects");
-      expect(system?.content).toContain("Resolved Ready means changed but packing is pending; never say no action remains");
-      expect(system?.content).toContain("a person reviews and accepts the full eligible Ready batch");
-      expect(system?.content).toContain("Undo reverses a whole receipt, never selected batch orders");
       const read = toolPayloads(request?.messages ?? []).find((entry) => entry.id === "read_accepted")?.payload;
-      expect(read).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 2, businessValue: "Sage stoneware mug, quantity 1, £24.00", status: "ready", completed: false, resolved: true }, latestReceipt: { kind: "accept", committedVersion: 2, totalChanges: 1, change: { before: "Blue stoneware mug, quantity 1, £24.00", after: "Sage stoneware mug, quantity 1, £24.00" } } } });
+      expect(read).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 2, businessValue: "Sage stoneware mug, quantity 1, £24.00", status: "ready", completed: false, resolved: true }, latestReceipt: { kind: "resolution", committedVersion: 2, totalChanges: 1, change: { before: "Blue stoneware mug, quantity 1, £24.00", after: "Sage stoneware mug, quantity 1, £24.00" } } } });
+      expect(read).toMatchObject({ result: { order: { progress: { resolution: "A reviewed action was accepted for this order. Check its current issue for any remaining work.", packing: "Awaiting release to packing through a separate review of all currently eligible Ready orders." } } } });
       expect(JSON.stringify(read)).not.toContain('"expectedVersion"');
+      expect(JSON.stringify(read)).not.toContain("receipt_");
+      expect(JSON.stringify(read)).not.toContain("proposalKind");
       expect(turn.history.filter((message) => message.role === "assistant" && message.toolCalls !== undefined)).toHaveLength(1);
       expect(coordinator.acknowledgeComplete(identity, 1, turnId, "accepted-order")).toBe(true);
       yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
@@ -493,14 +851,15 @@ describe("agent runtime", () => {
       yield* Effect.promise(() => waitForTurn(repository, packedTurnId, ["waiting_for_ui"]));
       const packedRequest = replyRequest as MinistralRequest | null;
       const packedRead = toolPayloads(packedRequest?.messages ?? []).findLast((entry) => entry.id === "read_accepted")?.payload;
-      expect(packedRead).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 3, businessValue: "Sage stoneware mug, quantity 1, £24.00", completed: true, resolved: true }, latestReceipt: { committedVersion: 3, totalChanges: 6, change: { orderId: "BB-1051", after: "Sage stoneware mug, quantity 1, £24.00 · Packing" } } } });
+      expect(packedRead).toMatchObject({ ok: true, result: { order: { id: "BB-1051", version: 3, businessValue: "Sage stoneware mug, quantity 1, £24.00", completed: true, resolved: true }, latestReceipt: { kind: "batch", committedVersion: 3, totalChanges: 6, change: { orderId: "BB-1051", after: "Sage stoneware mug, quantity 1, £24.00 · Packing" } } } });
+      expect(packedRead).toMatchObject({ result: { order: { status: "ready", progress: { resolution: "A reviewed action was accepted for this order. Check its current issue for any remaining work.", packing: "Released to packing. This does not establish that physical packing or shipping has finished." } } } });
       expect(JSON.stringify(packedRead)).not.toContain('"expectedVersion"');
       expect(coordinator.acknowledgeComplete(identity, 1, packedTurnId, "packed-order")).toBe(true);
       yield* repository.completeAgentMeasurement(identity, 1, packedTurnId, 60);
     }));
   });
 
-  it("retains six bounded list results, reaches a terminal state, and admits the next turn", async () => {
+  it("retains counts and order statuses when six list results need compaction, then admits the next turn", async () => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const filename = join(directory, "workspace.sqlite");
     let round = 0;
@@ -524,7 +883,8 @@ describe("agent runtime", () => {
       expect(toolPayloads(requests[2]!.messages).map(({ id }) => id)).toEqual(Array.from({ length: 6 }, (_, index) => `call_list_2_${index}`));
       for (const results of [toolPayloads(requests[1]!.messages), toolPayloads(requests[2]!.messages), toolPayloads(terminal.history)]) {
         expect(results).toHaveLength(6);
-        expect(results.every(({ payload }) => payload.truncated === undefined && payload.result?.count === 24 && payload.result.orders?.length === 24)).toBe(true);
+        expect(results.every(({ payload }) => payload.ok === true && payload.result?.count === 24 && payload.result.orders?.length === 24)).toBe(true);
+        expect(results.every(({ payload }) => payload.result?.queueTotals?.ready === 6 && payload.result.queueTotals.review === 14 && payload.result.queueTotals.waiting === 4)).toBe(true);
         expect(results.every(({ payload }) => payload.result?.orders?.some((order) => order.id === "BB-1042" && order.status === "review"))).toBe(true);
       }
       expect(coordinator.acknowledgeComplete(identity, 1, firstTurn, "connection-size")).toBe(true);
