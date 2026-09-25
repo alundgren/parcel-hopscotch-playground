@@ -30,6 +30,11 @@ facts. It restricts guidance turns to read and guidance tools, including a
 dispatcher check if a model requests a forbidden command anyway. Showing an
 offer is distinct from accepting it. Show me is a local human action.
 
+When the person asks directly how to review Ready orders, the assistant may
+open Work with Ready selected and point to Review ready orders. This procedural
+help does not open a proposal or accept one. A guide offered without that direct
+request still waits for Show me before moving the view.
+
 Proposal availability follows the review displayed in the initiating tab. The
 server resolves that focused proposal under the current user's identity.
 Registered disabled controls can reduce the advertised availability. Preparing

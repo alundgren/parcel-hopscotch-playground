@@ -130,6 +130,49 @@ describe("agent runtime", () => {
     }));
   });
 
+  it.each(["shown", "navigation missing", "control missing"] as const)("helps locate the Ready review without preparing work when the UI is %s", async (caseName) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const jev: JevAdapter = { decide: (request) => Effect.sync(() => {
+      expect(request.state).toMatchObject({ request: "can you help me out with how to approve the ones in ready?" });
+      expect(request.questions.reply?.type).toBe("choice");
+      return { kind: "decisions", answers: { reply: { type: "choice", choice: "ready_help", confidence: 0.91, probabilities: { ready_help: 0.91 } } }, metadata, safeRequest: request, safeResponse: { choice: "ready_help" } };
+    }) };
+    let modelCalls = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => { modelCalls += 1; return result([], "Unexpected model answer."); }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const before = yield* repository.snapshot(identity);
+      const coordinator = makeAgentCoordinator({ ...config, agentMode: "live" }, { ministral, jev });
+      const turnId = `turn_12345678-ready-${caseName.replaceAll(" ", "-")}`;
+      const connectionId = `connection-ready-${caseName.replaceAll(" ", "-")}`;
+      const operations: Array<Extract<ServerMessage, { type: "agent_ui_operation" }>["operation"]> = [];
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: turnId,
+        message: "can you help me out with how to approve the ones in ready?", viewContext: workView, connectionId,
+        send: async (message) => {
+          if (message.type !== "agent_ui_operation") return;
+          operations.push(message.operation);
+          const outcome = caseName === "navigation missing" && message.operation.kind === "navigate" || caseName === "control missing" && message.operation.kind === "highlight" ? "missing" : "applied";
+          queueMicrotask(() => coordinator.acknowledgeUi(identity, 1, turnId, message.operation.id, connectionId, outcome));
+        },
+      }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, [caseName === "shown" ? "waiting_for_ui" : "complete"]));
+      expect(modelCalls).toBe(0);
+      expect(operations.map((operation) => operation.kind)).toEqual(caseName === "navigation missing" ? ["navigate"] : ["navigate", "highlight"]);
+      expect(operations[0]).toMatchObject({ kind: "navigate", view: "work", filter: "ready" });
+      if (caseName !== "navigation missing") expect(operations[1]).toMatchObject({ kind: "highlight", targetId: "work.queue.batch-review" });
+      const answer = turn.history.at(-1)?.content ?? "";
+      expect(answer).toContain("Review ready orders");
+      expect(answer).toContain("Check which orders are included or left out");
+      if (caseName === "shown") expect(answer).toContain("I've opened Ready and pointed");
+      else { expect(answer).not.toContain("I've opened Ready and pointed"); expect(turn.measurement).toBe("incomplete"); }
+      const after = yield* repository.snapshot(identity);
+      expect(after.orders).toEqual(before.orders);
+      expect(after.currentProposal).toBeNull();
+      expect(after.latestReceipt).toEqual(before.latestReceipt);
+      if (caseName === "shown") expect(coordinator.acknowledgeComplete(identity, 1, turnId, connectionId)).toBe(true);
+    }));
+  });
+
   it.each(["BB-1088", "BB-1096"])("describes an accepted action on %s without claiming the remaining issue is resolved", async (orderId) => {
     const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
     const jev: JevAdapter = { decide: (request) => Effect.succeed({ kind: "decisions", answers: { reply: { type: "choice", choice: "order_details", confidence: 1, probabilities: { order_details: 1 } } }, metadata, safeRequest: request, safeResponse: {} }) };

@@ -29,7 +29,9 @@ Show only completed-request, completed-turn, and committed-command durations wit
 Guided help uses Notes on work beside the relevant item, with a muted blue
 outline and a pointer. Keep the real control reachable. A compact Task trail
 holds the task and return action while moving between views. Show me is the
-consent step before navigation. The person performs every business action.
+consent step before navigation for an offered guide. A direct chat request to
+locate the Ready review control may open Ready and point to that control. The
+person performs every business action.
 Keep explanations short and specific to current evidence. If another tab has
 already resolved an item, say so and help the person request a fresh review.
 

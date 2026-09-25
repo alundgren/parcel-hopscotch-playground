@@ -2,7 +2,7 @@ import type { GuidanceModule, GuidanceTargetDefinition, GuidanceGuideDefinition 
 import type { GuidanceInput, GuidanceOrder, GuidanceProblem } from "../input.js";
 import type { OrderStatus, ReviewedProposal, TutorialState } from "../../shared/contracts.js";
 
-export const workOperatorGuide = `Start in Work. Open an order to inspect its recorded issue, current details, and customer or operator evidence.
+export const workOperatorGuide = `Start in Work. Open an order to inspect its recorded issue, current details, and customer messages or order updates.
 
 Review change opens a proposal. Compare the before/after values, consequences, and excluded orders, then choose Accept or Cancel. A proposal is only a preview. Only your acceptance saves a business change.
 
@@ -21,10 +21,11 @@ export const describeOrderProgress = (order: { readonly status: OrderStatus; rea
 
 export const workPolicyReplies = {
   job_guide: workOperatorGuide,
+  ready_help: "Use Review ready orders to open a preview of all currently eligible Ready orders. Check which orders are included or left out, then accept the preview in the app if it is correct. Nothing changes until you accept it. During a tutorial, the review is limited to its practice group.",
   packing_subset: "Packing individual or selected orders is not supported. Outside tutorials, Review ready orders previews all currently eligible Ready orders. Tutorials use assigned practice groups. Would you like to review the full eligible batch? Nothing changes until you accept the preview in the app.",
   undo_subset: "Undo reverses the whole accepted receipt, including every order in a batch. A partial reversal of a batch is not supported. Would you like a preview of reversing the whole receipt? Nothing changes until you review and accept it in the app; later changes can make Undo unavailable.",
   undo_earlier_correction: "The latest accepted receipt for this order is a packing batch. This record does not identify the earlier correction receipt. Undo cannot overwrite later accepted changes. No Undo preview was prepared.",
-  acceptance_only: "Only you can accept a reviewed change in the app. Inspect the preview, then use its acceptance control if it is correct. Chat approval does not save changes. I can help inspect evidence or prepare a preview when you request one.",
+  acceptance_only: "Only you can accept a reviewed change in the app. Inspect the preview, then use its acceptance control if it is correct. Chat approval does not save changes. I can help inspect customer messages and order updates or prepare a preview when you request one.",
 } as const;
 
 export const tutorialPackingReply = "This tutorial can prepare only its assigned practice group. It cannot select arbitrary orders or prepare the full Work queue. Finish or dismiss the tutorial before requesting a review of the full eligible batch. No new preview was prepared.";
@@ -63,12 +64,13 @@ export const describeProposalReview = (proposal: Pick<ReviewedProposal, "kind" |
 
 export const workGuidanceTargets = {
   queue: "work.queue",
+  batchReview: "work.queue.batch-review",
   orderRow: (id: string) => `work.order.row:${id}` as const,
   orderEvidence: (id: string) => `work.order.evidence:${id}` as const,
   reviewChange: (id: string) => `work.order.review:${id}` as const,
   proposalReview: (id: string) => `work.proposal.review:${id}` as const,
 } as const;
-export type WorkGuidanceTargetId = typeof workGuidanceTargets.queue | ReturnType<typeof workGuidanceTargets.orderRow> | ReturnType<typeof workGuidanceTargets.orderEvidence> | ReturnType<typeof workGuidanceTargets.reviewChange> | ReturnType<typeof workGuidanceTargets.proposalReview>;
+export type WorkGuidanceTargetId = typeof workGuidanceTargets.queue | typeof workGuidanceTargets.batchReview | ReturnType<typeof workGuidanceTargets.orderRow> | ReturnType<typeof workGuidanceTargets.orderEvidence> | ReturnType<typeof workGuidanceTargets.reviewChange> | ReturnType<typeof workGuidanceTargets.proposalReview>;
 
 export const workGuides = {
   staleReview: "work.stale-review",
@@ -90,6 +92,12 @@ export const reviewChangeAvailability = (input: {
   if (input.order.resolved ?? input.resolved ?? false) return { available: false, reason: "This change was already accepted." };
   if (!input.connected) return { available: false, reason: "Reconnect to review this item." };
   if (input.busy) return { available: false, reason: "Wait for the current action to finish." };
+  return { available: true, reason: null };
+};
+
+export const readyReviewAvailability = (connected: boolean, orders: ReadonlyArray<{ readonly status: OrderStatus }>) => {
+  if (!connected) return { available: false, reason: "Reconnect to review Ready orders." };
+  if (!orders.some((order) => order.status === "ready")) return { available: false, reason: "No Ready orders are available." };
   return { available: true, reason: null };
 };
 
@@ -121,6 +129,7 @@ const workTargets = (input: GuidanceInput): ReadonlyArray<GuidanceTargetDefiniti
   const review = reviewChangeAvailability({ connected: input.connected, order, resolved: input.problem?.resolved });
   const exists = { available: order !== null, reason: order === null ? "This item is no longer available." : null };
   const queue = { available: true, reason: null };
+  const batchReview = readyReviewAvailability(input.connected, input.orders);
   const proposal = input.presentedProposal;
   const proposalReview = proposal === null || proposal.id === input.problem?.proposalId
     ? { available: false, reason: "Prepare a fresh review first." }
@@ -133,6 +142,7 @@ const workTargets = (input: GuidanceInput): ReadonlyArray<GuidanceTargetDefiniti
           : { available: true, reason: null };
   return [
     { id: workGuidanceTargets.queue, label: "Work queue", destination: "work", entityId: null, availability: queue },
+    { id: workGuidanceTargets.batchReview, label: "Review ready orders", destination: "work", entityId: null, availability: batchReview },
     { id: workGuidanceTargets.orderRow(entityId ?? "missing"), label: "Affected item in Work", destination: "work", entityId, availability: exists },
     { id: workGuidanceTargets.orderEvidence(entityId ?? "missing"), label: "Current item evidence", destination: "order", entityId, availability: exists },
     { id: workGuidanceTargets.reviewChange(entityId ?? "missing"), label: "Review change", destination: "order", entityId, availability: review },

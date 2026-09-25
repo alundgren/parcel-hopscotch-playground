@@ -48,6 +48,9 @@ describe("agent tool registry", () => {
     expect(tools.getOrder?.validateArguments({ orderId: null })).toBe(false);
     expect(tools.getOrder?.validateArguments({ orderId: "BB-1042", userId: "another-user" })).toBe(false);
     expect(tools.navigate?.validateArguments({ view: "work", url: "https://example.test" })).toBe(false);
+    expect(tools.navigate?.validateArguments({ view: "work", filter: "ready" })).toBe(true);
+    expect(tools.navigate?.validateArguments({ view: "work", filter: "invented" })).toBe(false);
+    expect(tools.highlight?.validateArguments({ target: "batchReview" })).toBe(true);
     expect(tools.highlight?.validateArguments({ target: "#app", selector: "body" })).toBe(false);
     expect(tools.prepareBatch?.validateArguments({ commit: true })).toBe(false);
     expect(tools.prepareBatch?.validateArguments({ orderId: "BB-1051" })).toBe(false);

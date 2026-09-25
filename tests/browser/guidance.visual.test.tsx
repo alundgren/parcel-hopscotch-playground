@@ -7,6 +7,7 @@ import { WorkspaceRequestError } from "../../src/client/use-workspace";
 import { GuideTargetRegistry } from "../../src/client/guidance/targets";
 import { GuideDisplay } from "../../src/client/guidance/GuideDisplay";
 import { createGuidanceContext } from "../../src/modules/guidance";
+import { workGuidanceTargets } from "../../src/modules/work";
 import { addressProposal, auditDetail, auditPage, completedAttempt, createWorkspace, proposal, receipt, snapshot } from "./fixtures";
 
 const workspaceState = vi.hoisted(() => ({ current: null as ReturnType<typeof createWorkspace> | null }));
@@ -146,6 +147,41 @@ test("stale review offers consent, marks the real order action, and preserves th
   await expect.element(page.getByRole("button", { name: "Review ready orders" })).toBeVisible();
   expect(runCommand.mock.calls.filter(([input]) => input.type === "prepare_batch")).toHaveLength(1);
   await checkpoint("guidance-returned-queue");
+});
+
+test("requested Ready help selects the filter and points to the real review control", async () => {
+  const registrations = vi.spyOn(GuideTargetRegistry.prototype, "register");
+  const operation = { id: "ready-nav", turnId: "ready-turn", generation: snapshot.generation, kind: "navigate" as const, view: "work" as const, filter: "ready" as const };
+  workspaceState.current = createWorkspace({ agentOperation: operation, snapshot: { ...snapshot, chat: [
+    { id: "ready-user", turnId: "ready-turn", role: "user", content: "Can you help me out with how to approve the ones in Ready?", createdAt: "2026-09-25T12:00:00.000Z" },
+    { id: "ready-answer", turnId: "ready-turn", role: "assistant", content: "I've opened Ready and pointed to Review ready orders. Check the preview before you accept it.", createdAt: "2026-09-25T12:00:01.000Z" },
+  ] } });
+  const app = await render(<App />);
+  await expect.element(page.getByRole("button", { name: /^Ready \d+$/ })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => workspaceState.current!.acknowledgeAgentOperation.mock.calls.at(-1)?.[1]).toBe("applied");
+
+  const highlight = { id: "ready-highlight", turnId: "ready-turn", generation: snapshot.generation, kind: "highlight" as const, targetId: workGuidanceTargets.batchReview };
+  workspaceState.current = { ...workspaceState.current!, agentOperation: highlight };
+  await app.rerender(<App />);
+  const action = page.getByRole("button", { name: "Review ready orders" }).element();
+  await expect.element(page.getByRole("button", { name: "Review ready orders" })).toHaveClass(/agent-highlight/);
+  await expect.poll(() => workspaceState.current!.acknowledgeAgentOperation.mock.calls.at(-1)?.[1]).toBe("applied");
+  expect(action).toHaveFocus();
+  withinViewport(action);
+  expect(contrast(getComputedStyle(action).color, getComputedStyle(action).backgroundColor)).toBeGreaterThanOrEqual(4.5);
+  expect(registrations.mock.calls.some(([id, entityId, element, available]) => id === workGuidanceTargets.batchReview && entityId === null && element === action && available === true)).toBe(true);
+  expect(workspaceState.current.runCommand).not.toHaveBeenCalled();
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+  await checkpoint("ready-help-control");
+});
+
+test("Ready help reports a missing target when its real button is unavailable", async () => {
+  const highlight = { id: "ready-highlight-missing", turnId: "ready-turn", generation: snapshot.generation, kind: "highlight" as const, targetId: workGuidanceTargets.batchReview };
+  workspaceState.current = createWorkspace({ snapshot: { ...snapshot, orders: [] }, agentOperation: highlight });
+  await render(<App />);
+  await expect.element(page.getByRole("button", { name: "Review ready orders" })).toBeDisabled();
+  await expect.poll(() => workspaceState.current!.acknowledgeAgentOperation.mock.calls.at(-1)?.[1]).toBe("missing");
+  expect(workspaceState.current.runCommand).not.toHaveBeenCalled();
 });
 
 test("a missing or differently bound target gives recovery text without marking another item", async () => {

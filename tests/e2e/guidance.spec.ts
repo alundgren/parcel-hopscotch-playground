@@ -9,6 +9,19 @@ const openWorkspace = async (page: Page) => {
 const trail = (page: Page) => page.getByRole("complementary", { name: "Task trail" });
 const notes = (page: Page) => page.getByRole("complementary", { name: "Notes on work" });
 
+test("procedural Ready help opens and points to the review control without preparing a preview", async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByPlaceholder("Message...").fill("can you help me out with how to approve the ones in ready?");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(page.getByRole("button", { name: /^Ready \d+$/ })).toHaveAttribute("aria-pressed", "true");
+  const review = page.getByRole("button", { name: "Review ready orders" });
+  await expect(review).toHaveClass(/agent-highlight/);
+  await expect(review).toBeFocused();
+  await expect(page.getByText("I've opened Ready and pointed to Review ready orders.")).toBeVisible();
+  await expect(page.locator(".proposal-screen")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Decisions" })).toBeVisible();
+});
+
 test("explains a changed item, asks before moving, and returns for a fresh human review", async ({ page, context }) => {
   await openWorkspace(page);
   const second = await context.newPage();

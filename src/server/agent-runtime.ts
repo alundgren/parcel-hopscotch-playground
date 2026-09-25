@@ -15,7 +15,7 @@ import { makeMinistralAdapter } from "./providers/ministral.js";
 import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, ToolExecutionError, type AgentUiRequest } from "./tool-registry.js";
 import { toolHandlers } from "./tool-handlers.js";
 import { standardAgentInstruction } from "./agent-instructions.js";
-import { describeOrderAnswer, describeProposalReview, describeQueueAnswer, describeTutorialState, tutorialPackingReply, workOperatorGuide, workPolicyReplies } from "../modules/work/index.js";
+import { describeOrderAnswer, describeProposalReview, describeQueueAnswer, describeTutorialState, tutorialPackingReply, workGuidanceTargets, workOperatorGuide, workPolicyReplies } from "../modules/work/index.js";
 import { operatorReplyRequest, selectedOperatorReply } from "./operator-replies.js";
 import { createGuidanceContext, type GuidanceContext, type GuidanceProblem } from "../modules/guidance.js";
 
@@ -203,6 +203,8 @@ const scriptedMinistral = (): MinistralAdapter => ({
             ? "I opened Audit. Return to Work to continue the conversation."
             : text.includes("explore")
               ? "I opened Explore. Return to Work to continue the conversation."
+              : text.includes("how to approve the ones in ready") || text.includes("where is the ready review")
+                ? "I've opened Ready and pointed to Review ready orders. Check the preview before you accept it."
               : text.includes("green") || text.includes("ready") || text.includes("batch")
                 ? "The eligible orders are ready for your review. Nothing changes until you accept the batch."
                 : text.includes("consent")
@@ -233,7 +235,12 @@ const scriptedMinistral = (): MinistralAdapter => ({
           ? [{ id: id(), name: "checkConsent", arguments: { orderId: orderMatch } }]
           : text.includes("classif")
             ? [{ id: id(), name: "classifyNote", arguments: { note: lastUser?.role === "user" ? lastUser.content : "" } }]
-            : text.includes("green") || text.includes("ready") || text.includes("batch")
+      : text.includes("how to approve the ones in ready") || text.includes("where is the ready review")
+        ? [
+            { id: id(), name: "navigate", arguments: { view: "work", filter: "ready" } },
+            { id: id(), name: "highlight", arguments: { target: "batchReview" } },
+          ]
+      : text.includes("green") || text.includes("ready") || text.includes("batch")
               ? [{ id: id(), name: "prepareBatch", arguments: {} }]
               : [
                   { id: id(), name: "getOrder", arguments: { orderId: orderMatch } },
@@ -580,7 +587,17 @@ export const makeAgentCoordinator = (
         const reply = selectedOperatorReply(selection.value);
         let content: string | null = null;
         let progress: OrderProgress | null = null;
-        if (reply === "order_details" && orderId !== null) {
+        if (reply === "ready_help") {
+          const opened = await requestUi(active, repository, history, { kind: "navigate", view: "work", filter: "ready" });
+          const pointed = opened.applied
+            ? await requestUi(active, repository, history, { kind: "highlight", targetId: workGuidanceTargets.batchReview })
+            : null;
+          content = `${!opened.applied
+            ? "I couldn't open Ready in this browser. In Work, select Ready."
+            : pointed?.applied
+              ? "I've opened Ready and pointed to Review ready orders."
+              : "Ready is open, but I couldn't point to Review ready orders. The control may be unavailable right now."} ${workPolicyReplies.ready_help}`;
+        } else if (reply === "order_details" && orderId !== null) {
           progress = await Effect.runPromise(repository.orderProgress(active.identity, active.generation, orderId));
           content = progress === null ? "That order is not in this workspace. Check the order ID and try again." : describeOrderAnswer(progress);
         } else if (reply === "undo_earlier_correction") {
@@ -599,8 +616,8 @@ export const makeAgentCoordinator = (
             body: { source: "maintained_reply", reply, ...(progress === null ? {} : { orderId, progress }), content },
           }));
           history.push({ role: "assistant", content });
-          waitForFinalRender(active, repository, history);
-          await update(active, repository, history, "waiting_for_ui", "Rendering answer", { finished: true });
+          if (!active.uiMissing) waitForFinalRender(active, repository, history);
+          await update(active, repository, history, active.uiMissing ? "complete" : "waiting_for_ui", active.uiMissing ? "Complete with missing UI" : "Rendering answer", { finished: true, ...(active.uiMissing ? { measurement: "incomplete" as const } : {}) });
           return null;
         }
       }

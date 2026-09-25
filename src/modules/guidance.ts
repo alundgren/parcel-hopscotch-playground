@@ -20,6 +20,7 @@ export const guidanceGuideVersion = (guideId: string): number | null =>
   guideId === workGuides.staleReview ? workGuideVersion : guideId === auditGuides.inspectRequest ? auditGuideVersion : null;
 export type GuidanceGuideId = (typeof workGuides)[keyof typeof workGuides] | (typeof auditGuides)[keyof typeof auditGuides];
 export type GuidanceTargetId = typeof workGuidanceTargets.queue |
+  typeof workGuidanceTargets.batchReview |
   ReturnType<typeof workGuidanceTargets.orderRow> |
   ReturnType<typeof workGuidanceTargets.orderEvidence> |
   ReturnType<typeof workGuidanceTargets.reviewChange> |

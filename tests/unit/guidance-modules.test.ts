@@ -23,6 +23,14 @@ const contextFor = (presentedProposal: WorkspaceSnapshot["currentProposal"], vis
 const target = (context: ReturnType<typeof contextFor>, id: string) => context.targetEntries.find((entry) => entry.target.id === id)?.target;
 
 describe("Work guidance facts", () => {
+  it("advertises Ready review only when an order is ready and the workspace is connected", () => {
+    const make = (orders: ReadonlyArray<typeof order>, connected: boolean) => createGuidanceContext({ snapshot: { generation: 1, sequence: 3, orders }, location: { view: "work", focus: null }, connected });
+    const review = (context: ReturnType<typeof make>) => context.targetEntries.find((entry) => entry.target.id === workGuidanceTargets.batchReview)?.target.availability;
+    expect(review(make([order], true))).toEqual({ available: true, reason: null });
+    expect(review(make([], true))).toEqual({ available: false, reason: "No Ready orders are available." });
+    expect(review(make([order], false))).toEqual({ available: false, reason: "Reconnect to review Ready orders." });
+  });
+
   it("uses the current order state when an older failure disagrees", () => {
     const order = { id: "BB-1051", status: "ready" as const, version: 3, resolved: true };
     expect(reviewChangeAvailability({ connected: true, order, resolved: false })).toEqual({ available: false, reason: "This change was already accepted." });
