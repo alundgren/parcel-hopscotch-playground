@@ -168,7 +168,10 @@ async function daemon(directory, mode, budgetUsd, durationMinutes, recordTrace =
   let tail = Promise.resolve();
   const persist = async () => saveSession(directory, session);
   const finish = async (reason, connection = null) => {
-    if (stopping) return;
+    if (stopping) {
+      connection?.end(JSON.stringify({ ok: false, error: 'Adapter shutdown in progress.' }) + '\n');
+      return;
+    }
     stopping = true;
     if (traceRecording) {
       try {

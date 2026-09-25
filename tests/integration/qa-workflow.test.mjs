@@ -162,12 +162,71 @@ console.log(JSON.stringify({ usage, busy: false, paidTurnsAllowed: !final && usa
   assert.equal(restored.decision.allowNewTurn, true);
   await updateRun({ runDir: created.runDir, event: { type: 'turn.start', scenarioId: 'queue-triage', id: 'unfinished-final-turn' } });
   database.exec('ALTER TABLE provider_attempts RENAME TO unreadable_attempts');
-  const stopped = await main(['stop', '--run', created.runDir, '--reason', 'Adapter stopped without final ledger']);
+  const liveStopped = await main(['stop-live', '--run', created.runDir]);
+  assert.equal(liveStopped.run.status, 'active');
+  assert.equal(liveStopped.adapter.stopReason, 'manual_stop');
+  assert.equal((await main(['status', '--run', created.runDir])).decision.allowNewTurn, false);
+  const recordFile = path.join(created.runDir, 'run.json');
+  const aged = JSON.parse(await readFile(recordFile, 'utf8'));
+  aged.createdAt = new Date(Date.now() - 2 * 60_000).toISOString();
+  aged.settings.durationMinutes = 1;
+  await writeFile(recordFile, JSON.stringify(aged));
+  const stopped = await main(['deadline', '--run', created.runDir]);
   assert.equal(stopped.status, 'closed');
+  assert.match(stopped.closeReason, /Automatic QA deadline/);
+  const summary = JSON.parse(await readFile(path.join(created.runDir, 'deadline-summary.json'), 'utf8'));
+  assert.equal(summary.accounting.finalUsageMissing, true);
   assert.equal(stopped.inFlight, null);
   assert.equal(stopped.accounting.available, false);
   assert.equal(stopped.accounting.finalUsageMissing, true);
   assert.equal(stopped.usage.knownCostUsd, 0.03);
   assert.equal((await main(['status', '--run', created.runDir])).decision.reason, 'closed');
   assert.equal((await main(['resume', '--run', created.runDir])).run.accounting.finalUsageMissing, true);
+});
+
+test('detached deadline supervisor retries a transient shutdown race and closes the run', { timeout: 15_000 }, async () => {
+  const data = await fixture();
+  const adapterFile = path.join(data.directory, 'deadline-adapter.mjs');
+  await writeFile(adapterFile, `import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const operation = process.argv[2];
+const directory = process.argv[process.argv.indexOf('--run-dir') + 1];
+const retryFile = join(directory, 'transient-stop');
+const stoppedFile = join(directory, 'stub-stopped');
+if (operation === 'stop' && !existsSync(retryFile)) {
+  writeFileSync(retryFile, 'once');
+  throw new Error('Adapter shutdown in progress.');
+}
+if (operation === 'stop') writeFileSync(stoppedFile, 'yes');
+const stopped = existsSync(stoppedFile);
+console.log(JSON.stringify({ usage: { knownCostUsd: 0, unknownCostRequests: 0, inputTokens: 0,
+  outputTokens: 0, requestCount: 0, accountingAvailable: true }, busy: false,
+  paidTurnsAllowed: !stopped, stopReason: stopped ? 'manual_stop' : null }));
+`);
+  data.config.adapter = path.relative(repositoryRoot, adapterFile);
+  await writeFile(path.join(data.directory, 'config.json'), JSON.stringify(data.config));
+  const created = await initialize({ ...data.options, minutes: 1 });
+  const recordFile = path.join(created.runDir, 'run.json');
+  const aged = JSON.parse(await readFile(recordFile, 'utf8'));
+  aged.createdAt = new Date(Date.now() - 58_000).toISOString();
+  await writeFile(recordFile, JSON.stringify(aged));
+  await main(['serve', '--run', created.runDir]);
+  const until = Date.now() + 10_000;
+  let closed;
+  do {
+    closed = await loadRun({ runDir: created.runDir });
+    if (closed.status === 'closed') break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < until);
+  assert.equal(closed.status, 'closed');
+  assert.match(closed.closeReason, /Automatic QA deadline/);
+  assert.equal((await readFile(path.join(created.runDir, 'transient-stop'), 'utf8')), 'once');
+  let summary;
+  do {
+    try { summary = JSON.parse(await readFile(path.join(created.runDir, 'deadline-summary.json'), 'utf8')); break; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < until);
+  assert.ok(summary, 'deadline supervisor did not write a summary');
+  assert.equal(summary.observationCount, 0);
 });
