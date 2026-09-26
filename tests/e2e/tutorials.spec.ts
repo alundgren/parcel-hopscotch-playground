@@ -93,7 +93,7 @@ test("teaches address correction and completes a separate case without agent ass
   await expect(page.getByText("BB-1072", { exact: true })).toBeVisible();
   await page.locator("#target-receipt-back").click();
   await expect(coach(page)).toHaveAttribute("data-tutorial-phase", "complete");
-  await expect(coach(page)).toContainText("Practice complete. You corrected a second address from evidence to receipt.");
+  await expect(coach(page)).toContainText("Practice complete. You reviewed and accepted a second address correction.");
   await page.getByRole("button", { name: "Dismiss tutorial" }).click();
   await expect(coach(page)).toHaveCount(0);
 });

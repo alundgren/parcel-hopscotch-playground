@@ -61,7 +61,7 @@ test("cancels an active provider request when reset commits and retains its audi
   await page.getByRole("button", { name: "Reset my demo" }).click();
   await expect(page.getByText("Fresh workspace ready")).toBeVisible();
   await page.waitForTimeout(800);
-  await expect(page.getByText("I found the order and showed the relevant evidence.")).toHaveCount(0);
+  await expect(page.getByText("I found the order and pointed to its customer message or order update.")).toHaveCount(0);
   await page.getByRole("button", { name: "Back to work" }).click();
   await expect(page.getByRole("button", { name: "All 24" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0);
@@ -92,9 +92,9 @@ test("isolates turns, provider failures, audit history, accepted work, and reset
     await Promise.all([openWorkspace(first), openWorkspace(second)]);
 
     await send(first, "Find BB-1042, open it, and highlight the evidence.");
-    await expect(first.getByText("I found the order and showed the relevant evidence.")).toBeVisible();
+    await expect(first.getByText("I found the order and pointed to its customer message or order update.")).toBeVisible();
     await expect(second.getByText("Find BB-1042, open it, and highlight the evidence.")).toHaveCount(0);
-    await expect(second.getByText("I found the order and showed the relevant evidence.")).toHaveCount(0);
+    await expect(second.getByText("I found the order and pointed to its customer message or order update.")).toHaveCount(0);
 
     await first.getByRole("button", { name: "Review change" }).click();
     await first.getByRole("button", { name: "Accept 1 change" }).click();
@@ -108,7 +108,7 @@ test("isolates turns, provider failures, audit history, accepted work, and reset
     await expect(second.getByText("I could not complete that turn. You can retry it, and any proposal already shown is still available for review.")).toHaveCount(0);
 
     await send(first, "Find BB-1088, open it, and highlight the evidence.");
-    await expect(first.getByText("I found the order and showed the relevant evidence.")).toHaveCount(2);
+    await expect(first.getByText("I found the order and pointed to its customer message or order update.")).toHaveCount(2);
     await expect(second.getByText("Find BB-1088, open it, and highlight the evidence.")).toHaveCount(0);
 
     await first.getByRole("button", { name: "Audit", exact: true }).click();

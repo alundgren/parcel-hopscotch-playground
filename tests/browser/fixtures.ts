@@ -107,7 +107,7 @@ export const snapshot: WorkspaceSnapshot = {
   currentProposal: null,
   tutorialProposal: null,
   chat: [
-    { id: "chat-1", turnId: "turn-1", role: "assistant", content: "I can help you review the recorded evidence and prepare a change for you to approve.", createdAt: now },
+    { id: "chat-1", turnId: "turn-1", role: "assistant", content: "I can help you read the customer message and prepare a change for you to review.", createdAt: now },
     { id: "chat-2", turnId: "turn-2", role: "user", content: "Show me what needs attention.", createdAt: now },
   ],
   activeTurn: null,

@@ -15,7 +15,7 @@ import { makeMinistralAdapter } from "./providers/ministral.js";
 import { findRegisteredTool, makeToolRegistry, modelToolsFromRegistry, ToolExecutionError, type AgentUiRequest } from "./tool-registry.js";
 import { toolHandlers } from "./tool-handlers.js";
 import { standardAgentInstruction } from "./agent-instructions.js";
-import { describeOrderAnswer, describeProposalReview, describeQueueAnswer, describeTutorialState, proposalAcceptanceLabel, tutorialPackingReply, workGuidanceTargets, workOperatorGuide, workPolicyReplies } from "../modules/work/index.js";
+import { describeOpenedOrder, describeOrderAnswer, describeOrderWalkthrough, describeProposalReview, describeQueueAnswer, describeTutorialState, proposalAcceptanceLabel, tutorialPackingReply, workGuidanceTargets, workOperatorGuide, workPolicyReplies } from "../modules/work/index.js";
 import { operatorReplyRequest, selectedOperatorReply } from "./operator-replies.js";
 import { createGuidanceContext, type GuidanceContext, type GuidanceProblem } from "../modules/guidance.js";
 
@@ -209,7 +209,7 @@ const scriptedMinistral = (): MinistralAdapter => ({
                 ? "The eligible orders are ready for your review. Nothing changes until you accept the batch."
                 : text.includes("consent")
                   ? "This remains for human review."
-                  : "I found the order and showed the relevant evidence."
+                  : "I found the order and pointed to its customer message or order update."
       const response = { content, toolCalls: [] };
       return { kind: "chat", content, toolCalls: [], finishReason: "stop", metadata: metadata(MINISTRAL_MODEL, request, response), safeRequest: request, safeResponse: response };
     }
@@ -564,6 +564,36 @@ export const makeAgentCoordinator = (
     let lastPreparationFailure: string | null = null;
     try {
       const guidanceMode = guidanceLocation !== undefined;
+      const requestText = initial.history.find((entry) => entry.role === "user")?.content?.trim() ?? "";
+      const walkthrough = /^(?:teach me how to fix|what should i check before changing the address on) (BB-\d{4})[.?!]?$/i.exec(requestText);
+      if (!guidanceMode && finalView === "chat" && walkthrough !== null) {
+        const progress = await Effect.runPromise(repository.orderProgress(active.identity, active.generation, walkthrough[1]!.toUpperCase()));
+        if (active.cancelled) throw new Error("cancelled");
+        await ensureCurrentGeneration(active, repository);
+        const content = progress === null ? "That order is not in this workspace. Check the order ID and try again." : describeOrderWalkthrough(progress);
+        history.push({ role: "assistant", content });
+        if (!active.uiMissing) waitForFinalRender(active, repository, history);
+        await update(active, repository, history, active.uiMissing ? "complete" : "waiting_for_ui", active.uiMissing ? "Complete with missing UI" : "Rendering answer", { finished: true, ...(active.uiMissing ? { measurement: "incomplete" as const } : {}) });
+        return null;
+      }
+      if (!guidanceMode && finalView === "chat" && /^(?:yes|yep|sure|ok(?:ay)?|please do)[.!]?$/i.test(requestText)) {
+        const prior = (await Effect.runPromise(repository.agentHistories(active.identity, active.generation, active.turnId, 1))).at(-1);
+        const answer = prior?.findLast((entry) => entry.role === "assistant" && entry.content !== null)?.content ?? "";
+        const offeredOrder = /Would you like me to open (BB-\d{4}) for you\?$/.exec(answer)?.[1];
+        if (offeredOrder !== undefined) {
+          const opened = await requestUi(active, repository, history, { kind: "navigate", view: "order", orderId: offeredOrder });
+          if (active.cancelled) throw new Error("cancelled");
+          await ensureCurrentGeneration(active, repository);
+          const progress = opened.applied ? await Effect.runPromise(repository.orderProgress(active.identity, active.generation, offeredOrder)) : null;
+          if (active.cancelled) throw new Error("cancelled");
+          await ensureCurrentGeneration(active, repository);
+          const content = progress === null ? `I couldn't open ${offeredOrder}. You can find it in Work.` : describeOpenedOrder(progress);
+          history.push({ role: "assistant", content });
+          if (!active.uiMissing) waitForFinalRender(active, repository, history);
+          await update(active, repository, history, active.uiMissing ? "complete" : "waiting_for_ui", active.uiMissing ? "Complete with missing UI" : "Rendering answer", { finished: true, ...(active.uiMissing ? { measurement: "incomplete" as const } : {}) });
+          return null;
+        }
+      }
       // Scripted mode exercises explicit fixtures. Live standard chat first selects
       // among a few maintained replies; selection never authorizes a business action.
       if (!guidanceMode && finalView === "chat" && config.agentMode === "live") {
@@ -707,6 +737,7 @@ export const makeAgentCoordinator = (
         let displayedProposalId: string | null = null;
         let displayedProposal: ReviewedProposal | null = null;
         let tutorialChanged = false;
+        let openedOrderId: string | null = null;
         const toolFailures: Array<string> = [];
         for (const call of result.value.toolCalls) {
           if (active.cancelled) throw new Error("cancelled");
@@ -776,6 +807,10 @@ export const makeAgentCoordinator = (
             toolFailures.push(failure);
             if (tool?.category === "Prepare") lastPreparationFailure = failure;
           }
+          if (call.name === "navigate" && payload.ok && payload.result?.ok === true && typeof call.arguments === "object" && call.arguments !== null && (call.arguments as { view?: unknown }).view === "order") {
+            const id = (call.arguments as { orderId?: unknown }).orderId;
+            if (typeof id === "string") openedOrderId = id;
+          }
           history.push({ role: "tool", content, toolCallId: call.id });
           let auditedResult: unknown = content;
           try { auditedResult = JSON.parse(content); } catch { /* The bounded text still records the terminal tool outcome. */ }
@@ -793,6 +828,16 @@ export const makeAgentCoordinator = (
           }));
           await update(active, repository, history, "running", "Working");
           if (providerError !== null) throw providerError;
+        }
+        if (!guidanceMode && result.value.toolCalls.length === 1 && openedOrderId !== null && toolFailures.length === 0 && /^(?:yes|yep|sure|ok(?:ay)?|please do)[.!]?$/i.test(requestText)) {
+          const opened = await Effect.runPromise(repository.orderProgress(active.identity, active.generation, openedOrderId));
+          if (opened !== null) {
+            const content = describeOpenedOrder(opened);
+            history.push({ role: "assistant", content });
+            if (!active.uiMissing) waitForFinalRender(active, repository, history);
+            await update(active, repository, history, active.uiMissing ? "complete" : "waiting_for_ui", active.uiMissing ? "Complete with missing UI" : "Rendering answer", { finished: true, ...(active.uiMissing ? { measurement: "incomplete" as const } : {}) });
+            return consentRequestId;
+          }
         }
         if (displayedProposal !== null || tutorialChanged) {
           if (active.cancelled) throw new Error("cancelled");

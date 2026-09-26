@@ -97,7 +97,7 @@ test("keeps stock recovery local, pauses on reload, and waits for a human comman
     await expect(page.getByTestId("connection-status")).toContainText("Connected");
     await expect(trail(page)).toHaveAttribute("data-guidance-status", "paused");
     await page.getByRole("button", { name: "Resume", exact: true }).click();
-    await expect(notes(page)).toContainText("Check the fresh proposal");
+    await expect(notes(page)).toContainText("Check the new proposal");
     await page.getByRole("button", { name: "Accept 1 change", exact: true }).click();
     await expect(page.getByText("Accepted by you")).toBeVisible();
     await page.getByRole("button", { name: "Return to work", exact: true }).click();
@@ -110,7 +110,7 @@ test("runs an Audit guide through the same notes and trail and pauses on manual 
   await openWorkspace(page);
   await page.getByPlaceholder("Message...").fill("Find BB-1042, open it, and highlight the evidence.");
   await page.getByRole("button", { name: "Send message" }).click();
-  await expect(page.getByText("I found the order and showed the relevant evidence.")).toBeVisible();
+  await expect(page.getByText("I found the order and pointed to its customer message or order update.")).toBeVisible();
   await page.getByRole("button", { name: "Audit", exact: true }).click();
   await page.getByRole("button", { name: "Explain Audit", exact: true }).click();
   await expect(page.getByRole("button", { name: "Show me", exact: true })).toBeVisible();

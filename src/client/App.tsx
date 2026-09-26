@@ -191,7 +191,7 @@ const effectLabels: Readonly<Record<string, string>> = {
   read_workspace: "Read the current workspace",
   read_audit: "Read your Audit history",
   navigate_registered_view: "Open a view",
-  highlight_registered_target: "Highlight a control or evidence",
+  highlight_registered_target: "Point to a control or order details",
   start_bounded_tutorial: "Start a tutorial",
   stop_tutorial_guidance: "Dismiss the current tutorial",
   create_reviewed_proposal: "Prepare a proposal for human review",
@@ -674,7 +674,7 @@ export default function App() {
       setScenarioNotice({ scenario: scenarioId, message: "There are no ready orders left to review. Prepare a reset to restore the example queue.", offerReset: true });
       return;
     }
-    setScenarioNotice({ scenario: scenarioId, message: scenarioId === "consent" ? "Checking the selected customer evidence…" : "Opening this scenario in Work…", offerReset: false });
+    setScenarioNotice({ scenario: scenarioId, message: scenarioId === "consent" ? "Checking the selected customer message…" : "Opening this scenario in Work…", offerReset: false });
     if (scenarioId === "consent") {
       const result = await perform(runExploreScenario);
       if (result?.kind !== "explore") {

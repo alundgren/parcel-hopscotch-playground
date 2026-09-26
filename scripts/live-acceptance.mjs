@@ -157,6 +157,7 @@ if (args.includes('--self-test')) {
 }
 
 const value = (flag, fallback) => args.includes(flag) ? args[args.indexOf(flag) + 1] : fallback;
+const selectedCase = value('--case', null);
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const runDirectory = join(repo, 'artifacts/live', new Date().toISOString().replaceAll(':', '-'));
 await mkdir(runDirectory, { recursive: true, mode: 0o700 });
@@ -204,7 +205,11 @@ const cases = [
   { id: 'classifyNote', prompt: 'Classify this note by exception family: Carrier missed collection and the parcel has no tracking scan.', tools: ['classifyNote'], kind: 'classify' },
   { id: 'checkConsent', prompt: 'Check whether BB-1076 customer evidence provides consent for a replacement.', tools: ['checkConsent'], kind: 'consent' },
   { id: 'prepareReset', prompt: 'Prepare a reset of my demo workspace for my review. Do not commit it.', tools: ['prepareReset'], kind: 'reset' },
+  { id: 'guidance-wording', setup: 'guidance', prompt: 'yes', tools: [], kind: 'guidance-wording' },
+  { id: 'guidance-check-wording', prompt: 'What should I check before changing the address on BB-1042?', tools: [], kind: 'guidance-check-wording' },
 ];
+const selectedCases = selectedCase === null ? cases.filter((testCase) => !testCase.id.startsWith('guidance-')) : cases.filter((testCase) => testCase.id === selectedCase);
+if (selectedCases.length === 0) throw new Error(`Unknown live case: ${selectedCase}`);
 const portServer = createServer();
 await new Promise((resolve, reject) => { portServer.once('error', reject); portServer.listen(0, '127.0.0.1', resolve); });
 const port = portServer.address().port;
@@ -262,7 +267,7 @@ const assertResult = (testCase, evidence, snapshot, before, after) => {
   for (const name of testCase.tools) demand(allNames.includes(name), `Required tool did not complete: ${name}`);
   demand(evidence.turn.status === 'complete' && evidence.turn.measurement === 'complete', 'Turn did not reach browser-confirmed completion.');
   demand(before === after, 'Business state changed outside the test setup step.');
-  demand(evidence.attempts.length > 0 && evidence.attempts.every((attempt) => attempt.mode === 'live' && !String(attempt.actual_model).startsWith('scripted/')), 'Inference was missing or was not live.');
+  if (!testCase.kind.startsWith('guidance-')) demand(evidence.attempts.length > 0 && evidence.attempts.every((attempt) => attempt.mode === 'live' && !String(attempt.actual_model).startsWith('scripted/')), 'Inference was missing or was not live.');
   demand(evidence.attempts.every((attempt) => attempt.outcome === 'success'), 'A provider attempt failed or was incomplete.');
   demand(toolRows.every((record) => record.outcome === 'completed' && record.body?.result?.ok !== false), 'A tool failed.');
   for (const attempt of evidence.attempts.filter((attempt) => attempt.kind === 'chat')) {
@@ -299,6 +304,22 @@ const assertResult = (testCase, evidence, snapshot, before, after) => {
   if (testCase.kind === 'trace') demand(outputFor('getAuditTrace')?.attempts?.some((attempt) => attempt.turnId === testCase.traceTurn), 'Requested trace was not returned.');
   if (testCase.kind === 'navigate') demand(evidence.records.some((record) => record.kind === 'ui' && record.body?.operation?.orderId === 'BB-1042' && record.body?.acknowledgement === 'applied'), 'Order navigation was not applied.');
   if (testCase.kind === 'highlight') demand(hasEvidenceHighlight(evidence.records), 'BB-1042 customer evidence was not highlighted.');
+  if (testCase.kind === 'guidance-wording') {
+    const answer = parse(evidence.turn.history_json)?.at(-1)?.content ?? '';
+    demand(!/\bevidence\b/i.test(answer), 'The reply used internal evidence terminology.');
+    demand(!/highlight/i.test(answer), 'The reply claimed a highlight without a highlight action.');
+    demand(/BB-1042.*open/i.test(answer), 'The reply did not confirm that BB-1042 opened.');
+    demand(/Review change/i.test(answer), 'The reply did not name the next app control.');
+    demand(evidence.records.some((record) => record.kind === 'ui' && record.body?.operation?.kind === 'navigate' && record.body?.operation?.orderId === 'BB-1042' && record.body?.acknowledgement === 'applied'), 'The app did not open BB-1042.');
+  }
+  if (testCase.kind === 'guidance-check-wording') {
+    const answer = parse(evidence.turn.history_json)?.at(-1)?.content ?? '';
+    demand(!/\bevidence\b/i.test(answer), 'The reply used internal evidence terminology.');
+    demand(!/highlight/i.test(answer), 'The reply mentioned a highlight action.');
+    demand(/customer message/i.test(answer), 'The reply did not name the customer message.');
+    demand(/Review change/i.test(answer), 'The reply did not name Review change.');
+    demand(!/\baccept\b/i.test(answer) || answer.indexOf('Review change') < answer.toLowerCase().indexOf('accept'), 'The reply mentioned acceptance before Review change.');
+  }
   return { failures, completedTools: allNames };
 };
 try {
@@ -311,9 +332,9 @@ try {
   report.live = !check;
   report.node = process.version;
   report.playwright = require('@playwright/test/package.json').version;
-  report.limits = { cases: cases.length, samples, maximumPrimaryTurns: cases.length * samples, perTurnDeadlineMs: 180000, perRequestOutputTokens: 4096, modelRequestsPerTurn: 8, toolCallsPerRequest: 6 };
+  report.limits = { cases: selectedCases.length, samples, maximumPrimaryTurns: selectedCases.length * samples, perTurnDeadlineMs: 180000, perRequestOutputTokens: 4096, modelRequestsPerTurn: 8, toolCallsPerRequest: 6 };
   for (let sample = 1; sample <= (check ? 1 : samples); sample++) {
-    for (const original of check ? [{ id: 'preflight', tools: [] }] : cases) {
+    for (const original of check ? [{ id: 'preflight', tools: [] }] : selectedCases) {
       const testCase = { ...original };
       const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, extraHTTPHeaders: { 'Cf-Access-Authenticated-User-Email': `live-${sample}-${testCase.id}@example.test` } });
       const caseDirectory = join(runDirectory, `${sample}-${testCase.id}`);
@@ -378,6 +399,21 @@ try {
           testCase.traceTurn = setupTurn;
           if (testCase.setup === 'tutorial' && snapshot?.tutorial?.id !== 'address-correction') throw new Error('The real model did not start the prerequisite tutorial.');
         }
+        if (testCase.setup === 'guidance') {
+          observedTurn = undefined;
+          await send(page, 'Teach me how to fix BB-1042.');
+          const setupTurn = await wait(() => observedTurn, 'guidance setup turn admission');
+          let setupResult;
+          try { setupResult = await finish(setupTurn); }
+          finally { entry.setupAttempts = serializeAttempts(trace(setupTurn).attempts); observedTurn = undefined; }
+          if (setupResult.status !== 'complete' || setupResult.measurement !== 'complete') throw new Error('The first guidance reply did not complete.');
+          const firstAnswer = parse(setupResult.history_json)?.at(-1)?.content ?? '';
+          entry.setupAnswer = firstAnswer;
+          if (/\bevidence\b/i.test(firstAnswer)) entry.failures.push('The first reply used internal evidence terminology.');
+          if (/highlight/i.test(firstAnswer)) entry.failures.push('The first reply mentioned an internal highlight action.');
+          if (!/Review change/i.test(firstAnswer)) entry.failures.push('The first reply did not name Review change before acceptance.');
+          if (!/open BB-1042/i.test(firstAnswer)) entry.failures.push('The first reply did not offer to open BB-1042.');
+        }
         const before = business(userId);
         observedTurn = undefined;
         automatedPhase = true;
@@ -399,7 +435,8 @@ try {
         entry.observedTerminalMs = performance.now() - started;
         const evidence = { ...trace(turnId), turn };
         const checked = assertResult(testCase, evidence, snapshot, before, business(userId));
-        entry.failures = checked.failures;
+        if (testCase.kind === 'guidance-wording') await page.locator('#target-order-BB-1042-evidence').waitFor({ state: 'visible' });
+        entry.failures.push(...checked.failures);
         entry.completedTools = checked.completedTools;
         if (unexpectedAccept) entry.failures.push('Acceptance was sent during the automated phase.');
         entry.serverCompletedMs = turn.server_duration_ms;
@@ -450,7 +487,7 @@ try {
     knownCostUsd: billed.reduce((sum, attempt) => sum + (attempt.cost_usd ?? 0), 0), unknownCostAttempts: billed.filter((attempt) => attempt.cost_usd === null).length,
     providerAttempts: billed.length, truncations: attempts.filter((attempt) => attempt.providerTruncated).length,
   };
-  if (!check && knownTools.some((name) => report.coverage[name] < samples)) { report.status = 'failed'; report.reason ??= 'Repeated coverage is incomplete for one or more tools.'; }
+  if (!check && selectedCase === null && knownTools.some((name) => report.coverage[name] < samples)) { report.status = 'failed'; report.reason ??= 'Repeated coverage is incomplete for one or more tools.'; }
   await save();
   await stop();
   console.log(`${report.status}: ${output}`);
