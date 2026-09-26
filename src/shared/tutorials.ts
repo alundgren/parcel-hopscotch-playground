@@ -29,24 +29,25 @@ const exactOrders = (actual: ReadonlyArray<string>, expected: ReadonlyArray<stri
 
 const individualSteps = (
   familyName: string,
+  updateName: string,
   teachingOrderId: string,
   practiceOrderId: string,
 ): ReadonlyArray<TutorialStepDefinition> => [
   {
     phase: "teaching",
-    instruction: `Open ${teachingOrderId} and compare the saved ${familyName} with the evidence.`,
+    instruction: `Open ${teachingOrderId} and compare the saved ${familyName} with the ${updateName}.`,
     targetId: targets.orderRow(teachingOrderId),
     matches: (event) => event.kind === "order_selected" && event.orderId === teachingOrderId,
   },
   {
     phase: "teaching",
-    instruction: "Read the evidence first, then review the exact proposed change.",
+    instruction: `Read the ${updateName}, then use Review change to check the proposed correction.`,
     targetId: targets.orderEvidence(teachingOrderId),
     matches: (event) => event.kind === "proposal_prepared" && event.proposalKind === "resolution" && exactOrders(event.orderIds, [teachingOrderId]),
   },
   {
     phase: "teaching",
-    instruction: "Compare the before and after values. Accept only when the proposal matches the evidence.",
+    instruction: `Compare the before and after values. Accept only when the proposal matches the ${updateName}.`,
     targetId: targets.proposalReview,
     matches: (event) => event.kind === "proposal_accepted" && event.proposalKind === "resolution" && exactOrders(event.orderIds, [teachingOrderId]),
   },
@@ -58,25 +59,25 @@ const individualSteps = (
   },
   {
     phase: "practice",
-    instruction: `Independent practice: complete ${practiceOrderId} from evidence to receipt.`,
+    instruction: `Independent practice: read the ${updateName} for ${practiceOrderId}, then review the change.`,
     targetId: targets.orderRow(practiceOrderId),
     matches: (event) => event.kind === "order_selected" && event.orderId === practiceOrderId,
   },
   {
     phase: "practice",
-    instruction: `Independent practice: complete ${practiceOrderId} from evidence to receipt.`,
+    instruction: `Independent practice: review the proposed change for ${practiceOrderId}.`,
     targetId: targets.orderEvidence(practiceOrderId),
     matches: (event) => event.kind === "proposal_prepared" && event.proposalKind === "resolution" && exactOrders(event.orderIds, [practiceOrderId]),
   },
   {
     phase: "practice",
-    instruction: `Independent practice: complete ${practiceOrderId} from evidence to receipt.`,
+    instruction: `Independent practice: accept the change for ${practiceOrderId} if it is right.`,
     targetId: targets.proposalReview,
     matches: (event) => event.kind === "proposal_accepted" && event.proposalKind === "resolution" && exactOrders(event.orderIds, [practiceOrderId]),
   },
   {
     phase: "practice",
-    instruction: `Independent practice: complete ${practiceOrderId} from evidence to receipt.`,
+    instruction: `Independent practice: check the receipt for ${practiceOrderId}.`,
     targetId: targets.receipt,
     matches: (event) => event.kind === "receipt_confirmed" && exactOrders(event.orderIds, [practiceOrderId]),
   },
@@ -147,13 +148,13 @@ const batchSteps: ReadonlyArray<TutorialStepDefinition> = [
 const definitions: Record<TutorialId, TutorialDefinition> = {
   "address-correction": {
     title: "Address correction",
-    completion: "Practice complete. You corrected a second address from evidence to receipt.",
-    steps: individualSteps("address", "BB-1042", "BB-1072"),
+    completion: "Practice complete. You reviewed and accepted a second address correction.",
+    steps: individualSteps("address", "customer message", "BB-1042", "BB-1072"),
   },
   "substitution-review": {
     title: "Substitution review",
     completion: "Practice complete. You reviewed and accepted a second substitution.",
-    steps: individualSteps("substitution", "BB-1051", "BB-1104"),
+    steps: individualSteps("substitution", "customer message", "BB-1051", "BB-1104"),
   },
   "batch-approval": {
     title: "Batch approval",

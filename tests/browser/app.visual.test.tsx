@@ -296,7 +296,7 @@ describe("rendered work UI", () => {
   test("leaves a short answer at the default chat width", async () => {
     await render(<App />);
     const chat = document.querySelector(".chat-panel")!;
-    expect(chat.querySelector(".chat-assistant p")?.textContent).toContain("I can help you review");
+    expect(chat.querySelector(".chat-assistant p")?.textContent).toContain("I can help you read the customer message");
     expect(document.querySelector(".work-layout")?.classList.contains("chat-wide")).toBe(false);
     if (window.innerWidth > 760) expect(bounds(chat).width).toBe(360);
     await checkpoint("chat-reading-short", chat);

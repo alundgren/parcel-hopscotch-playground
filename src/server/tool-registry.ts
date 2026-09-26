@@ -169,7 +169,7 @@ const specs = {
     example: { arguments: { orderId: "BB-1042" }, result: { order: {
       id: "BB-1042", item: "Woven basket", issue: "Street number needs checking.", status: "review", family: "address", version: 1,
       businessValue: "14 Willow Lane, Bath BA1 2AB", completed: false, resolved: false,
-      progress: { resolution: "No reviewed action is currently applied to this order.", packing: "Not released to packing. Review the recorded issue and evidence." },
+      progress: { resolution: "No reviewed action is currently applied to this order.", packing: "Not released to packing. Review the order issue and its customer message or update." },
       evidence: [{ label: "Customer", value: "The number is 41, not 14. Everything else is right.", occurredAt: "2026-09-21T08:40:00.000Z", age: "34 min ago" }],
     }, latestReceipt: null } },
     input: OrderIdInput, output: Schema.Struct({ order: orderResult, latestReceipt: Schema.NullOr(orderReceiptResult) }),
@@ -195,15 +195,15 @@ const specs = {
     input: Schema.Struct({ view: Schema.Literals(["work", "explore", "audit", "order"]), orderId: Schema.optionalKey(Identifier), filter: Schema.optionalKey(Schema.Literal("ready")) }), output: ResultMessage,
   },
   highlight: {
-    description: "Point to a queue, control, order, or its recorded notes. Use batchReview to point to Review ready orders without opening its preview.",
-    category: "Guide", purpose: "Point to evidence", allowedEffects: ["highlight_registered_target"],
-    example: { arguments: { target: "orderEvidence", orderId: "BB-1042" }, result: { ok: true, message: "Highlighted the evidence." } },
+    description: "Point to a queue, control, order, or its recorded message or update. This is an assistant action, never an instruction for the person to highlight text. Use batchReview to point to Review ready orders without opening its preview.",
+    category: "Guide", purpose: "Point to order details", allowedEffects: ["highlight_registered_target"],
+    example: { arguments: { target: "orderEvidence", orderId: "BB-1042" }, result: { ok: true, message: "Pointed to the customer message." } },
     input: Schema.Struct({ target: Schema.Literals(["workQueue", "readyFilter", "batchReview", "chatComposer", "orderRow", "orderEvidence"]), orderId: Schema.optionalKey(Identifier) }), output: ResultMessage,
   },
   startTutorial: {
     description: "Start a fixed tutorial only when the person explicitly requests a specific supported walkthrough. A general onboarding or job explanation does not authorize choosing a tutorial. Inspect any named order before selecting address-correction, substitution-review, or batch-approval. Real user actions advance it and keep all review and acceptance requirements.",
     category: "Guide", purpose: "Teach a task", allowedEffects: ["start_bounded_tutorial"],
-    example: { arguments: { tutorialId: "address-correction" }, result: { id: "address-correction", instanceId: "tutorial_example", title: "Address correction", step: 0, totalSteps: 8, phase: "teaching", instruction: "Open BB-1042 and compare the saved address with the evidence.", targetId: "target-order-BB-1042" } },
+    example: { arguments: { tutorialId: "address-correction" }, result: { id: "address-correction", instanceId: "tutorial_example", title: "Address correction", step: 0, totalSteps: 8, phase: "teaching", instruction: "Open BB-1042 and compare the saved address with the customer message.", targetId: "target-order-BB-1042" } },
     input: Schema.Struct({ tutorialId: TutorialId }), output: TutorialState,
   },
   stopTutorial: {

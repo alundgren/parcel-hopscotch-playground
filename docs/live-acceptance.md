@@ -27,6 +27,17 @@ application's finite request, output, tool-round, and retry limits. Exhausted
 credits stop the suite. This spends prepaid credit; there is no guaranteed dollar
 total.
 
+For a focused, repeated check of the BB-1042 guidance exchange, run
+`vp run test:live --case guidance-wording --samples 5`. Each fresh sample sends
+"Teach me how to fix BB-1042." followed by "yes" and checks the replies,
+navigation acknowledgement, and rendered customer message. The focused case
+does not run as part of the full tool-coverage suite. The app answers this
+particular request from its current order record, so this case checks live-mode
+browser behavior without paid inference. Use
+`vp run test:live --case guidance-check-wording --samples 5` for the related
+"What should I check before changing the address" wording. That response is
+also built from the current order record.
+
 Each case uses a fresh local identity. For Undo setup, Playwright clicks **Accept
 1 change** on the disposable address proposal, waits for the receipt, then asks
 the live model to prepare Undo. The test driver performs that setup through the

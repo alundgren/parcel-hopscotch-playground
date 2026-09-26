@@ -55,12 +55,14 @@ const toolPayloads = (messages: ReadonlyArray<ChatMessage>) => messages
 
 const waitForTurn = async (repository: WorkspaceRepositoryService, turnId: string, statuses: ReadonlyArray<AgentTurnRecord["status"]>) => {
   const deadline = Date.now() + 5_000;
+  let lastStatus: string | null = null;
   while (Date.now() < deadline) {
     const turn = await Effect.runPromise(repository.agentTurn(identity, 1, turnId));
+    lastStatus = turn?.status ?? null;
     if (turn !== null && statuses.includes(turn.status)) return turn;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("Timed out waiting for the agent turn.");
+  throw new Error(`Timed out waiting for ${turnId} to reach ${statuses.join(", ")}; last status: ${lastStatus ?? "missing"}.`);
 };
 
 const waitForMessage = async (sent: ReadonlyArray<ServerMessage>, predicate: (message: ServerMessage) => boolean) => {
@@ -408,10 +410,64 @@ describe("agent runtime", () => {
       yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "tutorial", message: "Start the address tutorial.", viewContext: workView, connectionId: "tutorial", send: async () => undefined }));
       const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
       expect(calls).toBe(1);
-      expect(turn.history.at(-1)?.content).toContain(dismissed ? "The tutorial is dismissed. Accepted work is unchanged." : "Open BB-1042 and compare the saved address with the evidence.");
+      expect(turn.history.at(-1)?.content).toContain(dismissed ? "The tutorial is dismissed. Accepted work is unchanged." : "Open BB-1042 and compare the saved address with the customer message.");
       expect((yield* repository.snapshot(identity)).latestReceipt).toBeNull();
       expect(coordinator.acknowledgeComplete(identity, 1, turnId, "tutorial")).toBe(true);
       yield* repository.completeAgentMeasurement(identity, 1, turnId, 60);
+    }));
+  });
+
+  it("describes an opened order from its current record after a yes reply", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    let modelCalls = 0;
+    const ministral: MinistralAdapter = { complete: () => Effect.sync(() => {
+      modelCalls += 1;
+      if (modelCalls > 1) return result([], "Highlight the customer message to see the evidence.");
+      return result([{ id: "open-order", name: "navigate", arguments: { view: "order", orderId: "BB-1042" } }]);
+    }) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const turnId = "turn_12345678-open-order-yes";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId, requestId: "open-order-yes", message: "yes", viewContext: workView, connectionId: "open-order-yes", send: async (message) => {
+        if (message.type === "agent_ui_operation") coordinator.acknowledgeUi(identity, 1, turnId, message.operation.id, "open-order-yes", "applied");
+      } }));
+      const turn = yield* Effect.promise(() => waitForTurn(repository, turnId, ["waiting_for_ui"]));
+      expect(modelCalls).toBe(1);
+      expect(turn.history.at(-1)?.content).toBe("BB-1042 is open. The customer message is visible with the current address. Use Review change to prepare a correction. Check the proposed change before accepting it.");
+      expect(turn.history.at(-1)?.content).not.toMatch(/highlight|evidence/i);
+      expect(coordinator.acknowledgeComplete(identity, 1, turnId, "open-order-yes")).toBe(true);
+    }));
+  });
+
+  it.each(["Teach me how to fix BB-1042.", "What should I check before changing the address on BB-1042?"])("opens the named order after the help offer for %s", async (prompt) => {
+    const directory = await mkdtemp(join(tmpdir(), "parcel-hopscotch-agent-")); paths.push(directory);
+    const ministral: MinistralAdapter = { complete: () => Effect.fail(providerFailure("provider_error", "The maintained help flow should not call the model.")) };
+    await runWithWorkspaceRepository(join(directory, "workspace.sqlite"), Effect.gen(function* () {
+      const repository = yield* WorkspaceRepository;
+      const coordinator = makeAgentCoordinator(config, { ministral, jev: unusedJev });
+      const firstTurn = "turn_12345678-order-help";
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: firstTurn, requestId: "order-help", message: prompt, viewContext: workView, connectionId: "order-help", send: async () => undefined }));
+      const first = yield* Effect.promise(() => waitForTurn(repository, firstTurn, ["waiting_for_ui"]));
+      expect(first.history.at(-1)?.content).toContain("Customer message: \"The number is 41, not 14. Everything else is right.\"");
+      expect(first.history.at(-1)?.content).toContain("Use Review change to preview the correction.");
+      expect(first.history.at(-1)?.content).toMatch(/Would you like me to open BB-1042 for you\?$/);
+      expect(coordinator.acknowledgeComplete(identity, 1, firstTurn, "order-help")).toBe(true);
+      yield* repository.completeAgentMeasurement(identity, 1, firstTurn, 50);
+
+      const secondTurn = "turn_12345678-order-help-yes";
+      const operations: string[] = [];
+      yield* Effect.promise(() => coordinator.start({ repository, hub, identity, generation: 1, turnId: secondTurn, requestId: "order-help-yes", message: "yes", viewContext: workView, connectionId: "order-help-yes", send: async (message) => {
+        if (message.type === "agent_ui_operation") {
+          operations.push(message.operation.kind);
+          coordinator.acknowledgeUi(identity, 1, secondTurn, message.operation.id, "order-help-yes", "applied");
+        }
+      } }));
+      const second = yield* Effect.promise(() => waitForTurn(repository, secondTurn, ["waiting_for_ui"]));
+      expect(operations).toEqual(["navigate"]);
+      expect(second.history.at(-1)?.content).toBe("BB-1042 is open. The customer message is visible with the current address. Use Review change to prepare a correction. Check the proposed change before accepting it.");
+      expect((yield* repository.snapshot(identity)).currentProposal).toBeNull();
+      expect(coordinator.acknowledgeComplete(identity, 1, secondTurn, "order-help-yes")).toBe(true);
     }));
   });
 

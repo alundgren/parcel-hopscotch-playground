@@ -158,13 +158,13 @@ export const toolHandlers: ToolHandlers = {
       throw new ToolExecutionError("invalid_arguments", "An order can only be selected when opening order details.");
     }
     const result = await context.requestUi({ kind: "navigate", view: args.view, ...(args.orderId === undefined ? {} : { orderId: args.orderId }), ...(args.filter === undefined ? {} : { filter: args.filter }) });
-    return { ok: result.applied, message: result.message };
+    return { ok: result.applied, message: result.applied && args.view === "order" ? `${args.orderId} is open. Its customer message or order update is visible. Review change opens a correction for the person to check before accepting.` : result.message };
   },
   highlight: async (context, input) => {
     const args = input as { target: "workQueue" | "readyFilter" | "batchReview" | "chatComposer" | "orderRow" | "orderEvidence"; orderId?: string };
     const requiresOrder = args.target === "orderRow" || args.target === "orderEvidence";
-    if (requiresOrder && args.orderId === undefined) throw new ToolExecutionError("invalid_arguments", "Choose an order before pointing to its details or evidence.");
-    if (!requiresOrder && args.orderId !== undefined) throw new ToolExecutionError("invalid_arguments", "Choose an order detail or evidence control when pointing to a specific order.");
+    if (requiresOrder && args.orderId === undefined) throw new ToolExecutionError("invalid_arguments", "Choose an order before pointing to its details or update.");
+    if (!requiresOrder && args.orderId !== undefined) throw new ToolExecutionError("invalid_arguments", "Choose an order detail or update when pointing to a specific order.");
     if (args.orderId !== undefined) await findOrder(context, args.orderId);
     const targetId = args.target === "workQueue" ? targets.workQueue
       : args.target === "readyFilter" ? targets.readyFilter

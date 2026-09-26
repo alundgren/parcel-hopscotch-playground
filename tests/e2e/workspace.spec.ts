@@ -168,7 +168,7 @@ test("uses the agent to inspect evidence, prepare a batch for human acceptance, 
 
   await composer.fill("Find BB-1042, open it, and highlight the evidence.");
   await page.getByRole("button", { name: "Send message" }).click();
-  await expect(page.getByText("I found the order and showed the relevant evidence.")).toBeVisible();
+  await expect(page.getByText("I found the order and pointed to its customer message or order update.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Check address" })).toBeVisible();
   await expect(page.locator("#target-order-BB-1042-evidence")).toContainText("The number is 41, not 14");
 
@@ -214,7 +214,7 @@ test("uses selected work context and recovers navigation while final replies ren
   await page.locator("#target-order-BB-1072").click();
   await send("Explain this order.");
   await expect(page.locator(".detail-heading")).toContainText("BB-1072");
-  await expect(page.getByText("I found the order and showed the relevant evidence.")).toBeVisible();
+  await expect(page.getByText("I found the order and pointed to its customer message or order update.")).toBeVisible();
   await expect(composer).toBeEnabled();
 
   await send("Show BB-1042.");
@@ -245,7 +245,7 @@ test("uses selected work context and recovers navigation while final replies ren
   await page.getByRole("button", { name: "Audit", exact: true }).click();
   await page.waitForTimeout(800);
   await page.getByRole("button", { name: "Work", exact: true }).click();
-  await expect(page.getByText("I found the order and showed the relevant evidence.").last()).toBeVisible();
+  await expect(page.getByText("I found the order and pointed to its customer message or order update.").last()).toBeVisible();
   await expect(composer).toBeEnabled();
 
   await send("Open Explore.");
